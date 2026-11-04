@@ -98,7 +98,7 @@ pub fn settle_with(
     match seen.get(&key).and_then(|b| checked(b.clone())) {
         Some(before) if before != name => {
             let note = format!(
-                "esta carpeta era del proyecto {before} y ahora se detecta {name}: lo de {before} no se ve aquí; si es el mismo proyecto, clio memory project set {before}"
+                "esta carpeta era del proyecto {before} y ahora se detecta {name}: lo nuevo se guarda en {name}; si es el mismo proyecto, escribe {before} en un archivo {PROJECT_FILE} de la carpeta"
             );
             Some((name, source, Some(note)))
         }
@@ -354,7 +354,10 @@ mod tests {
         .unwrap();
         let (name, _, note) = got(None);
         assert_eq!(name, "clio-nuevo");
-        assert!(note.unwrap().contains("clio memory project set clio"));
+        assert!(
+            note.unwrap()
+                .contains("escribe clio en un archivo .clio-project")
+        );
         // A damaged record is left alone and nothing breaks.
         let file = data.path().join(SEEN_FILE);
         std::fs::write(&file, "{roto").unwrap();

@@ -40,7 +40,7 @@ pub fn explain(e: &Error) -> String {
         Error::QuotaExceeded => "rechazado: cuota de propuestas agotada para este actor".into(),
         Error::TooLong => "rechazado: demasiado largo".into(),
         Error::QuarantineFull => {
-            "rechazado: hay demasiados recuerdos de este actor en cuarentena (`clio memory review`)"
+            "rechazado: hay demasiados recuerdos de este actor en cuarentena (`clio-memory review SCOPE`)"
                 .into()
         }
         Error::EmptyContent => "rechazado: vacío".into(),
@@ -94,15 +94,17 @@ pub struct Actors {
     pub own: ActorId,
 }
 
-/// The folder of the shared memory file: `$CLIO_MEMORY_DATA`, else `~/.local/share/clio` (Clio's).
-pub fn default_data() -> PathBuf {
-    match std::env::var_os("CLIO_MEMORY_DATA").filter(|v| !v.is_empty()) {
-        Some(d) => PathBuf::from(d),
-        None => std::env::var_os("HOME")
+/// The folder of the shared memory file: `$CLIO_MEMORY_DATA`, else `~/.local/share/clio` (Clio's);
+/// `None` with neither (never a path relative to wherever the program was started).
+pub fn default_data() -> Option<PathBuf> {
+    let set = |k| {
+        std::env::var_os(k)
+            .filter(|v| !v.is_empty())
             .map(PathBuf::from)
-            .unwrap_or_default()
-            .join(".local/share/clio"),
-    }
+    };
+    set("CLIO_MEMORY_DATA")
+        .or_else(|| set("HOME").map(|h| h.join(".local/share/clio")))
+        .filter(|p| p.is_absolute())
 }
 
 /// The scope of the lessons: what was learned in one project and is worth knowing in any.
@@ -208,7 +210,7 @@ fn load_embedder(dir: &Path) -> Result<Arc<dyn crate::Embedder>, String> {
 
 #[cfg(not(feature = "model2vec"))]
 fn load_embedder(_: &Path) -> Result<Arc<dyn crate::Embedder>, String> {
-    Err("este Clio se compiló sin la característica model2vec".into())
+    Err("clio-memory se compiló sin la característica model2vec".into())
 }
 
 /// The agent's writes an hour: a brake on a loop, not a review (the memory is the agent's).
@@ -331,14 +333,16 @@ impl Memory {
                 None => engine.register_actor(name, kind, quota(max)).map_err(m),
             }
         };
-        let agente = get("agente", ActorKind::Agent, AGENT_QUOTA)?;
-        // Only an agent's name signs as an agent: `persona`, `sesion`, `jev`… are not taken.
-        if have
-            .iter()
-            .any(|a| a.name == actor && a.kind != ActorKind::Agent)
+        // Only an agent's name signs as an agent: the file's own names (and the judge's) are
+        // refused before anything is registered, so a refusal never leaves a wrong actor behind.
+        if ["persona", "sesion", "importador", "jev"].contains(&actor)
+            || have
+                .iter()
+                .any(|a| a.name == actor && a.kind != ActorKind::Agent)
         {
             return Err(format!("{actor}: ese nombre no es de un agente"));
         }
+        let agente = get("agente", ActorKind::Agent, AGENT_QUOTA)?;
         let own = if actor == "agente" {
             agente
         } else {
@@ -488,6 +492,24 @@ impl Memory {
             .map_err(|e| explain(&e))
     }
 
+    /// The same, in the scope of `beside` (another project's too): what a merge of that place's
+    /// memories saves.
+    pub fn save_beside(
+        &self,
+        draft: &Draft,
+        session: &str,
+        beside: &MemoryRow,
+        tainted: bool,
+    ) -> Res<Outcome> {
+        self.need_write()?;
+        let place = self
+            .place_of(beside.scope)
+            .ok_or("esa memoria no es de este lugar")?;
+        let mut p = self.agent_proposal(draft, session, place, tainted);
+        p.scope = beside.scope;
+        self.engine.propose(p).map_err(|e| explain(&e))
+    }
+
     /// The agent corrects `old` (the `memory_update` tool): the new text replaces exactly that
     /// memory, whoever wrote it, in its place and of its kind. The old one stays in the log as
     /// replaced and the person's revert brings it back.
@@ -563,7 +585,7 @@ impl Memory {
         // Where it was learned: the project, when there is one (what a lesson shows elsewhere).
         let source = match self.project_name() {
             Some(p) => format!("{PROJECT_PREFIX}{p}"),
-            None => format!("pi:{session}"),
+            None => session.clone(),
         };
         Proposal {
             scope: self.scope_of(place).unwrap_or(self.scope),

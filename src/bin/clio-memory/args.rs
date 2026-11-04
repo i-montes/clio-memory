@@ -468,9 +468,13 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, UsageErro
         }
         other => return usage(format!("unknown command {other:?}")),
     };
-    let db = db.unwrap_or_else(|| {
-        clio_memory::agent::default_data().join(clio_memory::agent::memory::DB_FILE)
-    });
+    let db = match db {
+        Some(db) => db,
+        None => match clio_memory::agent::default_data() {
+            Some(d) => d.join(clio_memory::agent::memory::DB_FILE),
+            None => return usage("no --db, and neither CLIO_MEMORY_DATA nor HOME is set"),
+        },
+    };
     #[cfg(not(feature = "model2vec"))]
     if model.is_some() {
         return usage("--model needs a build with the model2vec feature");

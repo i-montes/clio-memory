@@ -172,3 +172,27 @@ fn the_context_starts_with_the_projects_summary_then_the_pins() {
     let ids: Vec<MemoryId> = m.context().unwrap().iter().map(|r| r.id).collect();
     assert_eq!(ids[..2], [summary, pinned]);
 }
+
+#[test]
+fn a_fresh_file_is_not_damaged_by_a_name_that_is_not_an_agents() {
+    for name in ["persona", "sesion", "importador", "jev"] {
+        let t = tempfile::tempdir().unwrap();
+        let e = Memory::open_write(t.path(), &EmbedModel::none(), None, name)
+            .err()
+            .unwrap_or_else(|| panic!("{name} signed"));
+        assert!(e.contains("no es de un agente"), "{name}: {e}");
+        // The file is as Clio would leave it: `persona` is the person.
+        let m = write(t.path(), None, "agente");
+        let kinds: Vec<(String, ActorKind)> = m
+            .engine()
+            .actors()
+            .unwrap()
+            .into_iter()
+            .map(|a| (a.name, a.kind))
+            .collect();
+        assert!(
+            kinds.contains(&("persona".into(), ActorKind::Person)),
+            "{name}: {kinds:?}"
+        );
+    }
+}

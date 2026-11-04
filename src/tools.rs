@@ -404,21 +404,21 @@ impl Session {
         let mut draft = draft_of(args, true)?;
         draft.kind = MemoryType::Semantic;
         let m = self.writer()?;
-        let mut place = None;
+        // All of one scope (one project, not just «a project»), and the merge is saved there.
+        let mut first: Option<MemoryRow> = None;
         for id in &ids {
             let r = m
                 .get(MemoryId(*id))
                 .ok()
                 .filter(|r| r.kind == MemoryType::Semantic)
                 .ok_or_else(|| NOT_READABLE.to_owned())?;
-            let here = m.place_of(r.scope).ok_or_else(|| NOT_READABLE.to_owned())?;
-            if place.is_some_and(|p| p != here) {
+            if first.as_ref().is_some_and(|f| f.scope != r.scope) {
                 return Err("solo se unen memorias del mismo sitio".into());
             }
-            place = Some(here);
+            first.get_or_insert(r);
         }
-        let place = place.ok_or_else(|| NOT_READABLE.to_owned())?;
-        let o = m.save(&draft, &self.actor, place, false)?;
+        let first = first.ok_or_else(|| NOT_READABLE.to_owned())?;
+        let o = m.save_beside(&draft, &self.actor, &first, false)?;
         if o.kind != OpKind::Add || ids.contains(&o.memory.0) {
             return Err("la unión no dio una memoria nueva: no se olvidó nada".into());
         }
@@ -450,8 +450,15 @@ impl Session {
                 .revert_own(OpId(positive(args, "change")?))
                 .map(|_| "undone: the change was reverted"),
         };
-        // Which of «missing, forgotten, someone else's» it was does not leak.
-        done.map(str::to_owned).map_err(|_| NOT_READABLE.to_owned())
+        // Which of «missing, forgotten, someone else's» it was does not leak; a spent quota or a
+        // writer that is busy is said as it is.
+        done.map(str::to_owned).map_err(|e| {
+            if e.contains("cuota") || e.contains("otro proceso") {
+                e
+            } else {
+                NOT_READABLE.to_owned()
+            }
+        })
     }
 }
 

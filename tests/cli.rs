@@ -831,3 +831,19 @@ fn without_db_the_default_file_is_used() {
     assert_eq!(code(&o), 0, "{}", err(&o));
     assert!(out(&o).contains("main"), "{}", out(&o));
 }
+
+#[test]
+fn without_home_or_clio_memory_data_nothing_is_created_in_the_current_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let o = Command::new(env!("CARGO_BIN_EXE_clio-memory"))
+        .env_remove("HOME")
+        .env_remove("CLIO_MEMORY_DATA")
+        .current_dir(dir.path())
+        .arg("mcp")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(code(&o), 2, "{}", err(&o));
+    assert!(err(&o).contains("CLIO_MEMORY_DATA"), "{}", err(&o));
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+}

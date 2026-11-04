@@ -137,3 +137,39 @@ fn a_missing_memory_and_a_forgotten_one_give_the_same_error() {
     assert_eq!(forgotten, missing);
     assert_eq!(missing, "ese recuerdo no existe o no se puede leer");
 }
+
+#[test]
+fn a_merge_stays_in_the_memories_own_project_and_never_mixes_two() {
+    let t = tempfile::tempdir().unwrap();
+    let in_project =
+        |p: &str| Session::new(t.path().to_path_buf(), Some(p.into()), "mcp:prueba".into());
+    let decision = |s: &mut Session, text: &str| {
+        s.call(
+            "memory_save",
+            &json!({"text": text, "kind": "semantic", "category": "decision"}),
+        )
+        .unwrap()
+    };
+    let mut alfa = in_project("alfa");
+    decision(&mut alfa, "alfa usa Postgres");
+    decision(&mut alfa, "alfa usa la versión 16");
+    let mut beta = in_project("beta");
+    decision(&mut beta, "beta usa Redis");
+    let mut nowhere = session(&t);
+    let e = nowhere
+        .call(
+            "memory_consolidate",
+            &json!({"ids": "1, 3", "text": "mezcla"}),
+        )
+        .unwrap_err();
+    assert_eq!(e, "solo se unen memorias del mismo sitio");
+    let r = nowhere
+        .call(
+            "memory_consolidate",
+            &json!({"ids": "1, 2", "text": "alfa usa Postgres 16"}),
+        )
+        .unwrap();
+    assert!(r.starts_with("merged into m4"), "{r}");
+    let read = nowhere.call("memory_get", &json!({"id": 4})).unwrap();
+    assert!(read.contains("proyecto alfa"), "{read}");
+}

@@ -95,6 +95,12 @@ pub fn serve(
             output.flush().map_err(|e| e.to_string())?;
         }
     }
+    // Before the model is let go: whatever still waits for a vector (written by anyone).
+    if let Some(s) = &state.session
+        && let Err(why) = s.finish()
+    {
+        eprintln!("clio-memory mcp: vectores pendientes: {why}");
+    }
     Ok(())
 }
 

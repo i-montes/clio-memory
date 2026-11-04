@@ -247,6 +247,16 @@ impl Session {
         }
     }
 
+    /// The end of the session: whatever is still waiting for a vector is computed, once more,
+    /// before the model is let go. How many vectors were stored.
+    pub fn finish(&self) -> Result<usize, String> {
+        if !Memory::db_path(&self.data).is_file() {
+            return Ok(0);
+        }
+        let m = self.writer()?;
+        m.embed_queue()
+    }
+
     fn spend_save(&mut self) -> Result<(), String> {
         if self.saves >= MAX_SAVES {
             return Err(format!("this session made its memory saves ({MAX_SAVES})"));
@@ -393,7 +403,7 @@ impl Session {
             };
             m.save(&draft, &self.actor, place, false)?
         };
-        Ok(told(&o))
+        Ok(with_vectors(told(&o), &m))
     }
 
     fn consolidate(&mut self, args: &Map<String, Value>) -> Result<String, String> {
@@ -431,9 +441,12 @@ impl Session {
                 ));
             }
         }
-        Ok(format!(
-            "merged into m{}: the originals are forgotten (quarantine), not erased",
-            o.memory.0
+        Ok(with_vectors(
+            format!(
+                "merged into m{}: the originals are forgotten (quarantine), not erased",
+                o.memory.0
+            ),
+            &m,
         ))
     }
 
@@ -552,6 +565,21 @@ fn draft_of(args: &Map<String, Value>, no_kind: bool) -> Result<Draft, String> {
         category,
         kind,
     })
+}
+
+/// After a write, the vectors of the whole queue are computed at once; without a model the answer
+/// says so. A failure to compute them does not undo the save: what is left waits for the next
+/// write, the end of the session, or `clio-memory run-jobs`.
+fn with_vectors(answer: String, m: &Memory) -> String {
+    if !m.has_embeddings() {
+        return format!(
+            "{answer} · sin modelo de vectores: la búsqueda es solo por texto (`clio-memory setup model`)"
+        );
+    }
+    if let Err(why) = m.embed_queue() {
+        eprintln!("clio-memory: vectores pendientes: {why}");
+    }
+    answer
 }
 
 /// What became of a save, in fixed words, with the change number to undo it.

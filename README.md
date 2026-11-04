@@ -38,7 +38,7 @@ clio-memory setup claude-code    # la deja como memoria principal de Claude Code
 
 No toca otros servidores MCP ni otras skills. Si ya hay algo llamado `clio-memory` que no es esto, te lo dice y pregunta (`--replace` lo reemplaza). Correrlo otra vez no cambia nada.
 
-Sin el modelo, la búsqueda es por texto. A mano, sin `setup`: `claude mcp add clio-memory -- clio-memory mcp`.
+Sin el modelo, la búsqueda es por texto (y al guardar te lo dice). Con el modelo, los vectores se calculan en cuanto se guarda algo: toda la cola pendiente, también lo que guardó otro programa sin modelo; y otra vez al cerrar la sesión, antes de soltar el modelo. `clio-memory run-jobs` queda para lo que haya quedado pendiente (por ejemplo, recuerdos de antes de esta versión). A mano, sin `setup`: `claude mcp add clio-memory -- clio-memory mcp`.
 
 ### Las herramientas
 

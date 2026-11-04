@@ -107,3 +107,17 @@ fn relations_are_copied_except_contradictions_and_self() {
         "twice adds nothing"
     );
 }
+
+// By text, what makes two memories neighbors is what they are about, not «la» or «de»; and a long
+// memory asks with a bounded query.
+#[test]
+fn text_neighbors_go_by_the_words_that_matter() {
+    let f = fixture();
+    let a = save(&f, f.scope, "la casa de la playa de los abuelos");
+    save(&f, f.scope, "de la de la de los de las en el que por");
+    let b = save(&f, f.scope, "una playa con casa");
+    assert_eq!(ids(&f.engine.neighbors(a, &[f.scope], 1).unwrap()), [b]);
+    let long = format!("restic {}", "palabra ".repeat(600));
+    let c = save(&f, f.scope, &long);
+    assert!(f.engine.neighbors(c, &[f.scope], 3).is_ok());
+}

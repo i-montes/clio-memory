@@ -679,6 +679,7 @@ fn render(
         MAX_LINE_CHARS
     };
     let (mut lines, mut used, mut shown) = (Vec::new(), 0, 0);
+    let mut ids_after: Vec<(usize, String)> = Vec::new();
     for r in rows {
         let mut head = format!(
             "[m{}] {} · {} · {}",
@@ -709,18 +710,19 @@ fn render(
             &clean_text(&body),
             max_line.saturating_sub(head.chars().count()),
         );
+        let line = format!("{head}{text}");
+        if used + line.len() + 1 > room {
+            break;
+        }
+        // Only for what is shown.
         let neighbors = if near > 0 {
             m.neighbors(r, near)
         } else {
             Vec::new()
         };
-        let mut line = format!("{head}{text}");
         if !full && !neighbors.is_empty() {
             let ids: Vec<String> = neighbors.iter().map(|n| format!("m{}", n.id.0)).collect();
-            line.push_str(&format!(" · cerca: {}", ids.join(", ")));
-        }
-        if used + line.len() + 1 > room {
-            break;
+            ids_after.push((lines.len(), format!(" · cerca: {}", ids.join(", "))));
         }
         used += line.len() + 1;
         lines.push(line);
@@ -746,6 +748,13 @@ fn render(
                     break;
                 }
             }
+        }
+    }
+    // Neighbor ids go in the room the results left: they never cost a result.
+    for (at, ids) in ids_after {
+        if used + ids.len() <= room {
+            used += ids.len();
+            lines[at].push_str(&ids);
         }
     }
     let left = rows.len() - shown;
@@ -816,6 +825,37 @@ mod tests {
         assert_eq!(merge_ids("12, m15"), Some(vec![12, 15]));
         for bad in ["12", "12, 12", "1,2,3,4,5,6", "doce, trece", "0, 3", ""] {
             assert_eq!(merge_ids(bad), None, "{bad}");
+        }
+    }
+
+    // Neighbor ids never cost a search a result: a line that does not fit with them goes without.
+    #[test]
+    fn neighbor_ids_never_push_a_result_out() {
+        use crate::agent::{Draft, EmbedModel, Memory, Place};
+        for len in (200..600).step_by(7) {
+            let t = tempfile::tempdir().unwrap();
+            let m = Memory::open_write(t.path(), &EmbedModel::none(), None, "agente").unwrap();
+            let rows: Vec<MemoryRow> = (0..6)
+                .map(|i| {
+                    let text = format!("{i} {}", "é".repeat(len));
+                    let id = m
+                        .save(
+                            &Draft::plain(&text, MemoryType::Semantic),
+                            "s",
+                            Place::Personal,
+                            false,
+                        )
+                        .unwrap()
+                        .memory;
+                    m.get(id).unwrap()
+                })
+                .collect();
+            let shown = |near: usize| {
+                let a = render(&m, &rows, false, None, MAX_ANSWER_BYTES, false, near);
+                assert!(a.len() <= MAX_ANSWER_BYTES);
+                a.lines().filter(|l| l.starts_with("[m")).count()
+            };
+            assert_eq!(shown(NEAR_SEARCH), shown(0), "memories of {len} characters");
         }
     }
 }

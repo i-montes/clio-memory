@@ -121,6 +121,9 @@ pub struct Sureness {
     pub confidence: f32,
 }
 
+/// Words of a memory asked when its neighbors are found by text.
+const NEIGHBOR_QUERY_WORDS: usize = 32;
+
 /// The memory engine: one write path (`propose`), reads, and reversible changes.
 pub struct Engine {
     store: Box<dyn Store>,
@@ -2089,6 +2092,7 @@ impl Engine {
             limit: k + 1,
             ..SearchOpts::default()
         };
+        let query = crate::stem::about(&row.content, NEIGHBOR_QUERY_WORDS);
         let mut found: Vec<(MemoryId, f32)> = Vec::new();
         for &scope in scopes {
             match (&model, &vector) {
@@ -2097,7 +2101,7 @@ impl Engine {
                 }
                 _ => found.extend(
                     self.store
-                        .search(scope, &row.content, &opts)?
+                        .search(scope, &query, &opts)?
                         .into_iter()
                         .map(|h| (h.memory.id, h.score as f32)),
                 ),

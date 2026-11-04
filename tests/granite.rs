@@ -2,7 +2,8 @@
 #![allow(clippy::unwrap_used)] // tests: panicking is the failure mode
 //! Granite 311M through ONNX Runtime. These need the model files (`CLIO_MEMORY_GRANITE_DIR`:
 //! `tokenizer.json` and `model.onnx` and/or `model_quint8_avx2.onnx`) and an ONNX Runtime
-//! library (installed, or `ORT_DYLIB_PATH`); without them they say so and pass.
+//! library (the one `setup model` puts beside the model, `ORT_DYLIB_PATH`, or the system's);
+//! without them they say so and pass.
 
 use std::path::{Path, PathBuf};
 

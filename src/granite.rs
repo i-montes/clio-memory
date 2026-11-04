@@ -1,5 +1,6 @@
-//! Granite Embedding 311M multilingual R2 (IBM, Apache-2.0) through the ONNX Runtime installed on
-//! the machine. With a runtime that has CUDA it runs on the GPU, otherwise on the CPU, always with
+//! Granite Embedding 311M multilingual R2 (IBM, Apache-2.0) through ONNX Runtime: the one `setup
+//! model` leaves beside the models (`onnxruntime/`), else `ORT_DYLIB_PATH`, else the system's. With
+//! a runtime that has CUDA it runs on the GPU, otherwise (or when the GPU fails) on the CPU, always with
 //! the full model (`model.onnx`): on the CPU it takes ~26 ms per memory and ranks better than the
 //! quantized one (90 % against 85 % first hits), which is only used when it is the only file. The
 //! vector is the CLS token's, its first 384 components (Matryoshka), L2-normalized: the 384 of
@@ -32,24 +33,30 @@ fn err(e: impl std::fmt::Display) -> Error {
     Error::Embedding(format!("granite: {e}"))
 }
 
-/// The ONNX Runtime library, loaded once per process: `ORT_DYLIB_PATH`, else the system's
-/// `libonnxruntime`. A missing library is an error here, never a panic later.
+/// The ONNX Runtime library, loaded once per process. A missing library is an error here, never a
+/// panic later.
 static ENV: OnceLock<std::result::Result<Environment, String>> = OnceLock::new();
 
-fn env() -> Result<&'static Environment> {
+fn dylib() -> String {
+    format!(
+        "{}onnxruntime{}",
+        std::env::consts::DLL_PREFIX,
+        std::env::consts::DLL_SUFFIX
+    )
+}
+
+/// `ORT_DYLIB_PATH`, else the runtime `setup model` installed in `runtime`, else the system's.
+fn runtime_lib(runtime: &Path) -> PathBuf {
+    std::env::var_os("ORT_DYLIB_PATH")
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| Some(runtime.join("ort/lib").join(dylib())).filter(|p| p.is_file()))
+        .unwrap_or_else(|| PathBuf::from(dylib()))
+}
+
+fn env(runtime: &Path) -> Result<&'static Environment> {
     ENV.get_or_init(|| {
-        let path = std::env::var_os("ORT_DYLIB_PATH")
-            .filter(|p| !p.is_empty())
-            .map_or_else(
-                || {
-                    PathBuf::from(format!(
-                        "{}onnxruntime{}",
-                        std::env::consts::DLL_PREFIX,
-                        std::env::consts::DLL_SUFFIX
-                    ))
-                },
-                PathBuf::from,
-            );
+        let path = runtime_lib(runtime);
         ort::init_from(&path)
             .map_err(|e| format!("no se pudo cargar ONNX Runtime ({}): {e}", path.display()))?
             .build()
@@ -59,9 +66,31 @@ fn env() -> Result<&'static Environment> {
     .map_err(err)
 }
 
-/// The runtime has CUDA (whether the GPU takes a session is only known when it does).
-fn cuda() -> bool {
-    ep::CUDA::is_available().unwrap_or(false)
+/// The runtime has CUDA (whether the GPU takes a session is only known when it does). The CUDA and
+/// cuDNN libraries `setup model` brought are loaded first, so the provider finds them; the
+/// system's are found by name.
+fn cuda(runtime: &Path) -> bool {
+    if !ep::CUDA::is_available().unwrap_or(false) {
+        return false;
+    }
+    let libs: Vec<PathBuf> = std::fs::read_dir(runtime)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path().join("lib"))
+        .collect();
+    for name in ep::cuda::CUDA_DYLIBS.iter().chain(ep::cuda::CUDNN_DYLIBS) {
+        if let Some(p) = libs.iter().map(|d| d.join(name)).find(|p| p.is_file()) {
+            // A library that does not load leaves the provider to fail, and the CPU to run.
+            let _ = ort::util::preload_dylib(p);
+        }
+    }
+    true
+}
+
+/// Where `setup model` leaves the runtime: beside the model's folder.
+fn runtime_of(dir: &Path) -> PathBuf {
+    dir.parent().unwrap_or(dir).join("onnxruntime")
 }
 
 struct Loaded {
@@ -90,8 +119,9 @@ impl Granite {
         if !dir.join("tokenizer.json").is_file() {
             return Err(err(format!("no tokenizer.json in {}", dir.display())));
         }
-        env()?;
-        let gpu = file == FULL && cuda();
+        let runtime = runtime_of(dir);
+        env(&runtime)?;
+        let gpu = file == FULL && cuda(&runtime);
         let (dir, file) = (dir.to_path_buf(), file.to_owned());
         let load = move || read(&dir, &file, gpu);
         let first = load()?;
@@ -126,7 +156,7 @@ fn read(dir: &Path, file: &str, gpu: bool) -> Result<(Loaded, bool)> {
     tokenizer.with_padding(Some(PaddingParams::default()));
     let path = dir.join(file);
     let open = |cuda: bool| -> Result<Session> {
-        let builder = Session::builder(env()?).map_err(err)?;
+        let builder = Session::builder(env(&runtime_of(dir))?).map_err(err)?;
         let mut builder = if cuda {
             builder
                 .with_execution_providers([ep::CUDA::default().build().error_on_failure()])

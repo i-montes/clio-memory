@@ -128,17 +128,41 @@ fn setup_claude_code(replace: bool, claude_md: Option<bool>) -> Result<Vec<Strin
 }
 
 fn setup_model(potion: bool) -> Result<Vec<String>, String> {
-    use clio_memory::setup::{GRANITE, POTION, curl_fetch, install_model};
+    use clio_memory::setup::{
+        GRANITE, POTION, RUNTIME_DIR, curl_fetch, curl_get, install_model, install_runtime,
+        runtime_here, tar_unpack,
+    };
     let spec = if potion { &POTION } else { &GRANITE };
-    let dest = home()?.join(spec.dir);
+    let home = home()?;
+    let dest = home.join(spec.dir);
     let curl = std::path::PathBuf::from("curl");
     let mut said = install_model(&dest, &spec.pairs(), &curl_fetch(&curl, spec))?;
     said.push(format!("modelo listo en {}", dest.display()));
     if !potion {
-        said.push(
-            "usa la GPU si ONNX Runtime tiene CUDA (Arch: onnxruntime-cuda), si no el procesador (onnxruntime-cpu)"
-                .into(),
-        );
+        // What Granite runs on: the CPU runtime, or with an NVIDIA card the GPU one and the CUDA
+        // libraries the system lacks.
+        let runtime = runtime_here();
+        if runtime.is_empty() {
+            said.push("no hay ONNX Runtime publicado para este sistema: se usará el modelo estático o el texto".into());
+        } else {
+            let gpu = runtime.len() > 1 || runtime[0].url.contains("gpu");
+            let root = home.join(RUNTIME_DIR);
+            said.extend(install_runtime(
+                &root,
+                &runtime,
+                &|url, to| curl_get(&curl, url, to),
+                &tar_unpack,
+            )?);
+            said.push(format!(
+                "runtime listo en {} ({})",
+                root.display(),
+                if gpu {
+                    "GPU, y el procesador si la GPU no responde"
+                } else {
+                    "procesador"
+                }
+            ));
+        }
     }
     Ok(said)
 }

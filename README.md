@@ -42,7 +42,7 @@ No toca otros servidores MCP ni otras skills. Si ya hay algo llamado `clio-memor
 
 `setup model` descarga **Granite Embedding 311M multilingual R2** (IBM, Apache-2.0; 1,25 GB), fijado por revisión y sha256. Busca por significado, no por palabra: en la prueba de `bench/embeddings` acierta el recuerdo correcto en primer lugar el 90 % de las veces, contra el 40 % del modelo estático anterior. Usa los primeros 384 de sus 768 componentes, que ordenan igual de bien y ocupan la mitad.
 
-Corre con el ONNX Runtime instalado en la máquina (no se descarga nada al compilar): en Arch, `onnxruntime-cuda` para usar la GPU u `onnxruntime-cpu` para el procesador; en macOS, `brew install onnxruntime`. Otra ruta se da con `ORT_DYLIB_PATH`. Con CUDA usa la GPU; si no hay, o si la GPU falla, el procesador, y lo dice una vez. En el procesador tarda unos 26 ms por recuerdo.
+No hay que instalar nada más: `setup model` baja también lo que el modelo necesita para correr, fijado por sha256, en `~/.cache/clio-models/onnxruntime/`. Si hay una tarjeta NVIDIA, baja ONNX Runtime con CUDA, cuDNN y las bibliotecas de CUDA que el sistema no tenga. Si no hay tarjeta, solo ONNX Runtime para el procesador (10 MB). Si la GPU no responde, por el motivo que sea, usa el procesador y lo dice una vez. Con una RTX 4060 tarda unos 4 ms por recuerdo; en el procesador, unos 27 ms.
 
 `setup model potion` instala el modelo estático anterior (`potion-multilingual-128M`, liviano y sin ONNX Runtime). Se usa el mejor que esté instalado: Granite, si no potion, si no texto. Cada vector se guarda con el nombre de su modelo, así que al cambiar de modelo la cola calcula los que faltan y nunca se comparan vectores de dos modelos.
 

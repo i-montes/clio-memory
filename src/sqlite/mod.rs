@@ -2328,6 +2328,22 @@ impl Store for SqliteStore {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
+    fn vector_of(&self, id: MemoryId, model: &str) -> Result<Option<Vec<f32>>> {
+        let conn = self.reader()?;
+        let blob: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT vec FROM vectors WHERE memory = ?1 AND model = ?2 AND dim > 0",
+                params![id.0, model],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(blob.map(|b| {
+            b.chunks_exact(4)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect()
+        }))
+    }
+
     fn put_vectors(&self, model: &str, dim: usize, vectors: &[(MemoryId, Vec<f32>)]) -> Result<()> {
         let mut conn = self.writer()?;
         let tx = conn.transaction()?;

@@ -294,7 +294,7 @@ impl Engine {
     /// The active memories of `scope` most like `content`, best first. Empty without an embedder,
     /// when the embedder fails or cannot represent the text, when a store read fails, and for
     /// memories that have no vector yet: a decider gets less context, never a failed write.
-    fn neighbors(&self, scope: ScopeId, content: &str) -> Vec<Neighbor> {
+    fn decider_neighbors(&self, scope: ScopeId, content: &str) -> Vec<Neighbor> {
         let Some(embedder) = &self.embedder else {
             return Vec::new();
         };
@@ -1362,7 +1362,7 @@ impl Engine {
                 },
                 neighbors: {
                     let _s = span!("neighbors");
-                    self.neighbors(p.scope, &row.content)
+                    self.decider_neighbors(p.scope, &row.content)
                 },
             };
             let (applied, log) = self.consult(&question, now);
@@ -2035,6 +2035,87 @@ impl Engine {
             confidence,
             at: self.clock.now(),
         })
+    }
+
+    /// Copies the judged relations of `from` to `to` (after a correction or a merge), keeping who
+    /// judged them and how sure. A contradiction is not copied (correcting usually resolves it),
+    /// nor a relation to `to` itself or to a memory `to` is already related to. Copied, not
+    /// moved: undoing the correction brings `from` back with its relations. Returns how many.
+    pub fn copy_relations(&self, from: MemoryId, to: MemoryId) -> Result<usize> {
+        let _g = self.write_guard();
+        let had: Vec<MemoryId> = self
+            .store
+            .relations_of(to)?
+            .iter()
+            .map(|r| if r.source == to { r.target } else { r.source })
+            .collect();
+        let mut copied = 0;
+        for r in self.store.relations_of(from)? {
+            let other = if r.source == from { r.target } else { r.source };
+            if r.relation == Relation::ConflictsWith || other == to || had.contains(&other) {
+                continue;
+            }
+            let (source, target) = if r.source == from {
+                (to, other)
+            } else {
+                (other, to)
+            };
+            self.store.put_relation(&RelationRow {
+                source,
+                target,
+                ..r
+            })?;
+            copied += 1;
+        }
+        Ok(copied)
+    }
+
+    /// The memories nearest to `id` in `scopes`, best first, with their score: active and current
+    /// ones (the search's visibility), never `id` itself. By the current model's vectors when `id`
+    /// has one; otherwise by text search with its content, so a memory is never alone.
+    pub fn neighbors(
+        &self,
+        id: MemoryId,
+        scopes: &[ScopeId],
+        k: usize,
+    ) -> Result<Vec<(MemoryRow, f32)>> {
+        let row = self.store.get(id)?;
+        let model = self.embedder.as_ref().map(|e| e.model_id().to_owned());
+        let vector = match &model {
+            Some(m) => self.store.vector_of(id, m)?,
+            None => None,
+        };
+        let opts = SearchOpts {
+            limit: k + 1,
+            ..SearchOpts::default()
+        };
+        let mut found: Vec<(MemoryId, f32)> = Vec::new();
+        for &scope in scopes {
+            match (&model, &vector) {
+                (Some(m), Some(v)) => {
+                    found.extend(self.store.nearest(scope, m, v, &opts, k + 1)?)
+                }
+                _ => found.extend(
+                    self.store
+                        .search(scope, &row.content, &opts)?
+                        .into_iter()
+                        .map(|h| (h.memory.id, h.score as f32)),
+                ),
+            }
+        }
+        found.retain(|(m, _)| *m != id);
+        found.sort_by(|a, b| b.1.total_cmp(&a.1));
+        Ok(found
+            .into_iter()
+            .filter_map(|(m, s)| {
+                self.store
+                    .get(m)
+                    .ok()
+                    .filter(|r| r.state == State::Active)
+                    .map(|r| (r, s))
+            })
+            .take(k)
+            .collect())
     }
 
     /// Every judged relation that names this memory, the newest first.

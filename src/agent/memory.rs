@@ -766,7 +766,7 @@ impl Memory {
         let home = self.scope_of(Place::Project).unwrap_or(self.scope);
         let recent = self.engine.recent(home, 30).map_err(fail)?;
         let mut out: Vec<MemoryRow> = Vec::new();
-        let mut push = |r: MemoryRow, out: &mut Vec<MemoryRow>| {
+        let push = |r: MemoryRow, out: &mut Vec<MemoryRow>| {
             if !out.iter().any(|o| o.id == r.id) {
                 out.push(r);
             }

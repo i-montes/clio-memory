@@ -128,10 +128,18 @@ impl ClaudeCode<'_> {
     }
 
     fn claude(&self, args: &[&str]) -> Result<String, String> {
-        let out = Command::new(&self.claude)
-            .args(args)
-            .output()
-            .map_err(|e| e.to_string())?;
+        // «Text file busy» (ETXTBSY): the program was just written and another thread's child
+        // still holds it for a moment; it is there, so try again.
+        let mut tries = 0;
+        let out = loop {
+            match Command::new(&self.claude).args(args).output() {
+                Err(e) if e.raw_os_error() == Some(26) && tries < 50 => {
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                other => break other.map_err(|e| e.to_string())?,
+            }
+        };
         if out.status.success() {
             Ok(String::from_utf8_lossy(&out.stdout).into_owned())
         } else {

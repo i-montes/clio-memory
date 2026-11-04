@@ -1,0 +1,60 @@
+{"id": 1, "text": "Quién: la persona se llama Marta Rivas y vive en Mompox, Bolívar, Colombia"}
+{"id": 2, "text": "Preferencia: quiere respuestas cortas, en español, sin listas largas ni relleno"}
+{"id": 3, "text": "Preferencia: cada cambio va en su propia rama con un PR; las fusiones solo cuando él lo pide"}
+{"id": 4, "text": "Preferencia: escribir las pruebas antes del código y comprobar que fallan primero"}
+{"id": 5, "text": "Qué: el proyecto usa PostgreSQL 16 para guardar los pedidos · Por qué: soporte de JSON y replicación lógica"}
+{"id": 6, "text": "Qué: los reportes de analítica corren sobre PostgreSQL 15 en un servidor aparte · Por qué: no cargar la base principal"}
+{"id": 7, "text": "Qué: el caché de sesiones está en Redis con expiración de 30 minutos"}
+{"id": 8, "text": "Qué: el despliegue se hace con docker compose en un VPS de Hetzner · Dónde: infra/vps"}
+{"id": 9, "text": "Error: el contenedor de la API arrancaba antes que la base y fallaba · Causa: compose no espera sin healthcheck · Arreglo: healthcheck y depends_on con condition service_healthy"}
+{"id": 10, "text": "Error: las pruebas de macOS fallaban por rutas · Causa: los directorios temporales son enlaces simbólicos · Arreglo: canonicalizar la ruta antes de comparar"}
+{"id": 11, "text": "Aprendido: nunca usar cargo +nightly porque instala un toolchain de 1.5 GB sin pedirlo"}
+{"id": 12, "text": "Aprendido: el hook de gitleaks bloquea literales con forma de llave incluso en pruebas; partirlos con concat!"}
+{"id": 13, "text": "Configuración: el modelo de vectores vive en ~/.cache/clio-models/potion-multilingual-128M"}
+{"id": 14, "text": "Configuración: el archivo de memoria compartido es ~/.local/share/clio/memory.db, con permisos 0600"}
+{"id": 15, "text": "Decisión: Jev es opcional y solo vive en Clio; decide antes de guardar si algo es inseguro"}
+{"id": 16, "text": "Decisión: la memoria es global; el proyecto es solo una marca de cada recuerdo"}
+{"id": 17, "text": "Decisión: olvidar manda el recuerdo a cuarentena y conserva su registro; no se borra"}
+{"id": 18, "text": "Configuración: la tarjeta gráfica es una RTX 4060 con 8 GB; se activó Resizable BAR en la BIOS"}
+{"id": 19, "text": "Error: Chrome se caía y la GPU quedaba bloqueada · Causa: la ventana BAR1 de 256 MB se agotaba · Arreglo: Above 4G Decoding y Resizable BAR"}
+{"id": 20, "text": "Preferencia: le gusta que se usen los tests de mutación para verificar que una prueba sirve"}
+{"id": 21, "text": "Qué: el frontend está hecho en Next.js con Tailwind y se publica en Vercel"}
+{"id": 22, "text": "Qué: los pagos se procesan con Stripe; los webhooks se verifican con la firma del encabezado"}
+{"id": 23, "text": "Error: los webhooks de pagos llegaban dos veces · Causa: reintentos del proveedor · Arreglo: guardar el id del evento y no procesar duplicados"}
+{"id": 24, "text": "Decisión: el login se hace con enlaces mágicos por correo, sin contraseñas"}
+{"id": 25, "text": "Qué: los correos transaccionales salen por Postmark"}
+{"id": 26, "text": "Configuración: el servidor de pruebas escucha en el puerto 8080 y el de producción en el 443"}
+{"id": 27, "text": "Procedimiento: para publicar una versión, correr las pruebas, etiquetar con vX.Y.Z y empujar la etiqueta"}
+{"id": 28, "text": "Procedimiento: para restaurar la base, detener la API, cargar el último respaldo de restic y volver a arrancar"}
+{"id": 29, "text": "Configuración: los respaldos se hacen con restic cada noche a un disco externo"}
+{"id": 30, "text": "Quién: trabaja como desarrollador independiente y también hace un canal de YouTube de tecnología"}
+{"id": 31, "text": "Preferencia: los guiones del canal van en español neutro, con un gancho en los primeros diez segundos"}
+{"id": 32, "text": "Qué: el canal se llama Tecnología Clara y trata de inteligencia artificial y tecnología, sin mostrar la cara"}
+{"id": 33, "text": "Decisión: el agente Clio corre sus comandos dentro de una jaula bwrap sin red"}
+{"id": 34, "text": "Error: el chat se congelaba con salidas enormes · Causa: el ajuste de líneas era cuadrático · Arreglo: ajuste lineal y topes de memoria por evento"}
+{"id": 35, "text": "Aprendido: verificar siempre con --all-features porque hay pruebas detrás de características opcionales"}
+{"id": 36, "text": "Qué: la búsqueda de productos usa índices de texto completo de Postgres con unaccent para el español"}
+{"id": 37, "text": "Decisión: las imágenes de productos se guardan en un bucket S3 compatible de Cloudflare R2"}
+{"id": 38, "text": "Error: las imágenes subidas desde el móvil salían rotadas · Causa: se ignoraba la orientación EXIF · Arreglo: aplicar la orientación al procesar"}
+{"id": 39, "text": "Configuración: la zona horaria del servidor es UTC y la de la persona es America/Bogota"}
+{"id": 40, "text": "Preferencia: no quiere que se instalen dependencias nuevas sin preguntar"}
+{"id": 41, "text": "Qué: el monitoreo de errores en producción se hace con Sentry"}
+{"id": 42, "text": "Error: la API devolvía 502 de vez en cuando · Causa: el proceso se quedaba sin memoria por imágenes grandes · Arreglo: redimensionar en streaming"}
+{"id": 43, "text": "Decisión: los precios se guardan como enteros en centavos, nunca como números de coma flotante"}
+{"id": 44, "text": "Qué: la app móvil está hecha con Expo y React Native"}
+{"id": 45, "text": "Aprendido: en Expo, las variables de entorno públicas deben empezar con EXPO_PUBLIC_"}
+{"id": 46, "text": "Quién: su perro se llama Rocco y es un labrador de cuatro años"}
+{"id": 47, "text": "Preferencia: trabaja de noche y prefiere que no se le programen reuniones antes de las diez"}
+{"id": 48, "text": "Qué: el editor que usa es Neovim, en Omarchy sobre Arch Linux con Hyprland"}
+{"id": 49, "text": "Decisión: los secretos viven en un baúl cifrado con Argon2id; nunca en archivos del repositorio"}
+{"id": 50, "text": "Error: un secreto con espacios se colaba en la memoria · Causa: se revisaba antes de aplanar a una línea · Arreglo: revisar el texto tal cual y aplanado"}
+{"id": 51, "text": "Qué: el modelo de lenguaje por defecto se llama a través de opencode con una API compatible con OpenAI"}
+{"id": 52, "text": "Configuración: Tailscale conecta el PC con el VPS; el SSH de Tailscale está activo"}
+{"id": 53, "text": "Decisión: el cliente de la tienda es una cooperativa de artesanos de la región"}
+{"id": 54, "text": "Qué: los pedidos de la cooperativa se envían por Servientrega con número de guía en el correo"}
+{"id": 55, "text": "Error: los correos de confirmación caían en spam · Causa: faltaban los registros SPF y DKIM del dominio · Arreglo: configurarlos en el DNS"}
+{"id": 56, "text": "Aprendido: la API de GitHub a veces responde 502 al fusionar; reintentar con espera y verificar el estado del PR"}
+{"id": 57, "text": "Qué: la documentación del proyecto está en docs/ y los registros históricos no se modifican"}
+{"id": 58, "text": "Preferencia: le gusta ver una tabla corta cuando se comparan opciones"}
+{"id": 59, "text": "Decisión: el modelo de vectores debe poder usar la GPU si existe y si no el procesador"}
+{"id": 60, "text": "Qué: el chat del agente corre con Pi 1.4.0 y una extensión de guardia propia"}

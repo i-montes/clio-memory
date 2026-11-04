@@ -261,9 +261,9 @@ fn the_cli_has_no_way_to_register_actors_create_scopes_or_set_retention() {
     }
 }
 
-#[cfg(not(feature = "model2vec"))]
+#[cfg(not(any(feature = "model2vec", feature = "granite")))]
 #[test]
-fn the_model_flag_needs_the_model2vec_feature() {
+fn the_model_flag_needs_a_model_feature() {
     let f = populated();
     let o = run(
         Some(&f.path),
@@ -271,6 +271,21 @@ fn the_model_flag_needs_the_model2vec_feature() {
     );
     assert_eq!(code(&o), 2);
     assert!(err(&o).contains("model2vec"));
+}
+
+#[cfg(feature = "granite")]
+#[test]
+fn the_model_flag_takes_a_granite_folder() {
+    let Some(dir) = std::env::var_os("CLIO_MEMORY_GRANITE_DIR") else {
+        eprintln!("skipped: CLIO_MEMORY_GRANITE_DIR is not set");
+        return;
+    };
+    let f = populated();
+    let o = run(
+        Some(&f.path),
+        &["--model", dir.to_str().unwrap(), "recall", "main", "x"],
+    );
+    assert_eq!(code(&o), 0, "{}", err(&o));
 }
 
 #[test]

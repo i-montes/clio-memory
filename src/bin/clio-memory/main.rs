@@ -21,9 +21,9 @@ fn main() -> ExitCode {
             ..
         })) => done(setup_claude_code(replace, claude_md)),
         Ok(args::Parsed::Run(args::Cli {
-            command: args::Command::SetupModel,
+            command: args::Command::SetupModel { potion },
             ..
-        })) => done(setup_model()),
+        })) => done(setup_model(potion)),
         Ok(args::Parsed::Run(cli)) if matches!(cli.command, args::Command::Mcp) => {
             match mcp(&cli.db) {
                 Ok(()) => ExitCode::SUCCESS,
@@ -127,11 +127,18 @@ fn setup_claude_code(replace: bool, claude_md: Option<bool>) -> Result<Vec<Strin
     .run()
 }
 
-fn setup_model() -> Result<Vec<String>, String> {
-    use clio_memory::setup::{MODEL_FILES, curl_fetch, install_model};
-    let dest = home()?.join(clio_memory::agent::memory::MODEL_REL);
+fn setup_model(potion: bool) -> Result<Vec<String>, String> {
+    use clio_memory::setup::{GRANITE, POTION, curl_fetch, install_model};
+    let spec = if potion { &POTION } else { &GRANITE };
+    let dest = home()?.join(spec.dir);
     let curl = std::path::PathBuf::from("curl");
-    let mut said = install_model(&dest, &MODEL_FILES, &curl_fetch(&curl))?;
+    let mut said = install_model(&dest, &spec.pairs(), &curl_fetch(&curl, spec))?;
     said.push(format!("modelo listo en {}", dest.display()));
+    if !potion {
+        said.push(
+            "usa la GPU si ONNX Runtime tiene CUDA (Arch: onnxruntime-cuda), si no el procesador (onnxruntime-cpu)"
+                .into(),
+        );
+    }
     Ok(said)
 }

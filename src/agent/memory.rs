@@ -201,15 +201,24 @@ fn private_dir(dir: &Path) -> Res<()> {
         .map_err(|e| format!("{}: {e}", dir.display()))
 }
 
-#[cfg(feature = "model2vec")]
+/// The model in `dir`: Granite (ONNX files) or the static model (`model.safetensors`).
 fn load_embedder(dir: &Path) -> Result<Arc<dyn crate::Embedder>, String> {
-    crate::Model2VecEmbedder::from_dir(dir)
+    let onnx = ["model.onnx", "model_quint8_avx2.onnx"]
+        .iter()
+        .any(|f| dir.join(f).is_file());
+    if onnx {
+        #[cfg(feature = "granite")]
+        return crate::Granite::load(dir)
+            .map(|e| Arc::new(e) as Arc<dyn crate::Embedder>)
+            .map_err(|e| e.to_string());
+        #[cfg(not(feature = "granite"))]
+        return Err("clio-memory se compiló sin la característica granite".into());
+    }
+    #[cfg(feature = "model2vec")]
+    return crate::Model2VecEmbedder::from_dir(dir)
         .map(|e| Arc::new(e) as Arc<dyn crate::Embedder>)
-        .map_err(|e| e.to_string())
-}
-
-#[cfg(not(feature = "model2vec"))]
-fn load_embedder(_: &Path) -> Result<Arc<dyn crate::Embedder>, String> {
+        .map_err(|e| e.to_string());
+    #[cfg(not(feature = "model2vec"))]
     Err("clio-memory se compiló sin la característica model2vec".into())
 }
 
@@ -224,17 +233,23 @@ fn quota(max: u32) -> Quota {
 }
 
 /// The embedding model: loaded at most once per process (reading it takes seconds, and a run
-/// opens the memory twice), and only when something asks for it. Share it with an `Arc`.
+/// opens the memory twice), and only when something asks for it. Share it with an `Arc`. Several
+/// folders are tried in order: the first that loads is the model.
 pub struct EmbedModel {
-    dir: Option<PathBuf>,
+    dirs: Vec<PathBuf>,
     cell: OnceLock<Result<Arc<dyn crate::Embedder>, String>>,
 }
 
 impl EmbedModel {
     /// A model in `dir`, or none (`None`): memory then works by text only.
     pub fn new(dir: Option<PathBuf>) -> Arc<Self> {
+        Self::with_dirs(dir.into_iter().collect())
+    }
+
+    /// The first of `dirs` that loads.
+    pub fn with_dirs(dirs: Vec<PathBuf>) -> Arc<Self> {
         Arc::new(Self {
-            dir,
+            dirs,
             cell: OnceLock::new(),
         })
     }
@@ -242,7 +257,7 @@ impl EmbedModel {
     /// An embedder given by the caller (a host with its own model, a test).
     pub fn from_embedder(embedder: Arc<dyn crate::Embedder>) -> Arc<Self> {
         let model = Self {
-            dir: Some(PathBuf::from("<embedder>")),
+            dirs: vec![PathBuf::from("<embedder>")],
             cell: OnceLock::new(),
         };
         let _ = model.cell.set(Ok(embedder));
@@ -254,21 +269,43 @@ impl EmbedModel {
         Self::new(None)
     }
 
-    /// The model Clio would use in `home`: the local one when it is on disk.
+    /// The models installed in `home`, best first: Granite, then the static model.
     pub fn of_home(home: &Path) -> Arc<Self> {
-        Self::new(Some(Memory::model_dir(home)).filter(|m| m.is_dir()))
+        Self::with_dirs(
+            [crate::setup::GRANITE.dir, crate::setup::POTION.dir]
+                .iter()
+                .map(|d| home.join(d))
+                .filter(|d| d.is_dir())
+                .collect(),
+        )
+    }
+
+    /// The folders it tries, in order.
+    pub fn dirs(&self) -> &[PathBuf] {
+        &self.dirs
     }
 
     pub fn is_present(&self) -> bool {
-        self.dir.is_some()
+        !self.dirs.is_empty()
     }
 
-    fn get(&self) -> Result<Option<Arc<dyn crate::Embedder>>, String> {
-        let Some(dir) = &self.dir else {
+    /// The model, loaded the first time: the first folder that loads; `None` with no folder; the
+    /// reasons of every folder when none loads.
+    pub fn get(&self) -> Result<Option<Arc<dyn crate::Embedder>>, String> {
+        if self.dirs.is_empty() {
             return Ok(None);
-        };
+        }
         self.cell
-            .get_or_init(|| load_embedder(dir))
+            .get_or_init(|| {
+                let mut why = Vec::new();
+                for dir in &self.dirs {
+                    match load_embedder(dir) {
+                        Ok(e) => return Ok(e),
+                        Err(e) => why.push(format!("{}: {e}", dir.display())),
+                    }
+                }
+                Err(why.join("; "))
+            })
             .clone()
             .map(Some)
     }

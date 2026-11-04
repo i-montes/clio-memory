@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-use crate::agent::{EmbedModel, Memory, project};
+use crate::agent::{EmbedModel, project};
 use crate::tools::{Session, TOOLS, schema};
 
 /// The protocol versions this server speaks; any other is answered with the newest.
@@ -43,8 +43,7 @@ pub fn serve(
             }
             name
         });
-    let model_dir = Memory::model_dir(home);
-    let model = EmbedModel::new(Some(model_dir).filter(|d| d.is_dir()));
+    let model = EmbedModel::of_home(home);
     let mut state = State {
         data: data.to_path_buf(),
         project,

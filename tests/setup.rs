@@ -5,7 +5,7 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use clio_memory::setup::{ClaudeCode, MODEL_FILES, install_model};
+use clio_memory::setup::{ClaudeCode, POTION, install_model};
 
 /// A fake `claude` in `dir`: logs its arguments, answers `mcp get` from a file it keeps.
 fn fake_claude(dir: &Path) -> PathBuf {
@@ -192,7 +192,7 @@ fn the_model_is_installed_checked_and_not_fetched_twice() {
         2,
         "the good files are not fetched again"
     );
-    assert_eq!(MODEL_FILES.len(), 3);
+    assert_eq!(POTION.files.len(), 3);
 }
 
 #[test]

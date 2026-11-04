@@ -19,24 +19,81 @@ pub const CLAUDE_MD_LINE: &str =
     "- Mi memoria principal es clio-memory (MCP): úsala según la skill clio-memory.";
 const NAME: &str = "clio-memory";
 
-/// The default vector model: Hugging Face repository, pinned revision, and each file's sha256
-/// (the same as Clio's `infra/models/install-potion.*.sh`).
-pub const MODEL_REPO: &str = "minishlab/potion-multilingual-128M";
-pub const MODEL_REV: &str = "73908c3438cf03b6a01bcb9611d62b23d0726f08";
-pub const MODEL_FILES: [(&str, &str); 3] = [
-    (
-        "config.json",
-        "595e4cab2093732efd5dbe084fd5c1826b5eea693b73b4c1fd971672867d2e54",
-    ),
-    (
-        "tokenizer.json",
-        "19f1909063da3cfe3bd83a782381f040dccea475f4816de11116444a73e1b6a1",
-    ),
-    (
-        "model.safetensors",
-        "14b5eb39cb4ce5666da8ad1f3dc6be4346e9b2d601c073302fa0a31bf7943397",
-    ),
-];
+/// One file of a model: where it is in the repository, its name on disk, its sha256.
+pub struct ModelFile {
+    pub remote: &'static str,
+    pub local: &'static str,
+    pub sha256: &'static str,
+}
+
+/// A vector model as `setup model` installs it: Hugging Face repository, pinned revision, files,
+/// and the folder under the home it goes to.
+pub struct ModelSpec {
+    pub repo: &'static str,
+    pub rev: &'static str,
+    pub dir: &'static str,
+    pub files: &'static [ModelFile],
+}
+
+impl ModelSpec {
+    /// `(local name, sha256)` of each file, as `install_model` takes them.
+    pub fn pairs(&self) -> Vec<(&'static str, &'static str)> {
+        self.files.iter().map(|f| (f.local, f.sha256)).collect()
+    }
+
+    /// The download address of the file called `local` on disk.
+    pub fn url(&self, local: &str) -> Option<String> {
+        let f = self.files.iter().find(|f| f.local == local)?;
+        Some(format!(
+            "https://huggingface.co/{}/resolve/{}/{}",
+            self.repo, self.rev, f.remote
+        ))
+    }
+}
+
+/// The default model: Granite Embedding 311M multilingual R2 (IBM, Apache-2.0), the full ONNX
+/// model, on the GPU or the CPU (`bench/embeddings/results.md`).
+pub const GRANITE: ModelSpec = ModelSpec {
+    repo: "ibm-granite/granite-embedding-311m-multilingual-r2",
+    rev: "44399559930365213510b1ee2eb15ded83374f0e",
+    dir: ".cache/clio-models/granite-embedding-311m-multilingual-r2",
+    files: &[
+        ModelFile {
+            remote: "tokenizer.json",
+            local: "tokenizer.json",
+            sha256: "0087c868b33bad550a78a08d19798cfd7f713cde4f020803b8f51f405503e15f",
+        },
+        ModelFile {
+            remote: "onnx/model.onnx",
+            local: "model.onnx",
+            sha256: "75f9f258bf5013f5fe8a4dad61dd0fd16ac0cbaa7a106e3d3f41c2d04a42d541",
+        },
+    ],
+};
+
+/// The static model, the fallback (the same files as Clio's `infra/models/install-potion.*.sh`).
+pub const POTION: ModelSpec = ModelSpec {
+    repo: "minishlab/potion-multilingual-128M",
+    rev: "73908c3438cf03b6a01bcb9611d62b23d0726f08",
+    dir: ".cache/clio-models/potion-multilingual-128M",
+    files: &[
+        ModelFile {
+            remote: "config.json",
+            local: "config.json",
+            sha256: "595e4cab2093732efd5dbe084fd5c1826b5eea693b73b4c1fd971672867d2e54",
+        },
+        ModelFile {
+            remote: "tokenizer.json",
+            local: "tokenizer.json",
+            sha256: "19f1909063da3cfe3bd83a782381f040dccea475f4816de11116444a73e1b6a1",
+        },
+        ModelFile {
+            remote: "model.safetensors",
+            local: "model.safetensors",
+            sha256: "14b5eb39cb4ce5666da8ad1f3dc6be4346e9b2d601c073302fa0a31bf7943397",
+        },
+    ],
+};
 
 /// One run of `setup claude-code`.
 pub struct ClaudeCode<'a> {
@@ -204,10 +261,15 @@ pub fn install_model(
     Ok(said)
 }
 
-/// The real download, with `curl`, from the pinned revision.
-pub fn curl_fetch(curl: &Path) -> impl Fn(&str, &Path) -> Result<(), String> + '_ {
+/// The real download, with `curl`, from the model's pinned revision.
+pub fn curl_fetch<'a>(
+    curl: &'a Path,
+    spec: &'a ModelSpec,
+) -> impl Fn(&str, &Path) -> Result<(), String> + 'a {
     move |name, to| {
-        let url = format!("https://huggingface.co/{MODEL_REPO}/resolve/{MODEL_REV}/{name}");
+        let url = spec
+            .url(name)
+            .ok_or_else(|| format!("{name} no es un archivo del modelo"))?;
         let ok = Command::new(curl)
             .args(["-fL", "--retry", "3", "--progress-bar", "-o"])
             .arg(to)

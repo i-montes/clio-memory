@@ -35,6 +35,8 @@ mod token;
 mod transfer;
 mod vector;
 
+pub mod agent;
+
 pub use clock::{Clock, FixedClock, SystemClock};
 pub use decider::{Decider, NearDuplicateDecider};
 pub use embed::Embedder;

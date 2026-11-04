@@ -3,4 +3,4 @@
 pub mod memory;
 pub mod project;
 
-pub use memory::{Actors, Draft, EmbedModel, Memory, Place};
+pub use memory::{Actors, Draft, EmbedModel, Memory, Place, default_data};

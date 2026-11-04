@@ -19,7 +19,12 @@ fn run(db: Option<&Path>, args: &[&str]) -> Output {
         if let Some(db) = db {
             cmd.arg("--db").arg(db);
         }
-        let o = cmd.env("USER", "tester").args(args).output().unwrap();
+        let o = cmd
+            .env("USER", "tester")
+            .env("CLIO_MEMORY_DATA", "/nonexistent/clio-memory-test")
+            .args(args)
+            .output()
+            .unwrap();
         let locked = o.status.code() == Some(1)
             && String::from_utf8_lossy(&o.stderr).contains("another process owns the write lock");
         if !locked {
@@ -31,7 +36,11 @@ fn run(db: Option<&Path>, args: &[&str]) -> Output {
     if let Some(db) = db {
         cmd.arg("--db").arg(db);
     }
-    cmd.env("USER", "tester").args(args).output().unwrap()
+    cmd.env("USER", "tester")
+        .env("CLIO_MEMORY_DATA", "/nonexistent/clio-memory-test")
+        .args(args)
+        .output()
+        .unwrap()
 }
 
 fn out(o: &Output) -> String {
@@ -65,16 +74,21 @@ fn no_command_or_unknown_command_exits_2_with_usage() {
     let o = run(Some(&f.path), &["frobnicate"]);
     assert_eq!(code(&o), 2);
     assert!(err(&o).contains("frobnicate"));
+    // Without --db the shared file is used: here one that does not exist.
     let o = run(None, &["scopes"]);
-    assert_eq!(code(&o), 2);
-    assert!(err(&o).contains("--db"));
+    assert_eq!(code(&o), 1);
+    assert!(
+        err(&o).contains("/nonexistent/clio-memory-test/memory.db"),
+        "{}",
+        err(&o)
+    );
     let o = run(Some(&f.path), &["get", "not-an-id"]);
     assert_eq!(code(&o), 2);
     let o = run(Some(&f.path), &["list"]);
     assert_eq!(code(&o), 2, "list needs a scope");
     let o = run(None, &["--help"]);
     assert_eq!(code(&o), 0);
-    assert!(out(&o).contains("clio-memory --db"));
+    assert!(out(&o).contains("clio-memory [--db PATH]") && out(&o).contains("mcp"));
 }
 
 #[test]
@@ -795,4 +809,25 @@ fn purge_needs_confirmation_a_person_and_leaves_a_tombstone() {
     assert_eq!(code(&run(Some(&db), &["get", "99"])), 1);
     assert_eq!(code(&run(Some(&db), &["doctor"])), 0);
     assert_eq!(code(&run(Some(&db), &["purge"])), 2);
+}
+
+#[test]
+fn without_db_the_default_file_is_used() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let e = Engine::open(
+            &dir.path().join("memory.db"),
+            OpenMode::ReadWrite,
+            Arc::new(SystemClock),
+        )
+        .unwrap();
+        e.create_scope("main", "es").unwrap();
+    }
+    let o = Command::new(env!("CARGO_BIN_EXE_clio-memory"))
+        .env("CLIO_MEMORY_DATA", dir.path())
+        .arg("scopes")
+        .output()
+        .unwrap();
+    assert_eq!(code(&o), 0, "{}", err(&o));
+    assert!(out(&o).contains("main"), "{}", out(&o));
 }

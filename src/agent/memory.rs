@@ -94,6 +94,17 @@ pub struct Actors {
     pub own: ActorId,
 }
 
+/// The folder of the shared memory file: `$CLIO_MEMORY_DATA`, else `~/.local/share/clio` (Clio's).
+pub fn default_data() -> PathBuf {
+    match std::env::var_os("CLIO_MEMORY_DATA").filter(|v| !v.is_empty()) {
+        Some(d) => PathBuf::from(d),
+        None => std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default()
+            .join(".local/share/clio"),
+    }
+}
+
 /// The scope of the lessons: what was learned in one project and is worth knowing in any.
 pub const LESSONS: &str = "lecciones";
 /// A project's scope is this and the project's name.

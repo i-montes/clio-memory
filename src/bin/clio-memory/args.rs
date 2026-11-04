@@ -6,7 +6,11 @@ use std::path::PathBuf;
 use clio_memory::{JobState, MemoryId, MemoryType, OpId, Origin, Signal, State};
 
 pub const USAGE: &str = "\
-usage: clio-memory --db PATH [--actor NAME] [--model DIR] [--json] <command> [args]
+usage: clio-memory [--db PATH] [--actor NAME] [--model DIR] [--json] <command> [args]
+
+agents:
+  mcp                         serve the memory tools to an agent (MCP over stdin and stdout); the
+                              file is <folder>/memory.db, the project is the current folder's
 
 inspect (open the file read-only; never write):
   scopes                      list scopes
@@ -45,7 +49,8 @@ export (reads only):
   export PATH                 write the whole memory as JSON Lines to a new PATH (mode 0600)
 
 options:
-  --db PATH     the memory file (required)
+  --db PATH     the memory file (default: $CLIO_MEMORY_DATA/memory.db, else
+                ~/.local/share/clio/memory.db, the one Clio shares)
   --actor NAME  act as this person instead of cli:$USER (write commands)
   --model DIR   local model2vec model for recall and context (needs the model2vec feature)
   --json        machine-readable output where supported
@@ -56,6 +61,8 @@ pub struct UsageError(pub String);
 
 #[derive(Debug)]
 pub enum Command {
+    /// The MCP server for an agent.
+    Mcp,
     Scopes,
     Stats,
     Doctor,
@@ -339,6 +346,10 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, UsageErro
             rest.none()?;
             Command::Scopes
         }
+        "mcp" => {
+            rest.none()?;
+            Command::Mcp
+        }
         "stats" => {
             rest.none()?;
             Command::Stats
@@ -457,9 +468,9 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, UsageErro
         }
         other => return usage(format!("unknown command {other:?}")),
     };
-    let Some(db) = db else {
-        return usage("--db PATH is required");
-    };
+    let db = db.unwrap_or_else(|| {
+        clio_memory::agent::default_data().join(clio_memory::agent::memory::DB_FILE)
+    });
     #[cfg(not(feature = "model2vec"))]
     if model.is_some() {
         return usage("--model needs a build with the model2vec feature");

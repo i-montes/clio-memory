@@ -36,6 +36,7 @@ mod transfer;
 mod vector;
 
 pub mod agent;
+pub mod mcp;
 pub mod tools;
 
 pub use clock::{Clock, FixedClock, SystemClock};

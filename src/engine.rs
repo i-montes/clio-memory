@@ -1696,7 +1696,7 @@ impl Engine {
     /// PURGE: erases a memory's content everywhere (S-24, S-25) and leaves a tombstone. Only a
     /// person may do it, and it is never reachable from an agent or MCP. `reason` is stored in the
     /// clear: do not put the erased text in it. Revert cannot undo it. Copies of the file made
-    /// before (backups, exports) keep the content: see the README.
+    /// before (backups, exports) keep the content: see docs/motor.md.
     pub fn purge(&self, memory: MemoryId, actor: ActorId, reason: &str) -> Result<PurgeOutcome> {
         let span = span!(
             "purge",

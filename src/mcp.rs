@@ -31,13 +31,18 @@ pub fn serve(
     cwd: &Path,
     home: &Path,
 ) -> Result<(), String> {
-    let project = project::settle(data, cwd).map(|(name, _, note)| {
-        // To the client's log, where the person reads it.
-        if let Some(n) = note {
-            eprintln!("clio-memory mcp: {}", crate::agent::memory::clean_text(&n));
-        }
-        name
-    });
+    // Started in the person's home (or anywhere above it), there is no project: the person's.
+    let at_home = home.starts_with(cwd) && !home.as_os_str().is_empty();
+    let project = (!at_home)
+        .then(|| project::settle(data, cwd))
+        .flatten()
+        .map(|(name, _, note)| {
+            // To the client's log, where the person reads it.
+            if let Some(n) = note {
+                eprintln!("clio-memory mcp: {}", crate::agent::memory::clean_text(&n));
+            }
+            name
+        });
     let model_dir = Memory::model_dir(home);
     let model = EmbedModel::new(Some(model_dir).filter(|d| d.is_dir()));
     let mut state = State {

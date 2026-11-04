@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 520" font-family="system-ui, -apple-system, Segoe UI, sans-serif" role="img" aria-labelledby="t d">
+  <title id="t">Arquitectura de clio-memory</title>
+  <desc id="d">Los clientes (Claude Code por MCP, Clio con Jev) llegan a las herramientas y a la capa del agente, que usan el motor sobre un solo archivo SQLite compartido.</desc>
+  <style>
+    .bg { fill: #ffffff; }
+    .box { fill: #f4f6fb; stroke: #4a5a7a; stroke-width: 1.5; }
+    .core { fill: #e8eefb; stroke: #2f4a8a; stroke-width: 2; }
+    .file { fill: #fff6e5; stroke: #a0700a; stroke-width: 2; }
+    .ext { fill: #eef7ee; stroke: #3d7a3d; stroke-width: 1.5; }
+    .h { font-size: 15px; font-weight: 700; fill: #1b2333; }
+    .s { font-size: 12px; fill: #333c4f; }
+    .ln { stroke: #4a5a7a; stroke-width: 1.5; fill: none; }
+    .lab { font-size: 11px; fill: #4a5a7a; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #14171f; }
+      .box { fill: #1d2230; stroke: #8fa0c8; }
+      .core { fill: #1d2840; stroke: #9db4ee; }
+      .file { fill: #2e2614; stroke: #e0b04a; }
+      .ext { fill: #1b2a1d; stroke: #7cc27c; }
+      .h { fill: #eef1f8; }
+      .s { fill: #c8cfdd; }
+      .ln { stroke: #8fa0c8; }
+      .lab { fill: #8fa0c8; }
+    }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#4a5a7a"/>
+    </marker>
+  </defs>
+  <rect class="bg" width="760" height="520"/>
+
+  <rect class="ext" x="30" y="24" width="300" height="80" rx="10"/>
+  <text class="h" x="46" y="50">Claude Code (u otro agente)</text>
+  <text class="s" x="46" y="70">cliente MCP; firma como mcp:claude-code</text>
+  <text class="s" x="46" y="88">recibe instrucciones de uso y seguridad</text>
+
+  <rect class="ext" x="430" y="24" width="300" height="80" rx="10"/>
+  <text class="h" x="446" y="50">Clio (agente)</text>
+  <text class="s" x="446" y="70">firma como agente; Jev opcional revisa</text>
+  <text class="s" x="446" y="88">antes de guardar; baúl filtra secretos</text>
+
+  <rect class="box" x="30" y="140" width="300" height="104" rx="10"/>
+  <text class="h" x="46" y="166">clio-memory mcp · herramientas</text>
+  <text class="s" x="46" y="186">leer, guardar, corregir, olvidar, fijar,</text>
+  <text class="s" x="46" y="204">unir, deshacer lo propio; datos envueltos;</text>
+  <text class="s" x="46" y="222">topes: 20 lecturas, 30 guardados, 10 cambios</text>
+
+  <rect class="box" x="430" y="140" width="300" height="104" rx="10"/>
+  <text class="h" x="446" y="166">Capa del agente</text>
+  <text class="s" x="446" y="186">sitios: personal, lecciones, proyectos;</text>
+  <text class="s" x="446" y="204">lectura global con marca de sitio;</text>
+  <text class="s" x="446" y="222">un actor por agente, 500 escrituras/h</text>
+
+  <rect class="core" x="130" y="282" width="500" height="118" rx="12"/>
+  <text class="h" x="150" y="308">Motor</text>
+  <text class="s" x="150" y="330">registro de operaciones (todo se deshace) · reglas: nada espera revisión</text>
+  <text class="s" x="150" y="350">detector de secretos antes de escribir · cuotas por actor</text>
+  <text class="s" x="150" y="370">búsqueda por texto y vectores (modelo opcional) · cuarentena = lo olvidado</text>
+  <text class="s" x="150" y="390">PURGE, PROMOTE y REVERT de lo ajeno: solo la persona (CLI)</text>
+
+  <rect class="file" x="230" y="438" width="300" height="60" rx="10"/>
+  <text class="h" x="246" y="464">~/.local/share/clio/memory.db</text>
+  <text class="s" x="246" y="484">un solo archivo SQLite, 0600, compartido</text>
+
+  <path class="ln" d="M180 104 V138" marker-end="url(#a)"/>
+  <text class="lab" x="188" y="126">MCP (stdio)</text>
+  <path class="ln" d="M580 104 V138" marker-end="url(#a)"/>
+  <text class="lab" x="588" y="126">biblioteca</text>
+  <path class="ln" d="M330 192 H428" marker-end="url(#a)"/>
+  <path class="ln" d="M580 244 V280" marker-end="url(#a)"/>
+  <path class="ln" d="M180 244 V280" marker-end="url(#a)"/>
+  <path class="ln" d="M380 400 V436" marker-end="url(#a)"/>
+</svg>

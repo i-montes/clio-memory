@@ -226,3 +226,22 @@ fn a_newer_schema_is_refused_and_untouched() {
     }
     assert_eq!(std::fs::read(&path).unwrap(), before);
 }
+
+#[test]
+fn started_in_home_or_root_the_memories_are_the_persons() {
+    for place in ["home", "root"] {
+        let t = tempfile::tempdir().unwrap();
+        let home = t.path().join("imontes");
+        std::fs::create_dir_all(&home).unwrap();
+        let cwd = if place == "home" {
+            home.clone()
+        } else {
+            "/".into()
+        };
+        let input = call(1, "memory_current_project", json!({})).to_string() + "\n";
+        let mut out = Vec::new();
+        serve(input.as_bytes(), &mut out, t.path(), &cwd, &home).unwrap();
+        let a: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(text(&a), "(ninguno: lo personal)", "{place}");
+    }
+}

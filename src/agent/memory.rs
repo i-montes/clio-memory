@@ -239,6 +239,16 @@ impl EmbedModel {
         })
     }
 
+    /// An embedder given by the caller (a host with its own model, a test).
+    pub fn from_embedder(embedder: Arc<dyn crate::Embedder>) -> Arc<Self> {
+        let model = Self {
+            dir: Some(PathBuf::from("<embedder>")),
+            cell: OnceLock::new(),
+        };
+        let _ = model.cell.set(Ok(embedder));
+        Arc::new(model)
+    }
+
     /// No model, never loads anything.
     pub fn none() -> Arc<Self> {
         Self::new(None)
@@ -823,6 +833,28 @@ impl Memory {
             push(r, &mut out);
         }
         Ok(out)
+    }
+
+    /// Computes the vectors of everything waiting for one, the whole queue and not only what this
+    /// memory wrote: the queued job, then any memory still without a vector (one written by a
+    /// program with no model). How many vectors were stored; 0 with no model.
+    pub fn embed_queue(&self) -> Res<usize> {
+        if !self.embeddings {
+            return Ok(0);
+        }
+        self.need_write()?;
+        let m = |e: Error| explain(&e);
+        let before = self.engine.stats().map_err(m)?.vectors;
+        self.engine
+            .run_jobs(&crate::RunOpts {
+                max_jobs: 8,
+                allow_heavy: false,
+                only: Some(crate::JobKind::Embed),
+            })
+            .map_err(m)?;
+        while self.engine.embed_pending(256).map_err(m)? > 0 {}
+        let after = self.engine.stats().map_err(m)?.vectors;
+        Ok(usize::try_from(after.saturating_sub(before)).unwrap_or(usize::MAX))
     }
 
     /// What was forgotten (quarantine) in every place this memory reads.

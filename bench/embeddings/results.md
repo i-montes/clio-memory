@@ -88,3 +88,14 @@ Qwen3-Embedding-0.6B (referencia): 6
   - «¿puedo agregar una librería al proyecto sin consultar?» · puesto 2 · salió m57
   - «¿dónde se guardan las contraseñas y llaves del proyecto?» · puesto 2 · salió m57
   - «¿con qué transportadora se despachan los paquetes?» · puesto 2 · salió m25
+
+## En Rust (clio-memory, ONNX Runtime 1.31 en CPU)
+
+Medido con `examples/granite_time.rs`, un recuerdo de ~150 caracteres, mediana de 30:
+
+| Archivo | Dispositivo | ms por recuerdo | Carga | Acierto 1.º (`tests/granite.rs`) |
+|---|---|---|---|---|
+| `model.onnx` (completo) | CPU | 26 | 2,3 s | 90 % |
+| `model_quint8_avx2.onnx` (cuantizado) | CPU | 18 | 1,5 s | 85 % |
+
+Decisión: el completo siempre (GPU o CPU); el cuantizado solo si es el único archivo. Los vectores en Rust coinciden con los de sentence-transformers en float32 (coseno ≥ 0,999, `tests/fixtures/granite_reference.json`).

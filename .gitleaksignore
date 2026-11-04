@@ -1,4 +1,4 @@
 # Fake keys the secret detector is tested with (examples, never real credentials).
-337529790921157f645bc38c5cb31d15b9fb0004:tests/context.rs:generic-api-key:107
-337529790921157f645bc38c5cb31d15b9fb0004:src/secrets.rs:aws-access-token:51
-337529790921157f645bc38c5cb31d15b9fb0004:src/secrets.rs:jwt:54
+96724024f0daacedb97c55f27132c45a811f7931:src/secrets.rs:jwt:54
+96724024f0daacedb97c55f27132c45a811f7931:src/secrets.rs:aws-access-token:51
+96724024f0daacedb97c55f27132c45a811f7931:tests/context.rs:generic-api-key:107

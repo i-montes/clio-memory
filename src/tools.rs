@@ -418,10 +418,10 @@ impl Session {
             && o.kind != OpKind::Noop
             && let Some(twin) = m.near_duplicate(o.memory)
         {
+            // Only its number: this answer is not framed as data, so no memory text goes in it.
             said.push_str(&format!(
-                " · muy parecida a m{} «{}»: si la corrige o la contradice, usa memory_update o memory_consolidate",
-                twin.id.0,
-                preview(&twin)
+                " · muy parecida a m{0}: si la corrige o la contradice, usa memory_update o memory_consolidate (memory_get m{0} la muestra)",
+                twin.id.0
             ));
         }
         Ok(said)

@@ -339,7 +339,9 @@ fn save_twice(model: Arc<EmbedModel>) -> String {
 #[test]
 fn saving_a_near_duplicate_says_so() {
     let said = save_twice(twins_model(clio_memory::GRANITE_ID));
-    assert!(said.contains("muy parecida a m1 «"), "{said}");
+    assert!(said.contains("muy parecida a m1:"), "{said}");
+    // The answer to a save is not framed as data: no text of another memory goes in it.
+    assert!(!said.contains("pedidos"), "{said}");
     assert!(
         said.contains("usa memory_update o memory_consolidate"),
         "{said}"

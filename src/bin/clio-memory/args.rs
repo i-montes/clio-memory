@@ -16,8 +16,10 @@ agents:
                               server (user scope) and install the skill clio-memory; asks before
                               replacing anything of the same name and before adding a line to
                               ~/.claude/CLAUDE.md (the flags answer for it)
-  setup model                 download the vector model (pinned, sha256-checked) to
-                              ~/.cache/clio-models/potion-multilingual-128M
+  setup model [potion]        download the vector model (pinned, sha256-checked): Granite
+                              Embedding 311M (GPU or CPU, needs ONNX Runtime installed) to
+                              ~/.cache/clio-models/granite-embedding-311m-multilingual-r2, or with
+                              potion the static fallback, potion-multilingual-128M
 
 inspect (open the file read-only; never write):
   scopes                      list scopes
@@ -59,7 +61,7 @@ options:
   --db PATH     the memory file (default: $CLIO_MEMORY_DATA/memory.db, else
                 ~/.local/share/clio/memory.db, the one Clio shares)
   --actor NAME  act as this person instead of cli:$USER (write commands)
-  --model DIR   local model2vec model for recall and context (needs the model2vec feature)
+  --model DIR   local vector model for recall and context: Granite (ONNX) or model2vec
   --json        machine-readable output where supported
   -h, --help    this text";
 
@@ -75,8 +77,10 @@ pub enum Command {
         replace: bool,
         claude_md: Option<bool>,
     },
-    /// `setup model`.
-    SetupModel,
+    /// `setup model` (Granite) or `setup model potion` (the static model).
+    SetupModel {
+        potion: bool,
+    },
     Scopes,
     Stats,
     Doctor,
@@ -370,10 +374,17 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, UsageErro
                 (true, true) => return usage("--claude-md or --no-claude-md, not both"),
                 (yes, no) => (yes || no).then_some(yes),
             };
-            match rest.one("claude-code or model")?.as_str() {
-                "claude-code" => Command::SetupClaudeCode { replace, claude_md },
-                "model" if !replace && claude_md.is_none() => Command::SetupModel,
-                other => return usage(format!("setup {other:?}: claude-code or model")),
+            let what = rest.positionals()?;
+            let what: Vec<&str> = what.iter().map(String::as_str).collect();
+            match what[..] {
+                ["claude-code"] => Command::SetupClaudeCode { replace, claude_md },
+                ["model"] if !replace && claude_md.is_none() => {
+                    Command::SetupModel { potion: false }
+                }
+                ["model", "potion"] if !replace && claude_md.is_none() => {
+                    Command::SetupModel { potion: true }
+                }
+                _ => return usage("setup claude-code, setup model or setup model potion"),
             }
         }
         "stats" => {
@@ -501,9 +512,9 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, UsageErro
             None => return usage("no --db, and neither CLIO_MEMORY_DATA nor HOME is set"),
         },
     };
-    #[cfg(not(feature = "model2vec"))]
+    #[cfg(not(any(feature = "model2vec", feature = "granite")))]
     if model.is_some() {
-        return usage("--model needs a build with the model2vec feature");
+        return usage("--model needs a build with the model2vec or granite feature");
     }
     Ok(Parsed::Run(Cli {
         db,

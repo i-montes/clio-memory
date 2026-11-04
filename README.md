@@ -26,7 +26,7 @@ clio-memory es la **memoria propia de un agente**. Guarda lo que vale la pena re
 ## Instalar y usar con Claude Code
 
 ```sh
-cargo install --git https://github.com/i-montes/clio-memory --tag v0.2.0 --features model2vec
+cargo install --git https://github.com/i-montes/clio-memory --tag v0.3.0 --features model2vec,granite
 clio-memory setup model          # el modelo de vectores (opcional; fijado y verificado por sha256)
 clio-memory setup claude-code    # la deja como memoria principal de Claude Code
 ```
@@ -37,6 +37,14 @@ clio-memory setup claude-code    # la deja como memoria principal de Claude Code
 - te pregunta si añade a `~/.claude/CLAUDE.md` una línea que apunta a la skill (`--claude-md` o `--no-claude-md` contestan por ti).
 
 No toca otros servidores MCP ni otras skills. Si ya hay algo llamado `clio-memory` que no es esto, te lo dice y pregunta (`--replace` lo reemplaza). Correrlo otra vez no cambia nada.
+
+### El modelo de vectores
+
+`setup model` descarga **Granite Embedding 311M multilingual R2** (IBM, Apache-2.0; 1,25 GB), fijado por revisión y sha256. Busca por significado, no por palabra: en la prueba de `bench/embeddings` acierta el recuerdo correcto en primer lugar el 90 % de las veces, contra el 40 % del modelo estático anterior. Usa los primeros 384 de sus 768 componentes, que ordenan igual de bien y ocupan la mitad.
+
+No hay que instalar nada más: `setup model` baja también lo que el modelo necesita para correr, fijado por sha256, en `~/.cache/clio-models/onnxruntime/`. Si hay una tarjeta NVIDIA, baja ONNX Runtime con CUDA, cuDNN y las bibliotecas de CUDA que el sistema no tenga. Si no hay tarjeta, solo ONNX Runtime para el procesador (10 MB). Si la GPU no responde, por el motivo que sea, usa el procesador y lo dice una vez. Con una RTX 4060 tarda unos 4 ms por recuerdo; en el procesador, unos 27 ms.
+
+`setup model potion` instala el modelo estático anterior (`potion-multilingual-128M`, liviano y sin ONNX Runtime). Se usa el mejor que esté instalado: Granite, si no potion, si no texto. Cada vector se guarda con el nombre de su modelo, así que al cambiar de modelo la cola calcula los que faltan y nunca se comparan vectores de dos modelos.
 
 Sin el modelo, la búsqueda es por texto (y al guardar te lo dice). Con el modelo, los vectores se calculan en cuanto se guarda algo: toda la cola pendiente, también lo que guardó otro programa sin modelo; y otra vez al cerrar la sesión, antes de soltar el modelo. `clio-memory run-jobs` queda para lo que haya quedado pendiente (por ejemplo, recuerdos de antes de esta versión). A mano, sin `setup`: `claude mcp add clio-memory -- clio-memory mcp`.
 

@@ -21,9 +21,9 @@ fn main() -> ExitCode {
             ..
         })) => done(setup_claude_code(replace, claude_md)),
         Ok(args::Parsed::Run(args::Cli {
-            command: args::Command::SetupModel,
+            command: args::Command::SetupModel { potion },
             ..
-        })) => done(setup_model()),
+        })) => done(setup_model(potion)),
         Ok(args::Parsed::Run(cli)) if matches!(cli.command, args::Command::Mcp) => {
             match mcp(&cli.db) {
                 Ok(()) => ExitCode::SUCCESS,
@@ -127,11 +127,42 @@ fn setup_claude_code(replace: bool, claude_md: Option<bool>) -> Result<Vec<Strin
     .run()
 }
 
-fn setup_model() -> Result<Vec<String>, String> {
-    use clio_memory::setup::{MODEL_FILES, curl_fetch, install_model};
-    let dest = home()?.join(clio_memory::agent::memory::MODEL_REL);
+fn setup_model(potion: bool) -> Result<Vec<String>, String> {
+    use clio_memory::setup::{
+        GRANITE, POTION, RUNTIME_DIR, curl_fetch, curl_get, install_model, install_runtime,
+        runtime_here, tar_unpack,
+    };
+    let spec = if potion { &POTION } else { &GRANITE };
+    let home = home()?;
+    let dest = home.join(spec.dir);
     let curl = std::path::PathBuf::from("curl");
-    let mut said = install_model(&dest, &MODEL_FILES, &curl_fetch(&curl))?;
+    let mut said = install_model(&dest, &spec.pairs(), &curl_fetch(&curl, spec))?;
     said.push(format!("modelo listo en {}", dest.display()));
+    if !potion {
+        // What Granite runs on: the CPU runtime, or with an NVIDIA card the GPU one and the CUDA
+        // libraries the system lacks.
+        let runtime = runtime_here();
+        if runtime.is_empty() {
+            said.push("no hay ONNX Runtime publicado para este sistema: se usará el modelo estático o el texto".into());
+        } else {
+            let gpu = runtime.len() > 1 || runtime[0].url.contains("gpu");
+            let root = home.join(RUNTIME_DIR);
+            said.extend(install_runtime(
+                &root,
+                &runtime,
+                &|url, to| curl_get(&curl, url, to),
+                &tar_unpack,
+            )?);
+            said.push(format!(
+                "runtime listo en {} ({})",
+                root.display(),
+                if gpu {
+                    "GPU, y el procesador si la GPU no responde"
+                } else {
+                    "procesador"
+                }
+            ));
+        }
+    }
     Ok(said)
 }

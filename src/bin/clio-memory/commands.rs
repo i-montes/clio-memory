@@ -259,24 +259,15 @@ fn open_read(cli: &Cli) -> Result<Engine, String> {
     with_model(engine, cli)
 }
 
-#[cfg(feature = "model2vec")]
+/// `--model DIR`: Granite (ONNX files) or the static model, whichever the folder holds.
 pub fn with_model(engine: Engine, cli: &Cli) -> Result<Engine, String> {
     match &cli.model {
-        Some(dir) => {
-            let model = clio_memory::Model2VecEmbedder::from_dir(dir).map_err(|e| e.to_string())?;
-            Ok(engine.with_embedder(Arc::new(model)))
-        }
+        Some(dir) => match clio_memory::agent::EmbedModel::new(Some(dir.clone())).get()? {
+            Some(model) => Ok(engine.with_embedder(model)),
+            None => Ok(engine),
+        },
         None => Ok(engine),
     }
-}
-
-#[cfg(not(feature = "model2vec"))]
-pub fn with_model(engine: Engine, cli: &Cli) -> Result<Engine, String> {
-    debug_assert!(
-        cli.model.is_none(),
-        "`args::parse` refuses --model in this build"
-    );
-    Ok(engine)
 }
 
 fn json<T: serde::Serialize>(value: &T) -> Result<ExitCode, String> {

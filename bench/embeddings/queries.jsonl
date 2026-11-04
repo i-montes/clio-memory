@@ -1,0 +1,40 @@
+{"q": "¿cómo se llama la persona y en qué pueblo vive?", "gold": [1]}
+{"q": "¿qué tan largas le gustan las contestaciones?", "gold": [2]}
+{"q": "¿se puede mezclar directo a la rama principal?", "gold": [3]}
+{"q": "¿qué base de datos guarda las órdenes de compra?", "gold": [5]}
+{"q": "¿dónde corren las consultas de estadísticas para no afectar la base principal?", "gold": [6]}
+{"q": "¿cuánto dura una sesión guardada en memoria intermedia?", "gold": [7]}
+{"q": "¿en qué proveedor y con qué herramienta se pone en marcha la aplicación?", "gold": [8]}
+{"q": "el servicio web se cae al iniciar porque la base todavía no está lista", "gold": [9]}
+{"q": "fallos de pruebas solo en Mac relacionados con carpetas temporales", "gold": [10]}
+{"q": "¿qué comando de Rust no debo correr porque descarga gigas?", "gold": [11]}
+{"q": "el escáner de credenciales me bloquea una prueba con una clave falsa", "gold": [12]}
+{"q": "¿en qué carpeta está el modelo que convierte texto en números?", "gold": [13]}
+{"q": "¿qué pasa cuando se le pide al agente que olvide algo?", "gold": [17]}
+{"q": "¿qué tarjeta de video tiene el equipo?", "gold": [18]}
+{"q": "el navegador se cerraba solo y la pantalla se trababa", "gold": [19]}
+{"q": "¿con qué se cobra a los clientes?", "gold": [22]}
+{"q": "el mismo pago se registraba dos veces", "gold": [23]}
+{"q": "¿cómo inician sesión los usuarios?", "gold": [24]}
+{"q": "¿qué servicio manda los emails automáticos?", "gold": [25]}
+{"q": "pasos para sacar una nueva versión", "gold": [27]}
+{"q": "¿cómo recupero los datos si se daña la base?", "gold": [28, 29]}
+{"q": "¿a qué se dedica la persona además de programar?", "gold": [30]}
+{"q": "¿cómo deben empezar los videos?", "gold": [31]}
+{"q": "¿el agente puede conectarse a internet cuando ejecuta comandos?", "gold": [33]}
+{"q": "la ventana de conversación se quedaba pegada con textos muy grandes", "gold": [34]}
+{"q": "¿cómo funciona el buscador del catálogo con tildes?", "gold": [36]}
+{"q": "¿dónde se almacenan las fotos de los artículos?", "gold": [37]}
+{"q": "las fotos tomadas con el celular aparecen de lado", "gold": [38]}
+{"q": "¿en qué hora está el servidor comparado con la persona?", "gold": [39]}
+{"q": "¿puedo agregar una librería al proyecto sin consultar?", "gold": [40]}
+{"q": "¿cómo me entero de las excepciones en producción?", "gold": [41]}
+{"q": "¿por qué el dinero no se guarda con decimales?", "gold": [43]}
+{"q": "¿con qué tecnología está hecha la aplicación del teléfono?", "gold": [44]}
+{"q": "¿cómo se llama su mascota?", "gold": [46]}
+{"q": "¿a qué hora es mejor proponerle una llamada?", "gold": [47]}
+{"q": "¿dónde se guardan las contraseñas y llaves del proyecto?", "gold": [49]}
+{"q": "¿para quién es la tienda en línea?", "gold": [53]}
+{"q": "¿con qué transportadora se despachan los paquetes?", "gold": [54]}
+{"q": "los mensajes de confirmación llegan a la bandeja de correo no deseado", "gold": [55]}
+{"q": "¿cómo prefiere que le compare alternativas?", "gold": [58]}

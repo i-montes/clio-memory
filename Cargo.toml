@@ -1,7 +1,7 @@
 [package]
 name = "clio-memory"
 description = "An agent's own memory on one SQLite file: global, local, shared with Clio."
-version = "0.2.2"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"
@@ -10,10 +10,15 @@ repository = "https://github.com/i-montes/clio-memory"
 [features]
 telemetry = ["dep:tracing"]
 model2vec = ["dep:model2vec-rs"]
+# Granite Embedding 311M through the ONNX Runtime installed on the machine (loaded at run time:
+# nothing is downloaded at build time); CUDA when the runtime has it, else the CPU.
+granite = ["dep:ort", "dep:tokenizers"]
 
 [dependencies]
 # No `hf-hub`: this crate never downloads models; it only reads a local directory.
 model2vec-rs = { version = "0.3.0", default-features = false, features = ["fancy-regex"], optional = true }
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "load-dynamic", "cuda", "api-22"], optional = true }
+tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"], optional = true }
 regex = "1.13.1"
 rusqlite = { version = "0.41.1", features = ["bundled", "backup"] }
 rust-stemmers = "1.2.0"
@@ -36,3 +41,7 @@ tempfile = "3.27.0"
 # The telemetry tests record spans with a subscriber written in the test itself.
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 tracing-core = "0.1"
+
+[[example]]
+name = "granite_time"
+required-features = ["granite"]

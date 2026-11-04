@@ -10,7 +10,7 @@ clio-memory is **your own memory and your primary one**. It takes precedence ove
 ## When to read it
 
 - **When a session starts or resumes**, and after the conversation is compacted: `memory_context`. It returns the last session's summary, what is pinned, and the most recent memories of this project.
-- **Before work that may have been done or decided before:** `memory_search` with a few words. Open the one that matters with `memory_get`. `memory_timeline` shows what was saved around it.
+- **Before work that may have been done or decided before:** `memory_search` with a few words. Open the one that matters with `memory_get`. Each memory lists the memories near it (`Cerca:` in `memory_get`, `cerca:` in a search): open the ones that serve what you are after, and stop when you have enough. `memory_timeline` shows what was saved around it.
 - **Before you say what you know about the person:** search. Who they are comes from their memories (category `profile`), never from tool names or the environment.
 
 ## What to save, at once

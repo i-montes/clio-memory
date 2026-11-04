@@ -18,9 +18,24 @@ use std::time::Duration;
 
 use crate::{
     ActorId, ActorInfo, ActorKind, Category, Engine, Error, MemoryId, MemoryRow, MemoryType, OpId,
-    OpenMode, Origin, Outcome, Proposal, Quota, RecallOpts, Relation, ScopeId, SearchOpts, State,
-    SystemClock,
+    OpKind, OpenMode, Origin, Outcome, Proposal, Quota, RecallOpts, Relation, ScopeId, SearchOpts,
+    State, SystemClock,
 };
+
+/// How long a neighbor's preview is.
+const PREVIEW_CHARS: usize = 60;
+
+/// A memory in a few words, to name it beside another: its title, else the start of its text,
+/// cleaned like everything returned and on one line.
+pub fn preview(row: &MemoryRow) -> String {
+    let text = clean_text(row.title.as_deref().unwrap_or(&row.content));
+    if text.chars().count() <= PREVIEW_CHARS {
+        return text;
+    }
+    let mut out: String = text.chars().take(PREVIEW_CHARS - 1).collect();
+    out.push('…');
+    out
+}
 
 /// How many relation notes a memory's line carries.
 const MAX_NOTES: usize = 4;
@@ -576,7 +591,32 @@ impl Memory {
         // In the old one's own scope (another project's, too) and of its kind.
         p.scope = row.scope;
         p.kind = row.kind;
-        self.engine.replace(old, p).map_err(|e| explain(&e))
+        let o = self.engine.replace(old, p).map_err(|e| explain(&e))?;
+        if o.kind == OpKind::Update {
+            // Best effort: the correction is made; a relation that does not follow is a note lost.
+            let _ = self.engine.copy_relations(old, o.memory);
+        }
+        Ok(o)
+    }
+
+    /// Copies the judged relations of `from` to `to` (a merge's originals to the merge).
+    pub fn copy_relations(&self, from: MemoryId, to: MemoryId) -> Res<usize> {
+        self.need_write()?;
+        self.engine
+            .copy_relations(from, to)
+            .map_err(|e| explain(&e))
+    }
+
+    /// The memories nearest to `row` that this link may read, best first (at most `k`): what the
+    /// model can walk to from it. Empty when they cannot be found.
+    pub fn neighbors(&self, row: &MemoryRow, k: usize) -> Vec<MemoryRow> {
+        self.engine
+            .neighbors(row.id, &self.reading_scopes(), k * 2)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(r, _)| self.get(r.id).ok())
+            .take(k)
+            .collect()
     }
 
     /// The agent pins `id` (the `memory_pin` tool): it comes first in the context.

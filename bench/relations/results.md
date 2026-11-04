@@ -60,6 +60,20 @@ Aquí no se guarda ninguna relación. Cada recuerdo que el lector abre trae sus 
 - Las 3 contradicciones son en los tres casos el vecino más cercano del otro recuerdo, con similitud de 0,88 a 0,94.
 - Por encima de 0,88 hay 5 pares en todo el conjunto: las 3 contradicciones y 2 recuerdos muy relacionados (TDD con pruebas de mutación, respuestas cortas con tablas cortas). Los cinco valen la pena verlos al guardar.
 
+## 5. El umbral, medido con Granite en Rust (ONNX Runtime)
+
+`examples/relations_floor.rs` da los mismos pares que Python:
+
+| Similitud | Par | Qué son |
+|---|---|---|
+| 0,937 | m2–m62 | contradicción |
+| 0,930 | m5–m61 | contradicción |
+| 0,892 | m2–m58, m4–m20 | muy relacionadas |
+| 0,8801 | m8–m63 | contradicción |
+| 0,879 – 0,871 | m15–m33, m2–m40, m58–m62, m31–m64, m18–m19 | relacionadas |
+
+La contradicción más baja está a 0,8801, justo en el borde de 0,88. Por eso clio-memory avisa desde **0,87**. Lo que queda entre 0,87 y 0,88 también vale la pena verlo al guardar, y un aviso de más solo cuesta una línea en la respuesta.
+
 ## Conclusión
 
 - Guardar relaciones automáticas sin un juez que entienda da poco.

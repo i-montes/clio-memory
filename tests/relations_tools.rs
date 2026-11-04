@@ -268,3 +268,86 @@ fn consolidating_carries_the_relations_of_both() {
         "{rels:?}"
     );
 }
+
+/// A model that gives the same vector to texts that start with the same word: twins on purpose.
+struct FirstWord(&'static str);
+
+impl clio_memory::Embedder for FirstWord {
+    fn model_id(&self) -> &str {
+        self.0
+    }
+    fn dim(&self) -> usize {
+        8
+    }
+    fn embed(&self, texts: &[&str]) -> clio_memory::Result<Vec<Vec<f32>>> {
+        Ok(texts
+            .iter()
+            .map(|t| {
+                let mut v = vec![0.1f32; 8];
+                let w = t.split_whitespace().next().unwrap_or("");
+                v[w.len() % 8] = 1.0;
+                v
+            })
+            .collect())
+    }
+}
+
+fn twins_model(id: &'static str) -> Arc<EmbedModel> {
+    EmbedModel::from_embedder(Arc::new(FirstWord(id)))
+}
+
+#[test]
+fn near_duplicate_at_finds_the_twin_only() {
+    let t = tempfile::tempdir().unwrap();
+    let model = twins_model("twins");
+    let m = Memory::open_write(t.path(), &model, None, "agente").unwrap();
+    let put = |text: &str| {
+        let id = m
+            .save(
+                &Draft::plain(text, MemoryType::Semantic),
+                "s",
+                Place::Personal,
+                false,
+            )
+            .unwrap()
+            .memory;
+        m.embed_queue().unwrap();
+        id
+    };
+    let first = put("postgres guarda los pedidos");
+    let twin = put("postgres ya no; ahora mysql");
+    let other = put("el perro se llama Toby");
+    assert_eq!(m.near_duplicate_at(twin, 0.99).map(|r| r.id), Some(first));
+    assert_eq!(m.near_duplicate_at(other, 0.99).map(|r| r.id), None);
+}
+
+fn save_twice(model: Arc<EmbedModel>) -> String {
+    let t = tempfile::tempdir().unwrap();
+    let mut s = Session::new(t.path().to_path_buf(), None, "mcp:prueba".into()).with_model(model);
+    s.call(
+        "memory_save",
+        &json!({"text": "postgres guarda los pedidos", "kind": "semantic"}),
+    )
+    .unwrap();
+    s.call(
+        "memory_save",
+        &json!({"text": "postgres ya no; ahora mysql", "kind": "semantic"}),
+    )
+    .unwrap()
+}
+
+#[test]
+fn saving_a_near_duplicate_says_so() {
+    let said = save_twice(twins_model(clio_memory::GRANITE_ID));
+    assert!(said.contains("muy parecida a m1 «"), "{said}");
+    assert!(
+        said.contains("usa memory_update o memory_consolidate"),
+        "{said}"
+    );
+}
+
+#[test]
+fn no_floor_no_warning() {
+    let said = save_twice(twins_model("buckets"));
+    assert!(!said.contains("muy parecida"), "{said}");
+}

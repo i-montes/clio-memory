@@ -2118,6 +2118,19 @@ impl Engine {
             .collect())
     }
 
+    /// The current embedder's model id, if there is one.
+    pub fn model_id(&self) -> Option<&str> {
+        self.embedder.as_ref().map(|e| e.model_id())
+    }
+
+    /// Whether `id` has a vector of the current model (its neighbors are then by meaning).
+    pub fn has_vector(&self, id: MemoryId) -> Result<bool> {
+        match self.model_id() {
+            Some(m) => Ok(self.store.vector_of(id, m)?.is_some()),
+            None => Ok(false),
+        }
+    }
+
     /// Every judged relation that names this memory, the newest first.
     pub fn relations(&self, id: MemoryId) -> Result<Vec<RelationRow>> {
         self.store.relations_of(id)

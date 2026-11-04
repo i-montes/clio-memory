@@ -413,7 +413,18 @@ impl Session {
             };
             m.save(&draft, &self.actor, place, false)?
         };
-        Ok(with_vectors(told(&o), &m))
+        let mut said = with_vectors(told(&o), &m);
+        if !summary
+            && o.kind != OpKind::Noop
+            && let Some(twin) = m.near_duplicate(o.memory)
+        {
+            said.push_str(&format!(
+                " · muy parecida a m{} «{}»: si la corrige o la contradice, usa memory_update o memory_consolidate",
+                twin.id.0,
+                preview(&twin)
+            ));
+        }
+        Ok(said)
     }
 
     fn consolidate(&mut self, args: &Map<String, Value>) -> Result<String, String> {

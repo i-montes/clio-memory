@@ -22,6 +22,13 @@ use crate::{
     State, SystemClock,
 };
 
+/// The similarity from which a new memory is called nearly the same as an old one, per model:
+/// measured on the relations benchmark (its three contradictions are at 0.880 to 0.937; the
+/// pairs from 0.87 are memories worth seeing together). `None`: not measured, no warning.
+pub fn near_duplicate_floor(model: &str) -> Option<f32> {
+    (model == crate::GRANITE_ID).then_some(0.87)
+}
+
 /// How long a neighbor's preview is.
 const PREVIEW_CHARS: usize = 60;
 
@@ -605,6 +612,27 @@ impl Memory {
         self.engine
             .copy_relations(from, to)
             .map_err(|e| explain(&e))
+    }
+
+    /// The memory this link may read that is nearest to `id`, when its similarity is at least
+    /// `floor`. Only by meaning: a memory without a vector has none.
+    pub fn near_duplicate_at(&self, id: MemoryId, floor: f32) -> Option<MemoryRow> {
+        if !self.engine.has_vector(id).unwrap_or(false) {
+            return None;
+        }
+        self.engine
+            .neighbors(id, &self.reading_scopes(), 3)
+            .ok()?
+            .into_iter()
+            .find(|(r, _)| self.get(r.id).is_ok())
+            .filter(|(_, s)| *s >= floor)
+            .map(|(r, _)| r)
+    }
+
+    /// `near_duplicate_at` with the floor of the model in use; `None` without one.
+    pub fn near_duplicate(&self, id: MemoryId) -> Option<MemoryRow> {
+        let floor = near_duplicate_floor(self.engine.model_id()?)?;
+        self.near_duplicate_at(id, floor)
     }
 
     /// The memories nearest to `row` that this link may read, best first (at most `k`): what the

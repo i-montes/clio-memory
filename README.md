@@ -26,13 +26,19 @@ clio-memory es la **memoria propia de un agente**. Guarda lo que vale la pena re
 ## Instalar y usar con Claude Code
 
 ```sh
-cargo install --git https://github.com/i-montes/clio-memory --tag v0.1.0
-claude mcp add clio-memory -- clio-memory mcp
+cargo install --git https://github.com/i-montes/clio-memory --tag v0.2.0 --features model2vec
+clio-memory setup model          # el modelo de vectores (opcional; fijado y verificado por sha256)
+clio-memory setup claude-code    # la deja como memoria principal de Claude Code
 ```
 
-Para buscar también por significado, instala con `--features model2vec` y deja el modelo en `~/.cache/clio-models/potion-multilingual-128M` (el mismo que usa Clio). Sin él busca por texto.
+`setup claude-code` hace tres cosas:
+- registra el servidor MCP `clio-memory` para tu usuario (`claude mcp add --scope user …`);
+- instala la skill `~/.claude/skills/clio-memory/SKILL.md`, que dice cuándo leer y qué guardar, que corrija en vez de duplicar, y sus medidas de seguridad;
+- te pregunta si añade a `~/.claude/CLAUDE.md` una línea que apunta a la skill (`--claude-md` o `--no-claude-md` contestan por ti).
 
-El servidor le entrega a Claude Code sus instrucciones de uso y de seguridad al conectarse. Una versión próxima traerá `clio-memory setup claude-code`, que lo deja instalado con una skill que hace de clio-memory la memoria principal.
+No toca otros servidores MCP ni otras skills. Si ya hay algo llamado `clio-memory` que no es esto, te lo dice y pregunta (`--replace` lo reemplaza). Correrlo otra vez no cambia nada.
+
+Sin el modelo, la búsqueda es por texto. A mano, sin `setup`: `claude mcp add clio-memory -- clio-memory mcp`.
 
 ### Las herramientas
 

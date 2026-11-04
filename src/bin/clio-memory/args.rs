@@ -11,6 +11,13 @@ usage: clio-memory [--db PATH] [--actor NAME] [--model DIR] [--json] <command> [
 agents:
   mcp                         serve the memory tools to an agent (MCP over stdin and stdout); the
                               file is <folder>/memory.db, the project is the current folder's
+  setup claude-code [--replace] [--claude-md|--no-claude-md]
+                              make clio-memory Claude Code's primary memory: register this MCP
+                              server (user scope) and install the skill clio-memory; asks before
+                              replacing anything of the same name and before adding a line to
+                              ~/.claude/CLAUDE.md (the flags answer for it)
+  setup model                 download the vector model (pinned, sha256-checked) to
+                              ~/.cache/clio-models/potion-multilingual-128M
 
 inspect (open the file read-only; never write):
   scopes                      list scopes
@@ -63,6 +70,13 @@ pub struct UsageError(pub String);
 pub enum Command {
     /// The MCP server for an agent.
     Mcp,
+    /// `setup claude-code`: replace what has the same name; the CLAUDE.md line (None: ask).
+    SetupClaudeCode {
+        replace: bool,
+        claude_md: Option<bool>,
+    },
+    /// `setup model`.
+    SetupModel,
     Scopes,
     Stats,
     Doctor,
@@ -349,6 +363,18 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, UsageErro
         "mcp" => {
             rest.none()?;
             Command::Mcp
+        }
+        "setup" => {
+            let replace = rest.switch("--replace");
+            let claude_md = match (rest.switch("--claude-md"), rest.switch("--no-claude-md")) {
+                (true, true) => return usage("--claude-md or --no-claude-md, not both"),
+                (yes, no) => (yes || no).then_some(yes),
+            };
+            match rest.one("claude-code or model")?.as_str() {
+                "claude-code" => Command::SetupClaudeCode { replace, claude_md },
+                "model" if !replace && claude_md.is_none() => Command::SetupModel,
+                other => return usage(format!("setup {other:?}: claude-code or model")),
+            }
         }
         "stats" => {
             rest.none()?;

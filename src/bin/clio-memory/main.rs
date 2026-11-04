@@ -16,6 +16,14 @@ fn main() -> ExitCode {
             output::line(args::USAGE);
             ExitCode::SUCCESS
         }
+        Ok(args::Parsed::Run(args::Cli {
+            command: args::Command::SetupClaudeCode { replace, claude_md },
+            ..
+        })) => done(setup_claude_code(replace, claude_md)),
+        Ok(args::Parsed::Run(args::Cli {
+            command: args::Command::SetupModel,
+            ..
+        })) => done(setup_model()),
         Ok(args::Parsed::Run(cli)) if matches!(cli.command, args::Command::Mcp) => {
             match mcp(&cli.db) {
                 Ok(()) => ExitCode::SUCCESS,
@@ -62,4 +70,68 @@ fn mcp(db: &std::path::Path) -> Result<(), String> {
         &cwd,
         &home,
     )
+}
+
+fn done(r: Result<Vec<String>, String>) -> ExitCode {
+    match r {
+        Ok(lines) => {
+            for l in lines {
+                output::line(&l);
+            }
+            ExitCode::SUCCESS
+        }
+        Err(message) => {
+            output::error(&format!("error: {message}"));
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn home() -> Result<std::path::PathBuf, String> {
+    std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .map(std::path::PathBuf::from)
+        .filter(|h| h.is_absolute())
+        .ok_or_else(|| "HOME is not set".to_owned())
+}
+
+/// A yes/no question on the terminal; no terminal is a no.
+fn ask(question: &str) -> bool {
+    use std::io::{BufRead, IsTerminal, Write};
+    if !std::io::stdin().is_terminal() {
+        return false;
+    }
+    eprint!("{question} [s/N] ");
+    let _ = std::io::stderr().flush();
+    let mut answer = String::new();
+    let _ = std::io::stdin().lock().read_line(&mut answer);
+    matches!(
+        answer.trim().to_lowercase().as_str(),
+        "s" | "si" | "sí" | "y" | "yes"
+    )
+}
+
+fn setup_claude_code(replace: bool, claude_md: Option<bool>) -> Result<Vec<String>, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let claude = std::env::var_os("CLIO_MEMORY_CLAUDE")
+        .filter(|c| !c.is_empty())
+        .unwrap_or_else(|| "claude".into());
+    clio_memory::setup::ClaudeCode {
+        home: home()?,
+        claude: claude.into(),
+        exe,
+        replace,
+        claude_md,
+        ask: &ask,
+    }
+    .run()
+}
+
+fn setup_model() -> Result<Vec<String>, String> {
+    use clio_memory::setup::{MODEL_FILES, curl_fetch, install_model};
+    let dest = home()?.join(clio_memory::agent::memory::MODEL_REL);
+    let curl = std::path::PathBuf::from("curl");
+    let mut said = install_model(&dest, &MODEL_FILES, &curl_fetch(&curl))?;
+    said.push(format!("modelo listo en {}", dest.display()));
+    Ok(said)
 }

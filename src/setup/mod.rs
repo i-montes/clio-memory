@@ -14,6 +14,7 @@ use sha2::{Digest, Sha256};
 
 pub mod agents;
 pub mod config_file;
+pub mod mcp;
 pub mod skill;
 
 /// The skill installed for Claude Code.
@@ -204,28 +205,55 @@ impl ClaudeCode<'_> {
     }
 
     fn claude(&self, args: &[&str]) -> Result<String, String> {
-        // «Text file busy» (ETXTBSY): the program was just written and another thread's child
-        // still holds it for a moment; it is there, so try again.
-        let mut tries = 0;
-        let out = loop {
-            match Command::new(&self.claude).args(args).output() {
-                Err(e) if e.raw_os_error() == Some(26) && tries < 50 => {
-                    tries += 1;
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                other => break other.map_err(|e| e.to_string())?,
+        run_program(&self.claude, args)
+    }
+}
+
+/// Runs `program args` and returns what it printed; one that fails says which command and why.
+pub(crate) fn run_program(program: &Path, args: &[&str]) -> Result<String, String> {
+    run_command(Command::new(program).args(args))
+}
+
+/// `run_program` for a command with more set up (its environment).
+pub(crate) fn run_command(cmd: &mut Command) -> Result<String, String> {
+    let out = command_output(cmd)?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        Err(format!(
+            "`{}` falló: {}",
+            command_line(cmd),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
+
+/// Runs `cmd` to the end, whatever its exit code; only a program that cannot be started is an
+/// error.
+pub(crate) fn command_output(cmd: &mut Command) -> Result<std::process::Output, String> {
+    // «Text file busy» (ETXTBSY): the program was just written and another thread's child
+    // still holds it for a moment; it is there, so try again.
+    let mut tries = 0;
+    loop {
+        match cmd.output() {
+            Err(e) if e.raw_os_error() == Some(26) && tries < 50 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(10));
             }
-        };
-        if out.status.success() {
-            Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-        } else {
-            Err(format!(
-                "`claude {}` falló: {}",
-                args.join(" "),
-                String::from_utf8_lossy(&out.stderr).trim()
-            ))
+            other => break other.map_err(|e| format!("{}: {e}", cmd.get_program().display())),
         }
     }
+}
+
+/// `cmd` as the person would type it: the program's name and its arguments.
+fn command_line(cmd: &Command) -> String {
+    let program = Path::new(cmd.get_program());
+    let name = program.file_name().unwrap_or(program.as_os_str());
+    std::iter::once(name)
+        .chain(cmd.get_args())
+        .map(|a| a.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The name of the sleep's unit (systemd) and the stem of its job (launchd), whoever installs it:

@@ -730,16 +730,36 @@ pub fn curl_get(curl: &Path, url: &str, to: &Path) -> Result<(), String> {
     }
 }
 
+/// Kills and reaps its child when dropped: a return, an error or a panic of the caller's callback
+/// never leaves a `curl` running.
+struct KillOnDrop(Option<std::process::Child>);
+
+impl KillOnDrop {
+    fn child(&mut self) -> &mut std::process::Child {
+        self.0.as_mut().expect("armed until it is dropped")
+    }
+}
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        if let Some(mut c) = self.0.take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+}
+
 /// Downloads `url` to `to` like `curl_get`, but silent (the caller draws the progress): while `curl`
 /// runs, every 200 ms the size of `to` goes to `on_bytes`, and once more, with the final size, when
-/// it ends well. Nothing is left running when it returns.
+/// it ends well. No thread is started, and `curl` is killed and reaped on any early exit (an error,
+/// or `on_bytes` panicking). On an error `to` may be left partial: removing it is the caller's.
 pub fn curl_get_watching(
     curl: &Path,
     url: &str,
     to: &Path,
     on_bytes: &dyn Fn(u64),
 ) -> Result<(), String> {
-    let mut child = Command::new(curl)
+    let spawned = Command::new(curl)
         .args(["-fsSL", "--retry", "3", "-o"])
         .arg(to)
         .arg(url)
@@ -748,19 +768,16 @@ pub fn curl_get_watching(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("curl: {e}"))?;
+    let mut guard = KillOnDrop(Some(spawned));
     let size = || std::fs::metadata(to).map(|m| m.len()).unwrap_or(0);
     let status = loop {
-        match child.try_wait() {
+        match guard.child().try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) => {
                 on_bytes(size());
                 std::thread::sleep(std::time::Duration::from_millis(200));
             }
-            Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("curl: {e}"));
-            }
+            Err(e) => return Err(format!("curl: {e}")),
         }
     };
     if status.success() {
@@ -768,7 +785,7 @@ pub fn curl_get_watching(
         return Ok(());
     }
     let mut why = String::new();
-    if let Some(mut e) = child.stderr.take() {
+    if let Some(mut e) = guard.child().stderr.take() {
         let _ = std::io::Read::read_to_string(&mut e, &mut why);
     }
     Err(format!("no se pudo descargar {url}: {}", why.trim()))

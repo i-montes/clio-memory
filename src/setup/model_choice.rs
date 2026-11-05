@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{GRANITE, POTION, RUNTIME_DIR, runtime_for};
+use super::{GRANITE, ModelSpec, POTION, RUNTIME_DIR, runtime_for};
 
 /// The model the person picks. `None` is "no model": the memory searches by text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,12 +27,20 @@ pub fn default_choice(os: &str, arch: &str) -> ModelChoice {
     }
 }
 
-/// The best model installed in `home`, by the criterion `EmbedModel::of_home` loads with: its folder
-/// exists, Granite's first.
+/// Whether every file of `spec` is in its folder under `home`: `install_model` creates the folder
+/// before it fetches anything, so a folder alone can be an install that failed or was cancelled.
+fn is_installed(home: &Path, spec: &ModelSpec) -> bool {
+    let dir = home.join(spec.dir);
+    spec.files.iter().all(|f| dir.join(f.local).is_file())
+}
+
+/// The best model installed in `home`: the first of Granite and Potion with all its files. (The
+/// loader, `EmbedModel::of_home`, takes any existing folder and falls back at load time; this has
+/// no fallback, so it asks for the files.)
 pub fn installed_best(home: &Path) -> ModelChoice {
-    if home.join(GRANITE.dir).is_dir() {
+    if is_installed(home, &GRANITE) {
         ModelChoice::Granite
-    } else if home.join(POTION.dir).is_dir() {
+    } else if is_installed(home, &POTION) {
         ModelChoice::Potion
     } else {
         ModelChoice::None
@@ -72,5 +80,3 @@ fn dir_size(dir: &Path) -> u64 {
         })
         .sum()
 }
-
-pub use super::curl_get_watching;

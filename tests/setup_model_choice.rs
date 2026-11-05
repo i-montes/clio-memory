@@ -6,9 +6,9 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
 use clio_memory::setup::model_choice::{
-    ModelChoice, curl_get_watching, default_choice, granite_available, installed_best, to_remove,
+    ModelChoice, default_choice, granite_available, installed_best, to_remove,
 };
-use clio_memory::setup::{GRANITE, POTION, RUNTIME_DIR};
+use clio_memory::setup::{GRANITE, POTION, RUNTIME_DIR, curl_get_watching};
 
 /// Fake files for `dir` under `home`: each one `bytes` long.
 fn put(home: &Path, dir: &str, files: &[&str], bytes: usize) {
@@ -24,7 +24,12 @@ fn put_granite(home: &Path) {
 }
 
 fn put_potion(home: &Path) {
-    put(home, POTION.dir, &["config.json", "tokenizer.json"], 7);
+    put(
+        home,
+        POTION.dir,
+        &["config.json", "tokenizer.json", "model.safetensors"],
+        7,
+    );
 }
 
 #[test]
@@ -47,15 +52,22 @@ fn installed_best_prefers_granite() {
 }
 
 #[test]
-fn installed_best_uses_the_criterion_of_the_loader() {
-    // `EmbedModel::of_home` takes a folder that exists, whatever it holds: so does this.
+fn a_partial_folder_is_not_an_installed_model() {
+    // `install_model` creates the folder before it fetches anything: a first install that fails or
+    // is cancelled leaves it empty or half full, and that is not a model.
     let t = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(t.path().join(POTION.dir)).unwrap();
+    std::fs::create_dir_all(t.path().join(GRANITE.dir)).unwrap();
+    assert_eq!(installed_best(t.path()), ModelChoice::None);
+    put(t.path(), GRANITE.dir, &["tokenizer.json"], 10);
+    assert_eq!(installed_best(t.path()), ModelChoice::None);
+    // A complete Potion is the best there is; a partial one is not.
+    put(t.path(), POTION.dir, &["config.json", "tokenizer.json"], 7);
+    assert_eq!(installed_best(t.path()), ModelChoice::None);
+    put(t.path(), POTION.dir, &["model.safetensors"], 7);
     assert_eq!(installed_best(t.path()), ModelChoice::Potion);
-    assert_eq!(
-        clio_memory::agent::memory::EmbedModel::of_home(t.path()).dirs(),
-        [t.path().join(POTION.dir)]
-    );
+    // Every file of Granite: Granite.
+    put(t.path(), GRANITE.dir, &["model.onnx"], 10);
+    assert_eq!(installed_best(t.path()), ModelChoice::Granite);
 }
 
 #[test]
@@ -80,7 +92,7 @@ fn choosing_none_also_lists_potion() {
     put_granite(t.path());
     put_potion(t.path());
     let got = to_remove(t.path(), ModelChoice::None);
-    assert!(got.contains(&(t.path().join(POTION.dir), 14)));
+    assert!(got.contains(&(t.path().join(POTION.dir), 21)));
     assert!(got.contains(&(t.path().join(GRANITE.dir), 20)));
 }
 
@@ -148,7 +160,9 @@ fn watching_fails_when_curl_fails() {
         &to,
         &|_| {},
     );
-    assert!(got.unwrap_err().contains("nope"));
+    // curl's own words (37: it could not open the file), not the URL echoed back.
+    let why = got.unwrap_err();
+    assert!(why.contains("curl: (37)"), "{why}");
     // And with no curl at all.
     assert!(curl_get_watching(Path::new("/no/such/curl"), "file:///x", &to, &|_| {}).is_err());
 }
@@ -185,4 +199,39 @@ fn watching_reports_bytes_while_curl_runs() {
     assert!(seen.contains(&5), "no progress seen while it ran: {seen:?}");
     assert_eq!(seen.last(), Some(&9));
     assert!(seen.windows(2).all(|w| w[0] <= w[1]));
+}
+
+#[cfg(unix)]
+#[test]
+fn watching_kills_curl_when_the_callback_panics() {
+    use std::os::unix::fs::PermissionsExt;
+    let t = tempfile::tempdir().unwrap();
+    // A curl that records its pid beside its `-o` file and then hangs.
+    let fake = t.path().join("curl");
+    std::fs::write(
+        &fake,
+        "#!/bin/sh\nwhile [ \"$1\" != -o ]; do shift; done\necho $$ > \"$2.pid\"\nexec sleep 60\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let to = t.path().join("out.bin");
+    let pid_file = t.path().join("out.bin.pid");
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = curl_get_watching(&fake, "file:///x", &to, &|_| {
+            // Panic only once the fake curl is really running.
+            assert!(!pid_file.exists(), "the callback gives up");
+        });
+    }));
+    assert!(panicked.is_err());
+    let pid = std::fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .to_string();
+    // Killed and reaped: the process is gone, not a zombie waiting for its parent.
+    let alive = std::process::Command::new("kill")
+        .args(["-0", &pid])
+        .status()
+        .unwrap()
+        .success();
+    assert!(!alive, "curl {pid} was left running");
 }

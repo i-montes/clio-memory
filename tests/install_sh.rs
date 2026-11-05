@@ -262,21 +262,103 @@ fn pinned_version_uses_that_tag() {
 }
 
 #[test]
-fn failed_attestation_installs_nothing() {
+fn failed_attestation_installs_nothing_and_shows_what_gh_said() {
     let r = rig();
     r.publish();
     executable(
         &r.fake.join("gh"),
-        "#!/bin/sh\ncase \"$1 $2\" in \"auth status\") exit 0;; \"attestation verify\") exit 1;; esac\n",
+        "#!/bin/sh\ncase \"$1 $2 $3\" in \"auth status \") exit 0;; \"attestation verify --help\") exit 0;; \"attestation verify \"*) echo 'X Verification failed' >&2; echo 'no attestations found' >&2; exit 1;; esac\n",
     );
     let o = r.run(&[], &[("CLIO_MEMORY_SKIP_ATTESTATION", "")]);
     assert_eq!(o.status.code(), Some(1));
     let e = err(&o);
     assert!(
-        e.contains("La atestación de GitHub no corresponde a este binario: no se instaló nada."),
+        e.contains(
+            "No se pudo verificar la atestación de GitHub de este binario: no se instaló nada."
+        ),
+        "{e}"
+    );
+    assert!(
+        e.contains("\n   X Verification failed\n   no attestations found\n"),
         "{e}"
     );
     assert!(!r.bin().exists());
+}
+
+// A `gh` older than 2.49 has no `gh attestation`: that is no verification, not a forged binary.
+#[test]
+fn gh_without_attestation_installs_without_verification() {
+    let r = rig();
+    r.publish();
+    let gh_log = r.fake.join("gh.log");
+    executable(
+        &r.fake.join("gh"),
+        &format!(
+            "#!/bin/sh\necho \"$*\" >> {}\ncase \"$1\" in auth) exit 0;; esac\necho 'unknown command \"attestation\" for \"gh\"' >&2\nexit 1\n",
+            gh_log.display()
+        ),
+    );
+    let o = r.run(&[], &[("CLIO_MEMORY_SKIP_ATTESTATION", "")]);
+    assert!(o.status.success(), "{}", err(&o));
+    let s = out(&o);
+    assert!(s.contains("sin verificación de atestación"), "{s}");
+    assert!(s.contains("2.49"), "{s}");
+    assert!(r.bin().exists());
+    let g = std::fs::read_to_string(gh_log).unwrap();
+    assert!(
+        !g.lines().any(|l| l.starts_with("attestation verify /")),
+        "{g}"
+    );
+}
+
+/// A `curl` first on the `PATH` that logs its arguments and then runs the real one (or, with
+/// `fail`, fails).
+fn logging_curl(r: &Rig, fail: bool) -> PathBuf {
+    let log = r.fake.join("curl.log");
+    let real = ["/usr/bin/curl", "/bin/curl"]
+        .into_iter()
+        .find(|p| Path::new(p).is_file())
+        .unwrap();
+    let then = if fail {
+        "exit 22".to_owned()
+    } else {
+        format!("exec {real} \"$@\"")
+    };
+    executable(
+        &r.fake.join("curl"),
+        &format!("#!/bin/sh\necho \"$*\" >> {}\n{then}\n", log.display()),
+    );
+    log
+}
+
+// Over https a redirect may not drop to plain http; `file://` (the tests' releases) keeps working.
+#[test]
+fn https_downloads_refuse_redirects_off_https() {
+    let r = rig();
+    r.publish();
+    let log = logging_curl(&r, true);
+    let o = r.run(
+        &[],
+        &[(
+            "CLIO_MEMORY_DOWNLOAD_URL",
+            "https://example.invalid/releases",
+        )],
+    );
+    assert_eq!(o.status.code(), Some(1));
+    let calls = std::fs::read_to_string(&log).unwrap();
+    assert!(!calls.is_empty());
+    assert!(
+        calls.lines().all(|l| l.contains("--proto-redir =https")),
+        "{calls}"
+    );
+    let r = rig();
+    r.publish();
+    let log = logging_curl(&r, false);
+    let o = r.run(&[], &[]);
+    assert!(o.status.success(), "{}", err(&o));
+    let calls = std::fs::read_to_string(&log).unwrap();
+    assert!(!calls.is_empty());
+    assert!(!calls.contains("--proto-redir"), "{calls}");
 }
 
 #[test]

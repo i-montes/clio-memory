@@ -47,7 +47,7 @@ curl -fsSL https://raw.githubusercontent.com/i-montes/clio-memory/main/install.s
 ```
 
 Hay binario para Linux (x86_64 y aarch64) y macOS (arm64 e Intel). El instalador hace cuatro cosas:
-- baja el binario de tu plataforma del último release, comprueba su sha256 contra `SHA256SUMS` (y su atestación de GitHub, si tienes `gh` con sesión) y solo entonces lo deja en `~/.local/bin` (o `$CLIO_MEMORY_BIN_DIR`). No edita ningún archivo de tu shell: si esa carpeta no está en tu `PATH`, te dice la línea que la agrega;
+- baja el binario de tu plataforma del último release, comprueba su sha256 contra `SHA256SUMS` (y su atestación de GitHub, si tienes `gh` 2.49 o más nuevo con sesión) y solo entonces lo deja en `~/.local/bin` (o `$CLIO_MEMORY_BIN_DIR`). No edita ningún archivo de tu shell: si esa carpeta no está en tu `PATH`, te dice la línea que la agrega;
 - busca los agentes que tienes (Claude Code, OpenCode, Codex, Gemini CLI y Antigravity), te deja elegir y conecta la memoria en cada uno: el servidor MCP, la skill y, si quieres, una línea en su archivo de instrucciones;
 - instala el modelo de vectores: Granite (1,28 GB) donde corre, potion (531 MB) donde no, o ninguno si lo prefieres (ver [el modelo](#el-modelo-de-vectores));
 - instala el timer del [sueño](#el-sueño).

@@ -76,10 +76,15 @@ platform() {
     fi
 }
 
-# Downloads the sums and the binary of the same release into the temporary folder.
+# Downloads the sums and the binary of the same release into the temporary folder. Over https,
+# a redirect may not leave https (`file://`, for the tests and the release smoke test, has none).
 fetch() {
+    case "$URL" in
+        https://*) set -- --proto-redir =https ;;
+        *) set -- ;;
+    esac
     for file in SHA256SUMS "$ASSET"; do
-        curl -fsSL --retry 3 -o "$TMP/$file" "$URL/$file" ||
+        curl -fsSL --retry 3 "$@" -o "$TMP/$file" "$URL/$file" ||
             die "No se pudo bajar $URL/$file: no se instaló nada."
     done
 }
@@ -104,17 +109,26 @@ check_sum() {
     printf '%s◇%s  clio-memory %s · sha256 ✓\n' "$AMBER" "$RESET" "$ASSET"
 }
 
-# With a signed-in `gh`, a binary whose provenance does not match stops the install. Without
-# one, there is nothing to check against and it says so.
+# With a signed-in `gh` that has `gh attestation` (2.49 or newer), a binary whose provenance
+# does not verify stops the install, with what `gh` said under it. Without one, there is nothing
+# to check against and it says so.
 check_attestation() {
     [ -z "${CLIO_MEMORY_SKIP_ATTESTATION:-}" ] || return 0
-    if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1 </dev/null; then
-        gh attestation verify "$TMP/$ASSET" --repo "$REPO" >/dev/null 2>&1 </dev/null ||
-            die "La atestación de GitHub no corresponde a este binario: no se instaló nada."
-        printf '%s◇%s  atestación de GitHub ✓\n' "$AMBER" "$RESET"
-    else
+    if ! command -v gh >/dev/null 2>&1 || ! gh auth status >/dev/null 2>&1 </dev/null; then
         printf '%s· sin verificación de atestación (gh no está o no tiene sesión)%s\n' "$ASH" "$RESET"
+        return 0
     fi
+    if ! gh attestation verify --help >/dev/null 2>&1 </dev/null; then
+        printf '%s· sin verificación de atestación (este gh no tiene «gh attestation»: hace falta gh 2.49 o más nuevo)%s\n' "$ASH" "$RESET"
+        return 0
+    fi
+    if ! why=$(gh attestation verify "$TMP/$ASSET" --repo "$REPO" 2>&1 >/dev/null </dev/null); then
+        printf '%s✖%s  No se pudo verificar la atestación de GitHub de este binario: no se instaló nada.\n' "$RED" "$RESET" >&2
+        printf '%s\n' "$why" | sed 's/^/   /' >&2
+        printf '   Si fue la red, vuelve a correr la línea; CLIO_MEMORY_SKIP_ATTESTATION=1 instala sin esta verificación.\n' >&2
+        exit 1
+    fi
+    printf '%s◇%s  atestación de GitHub ✓\n' "$AMBER" "$RESET"
 }
 
 # Puts the verified binary at its destination: same sum, nothing to do; otherwise it is staged

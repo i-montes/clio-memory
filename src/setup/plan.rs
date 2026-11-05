@@ -311,6 +311,17 @@ fn skill_step(env: &Env, agents: &[AgentId], replace: bool) -> Option<Step> {
 /// the installer put it and nothing failed before. A server or skill called `clio-memory` that
 /// is not ours is never touched; the memory and the models stay.
 pub fn uninstall(env: &Env, agents: Option<&[AgentId]>) -> Vec<Step> {
+    uninstall_with(env, agents, &Vec::new)
+}
+
+/// `uninstall`, with `before_binary` run after the agents and the sleep and before this binary
+/// goes (`--models`, `--data`): a step of it that fails keeps the binary too. It runs also with
+/// `agents`, where no binary goes.
+pub fn uninstall_with(
+    env: &Env,
+    agents: Option<&[AgentId]>,
+    before_binary: &dyn Fn() -> Vec<Step>,
+) -> Vec<Step> {
     let mut steps = Vec::new();
     let found: Vec<AgentId> = detect(env).into_iter().map(|f| f.agent).collect();
     let mut conn = connections(env);
@@ -356,6 +367,7 @@ pub fn uninstall(env: &Env, agents: Option<&[AgentId]>) -> Vec<Step> {
     };
     steps.extend(skill_step(env, &rest, false));
     if agents.is_some() {
+        steps.extend(before_binary());
         return steps;
     }
 
@@ -370,6 +382,7 @@ pub fn uninstall(env: &Env, agents: Option<&[AgentId]>) -> Vec<Step> {
             },
         ));
     }
+    steps.extend(before_binary());
     if placed_by_installer(env) {
         let exe = env.exe.display();
         // With something left undone, the binary stays, so `uninstall` can run again.

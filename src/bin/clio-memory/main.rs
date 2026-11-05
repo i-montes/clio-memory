@@ -255,31 +255,30 @@ fn uninstall(
             return fail("no se cambió nada".into(), 1);
         }
     }
-    let mut steps = plan::uninstall(&env, agents);
-    let mut gone = Vec::new();
-    if models {
-        let dir = env.home.join(".cache/clio-models");
-        gone.push(Step {
-            agent: None,
-            what: "modelos".into(),
-            outcome: remove_folder(&dir).map(|()| format!("modelos borrados: {}", dir.display())),
-        });
-    }
-    if let Some(memory) = memory {
-        gone.push(Step {
-            agent: None,
-            what: "datos".into(),
-            outcome: memory
-                .remove()
-                .map(|()| format!("memoria borrada: {}", memory.what())),
-        });
-    }
-    // Before the binary, which goes last.
-    let at = steps
-        .iter()
-        .position(|s| s.what == plan::BINARY)
-        .unwrap_or(steps.len());
-    steps.splice(at..at, gone);
+    // The models and the memory go before the binary, which goes last and stays if either fails.
+    let gone = || {
+        let mut gone = Vec::new();
+        if models {
+            let dir = env.home.join(".cache/clio-models");
+            gone.push(Step {
+                agent: None,
+                what: "modelos".into(),
+                outcome: remove_folder(&dir)
+                    .map(|()| format!("modelos borrados: {}", dir.display())),
+            });
+        }
+        if let Some(memory) = &memory {
+            gone.push(Step {
+                agent: None,
+                what: "datos".into(),
+                outcome: memory
+                    .remove()
+                    .map(|()| format!("memoria borrada: {}", memory.what())),
+            });
+        }
+        gone
+    };
+    let steps = plan::uninstall_with(&env, agents, &gone);
     if steps.is_empty() {
         output::line("nada que quitar");
     }

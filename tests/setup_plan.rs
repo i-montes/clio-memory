@@ -688,3 +688,45 @@ fn an_unreadable_agent_fails_only_when_it_had_the_memory() {
     let (_, health, text) = gemini(&r);
     assert_eq!(health, Health::Fail, "{text}");
 }
+
+// `--models` and `--data` run before the binary goes, and one that fails keeps the binary (the
+// same rule as an agent that could not be undone). With `--agents`, they still run.
+#[test]
+fn what_runs_before_the_binary_can_keep_it() {
+    use clio_memory::setup::plan::{BINARY, uninstall_with};
+    let mut r = rig();
+    r.exe = r.home.join(".local/bin/clio-memory");
+    std::fs::create_dir_all(r.exe.parent().unwrap()).unwrap();
+    std::fs::write(&r.exe, "binario").unwrap();
+    let step = |outcome: Result<String, String>| Step {
+        agent: None,
+        what: "modelos".into(),
+        outcome,
+    };
+    // It fails: the binary stays, and the failure comes before the binary's step.
+    let ran = std::cell::Cell::new(false);
+    let steps = uninstall_with(&r.env(), None, &|| {
+        ran.set(true);
+        assert!(r.exe.is_file(), "the binary went first");
+        vec![step(Err("no se pudo".into()))]
+    });
+    assert!(ran.get());
+    assert!(r.exe.is_file(), "{steps:#?}");
+    let at = |what: &str| steps.iter().position(|s| s.what == what).unwrap();
+    assert!(at("modelos") < at(BINARY), "{steps:#?}");
+    assert!(steps[at(BINARY)].outcome.is_err(), "{steps:#?}");
+    // It works: the binary goes, after it.
+    let steps = uninstall_with(&r.env(), None, &|| {
+        assert!(r.exe.is_file(), "the binary went first");
+        vec![step(Ok("borrados".into()))]
+    });
+    assert!(!r.exe.exists(), "{steps:#?}");
+    // With --agents there is no binary step, and it still runs.
+    let ran = std::cell::Cell::new(false);
+    let steps = uninstall_with(&r.env(), Some(&[Codex]), &|| {
+        ran.set(true);
+        vec![step(Ok("borrados".into()))]
+    });
+    assert!(ran.get(), "{steps:#?}");
+    assert!(steps.iter().any(|s| s.what == "modelos"), "{steps:#?}");
+}

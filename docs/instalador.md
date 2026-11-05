@@ -175,7 +175,7 @@ Los nombres de `--agents`: `claude-code`, `opencode`, `codex`, `gemini`, `antigr
 **Solo sin `--agents`** (todos los agentes):
 
 - el timer del sueño, si es el de un `clio-memory` (el de Clio u otro programa se deja y se dice);
-- al final, el binario, si está en la carpeta donde lo deja `install.sh`: `~/.local/bin` o `$CLIO_MEMORY_BIN_DIR`, si la definiste. Un binario en otro sitio (por ejemplo de `cargo install`) no se borra. **Si algo no se pudo quitar, el binario se queda**, el paso lo dice, y puedes correr `uninstall` otra vez.
+- al final, el binario, si está en la carpeta donde lo deja `install.sh`: `~/.local/bin` o `$CLIO_MEMORY_BIN_DIR`, si la definiste. Un binario en otro sitio (por ejemplo de `cargo install`) no se borra. `--models` y `--data` se hacen antes. **Si algo no se pudo quitar (también los modelos o la memoria), el binario se queda**, el paso lo dice, y puedes correr `uninstall` otra vez.
 
 **Qué no hace:**
 

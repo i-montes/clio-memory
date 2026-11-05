@@ -149,7 +149,7 @@ FAIL agente opencode: el MCP apunta a /home/tú/.cargo/bin/clio-memory
   - `skill ajena en <ruta>`, `skill desactualizada en <ruta>` o `falta la skill`;
   - el error al leer el estado, si el agente ve nuestra skill (estaba conectado y ya no se puede comprobar).
 
-Antes de las líneas de los agentes, si otro `clio-memory` va antes que este en el `PATH` (por ejemplo, uno viejo de `cargo install` en `~/.cargo/bin`), `doctor` lo dice en una línea `--`: `al escribir `clio-memory` corre <ruta>, no este (<ruta>): si es de `cargo install`, quítalo con `cargo uninstall clio-memory``. No cuenta como fallo. `setup` lo dice también al terminar.
+Antes de las líneas de los agentes, si otro `clio-memory` va antes que este en el `PATH` (por ejemplo, uno viejo de `cargo install` en `~/.cargo/bin`), `doctor` lo dice en una línea `--` («al escribir `clio-memory` corre <ruta>, no este (<ruta>): si es de `cargo install`, quítalo con `cargo uninstall clio-memory`»). No cuenta como fallo. `setup`, al terminar, lo quita si es una copia de `cargo install` de este crate: está en `<raíz>/bin/clio-memory` y `<raíz>/.crates2.json` la registra como `clio-memory`. Lo hace con `cargo uninstall --root <raíz> clio-memory`, para que los registros de cargo queden bien, y lo dice («Quité <ruta>, …»). Si no es de cargo, no hay `cargo` o falla, no toca nada y solo lo avisa como `doctor`.
 
 Recién instalado, antes de que un agente guarde algo, `memory.db` todavía no existe. Entonces `doctor` no corre las comprobaciones del archivo: dice `--   todavía no hay memoria: se crea la primera vez que un agente la usa`, sigue con las líneas de los agentes y no lo cuenta como fallo.
 

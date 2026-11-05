@@ -98,6 +98,55 @@ pub fn shadowing_note(env: &Env, other: &std::path::Path) -> String {
     )
 }
 
+/// The `cargo install` root of `other` when it is a `cargo install` of this crate:
+/// `<root>/bin/clio-memory`, with `<root>/.crates2.json` naming it. `None` for anything else, which
+/// is only named, never taken away.
+pub fn cargo_install_root(other: &std::path::Path) -> Option<PathBuf> {
+    let bin = other.parent()?;
+    if other.file_name()? != "clio-memory" || bin.file_name()? != "bin" {
+        return None;
+    }
+    let root = bin.parent()?;
+    let text = std::fs::read_to_string(root.join(".crates2.json")).ok()?;
+    let records: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let ours = records.get("installs")?.as_object()?.iter().any(|(k, v)| {
+        k.starts_with("clio-memory ")
+            && v.get("bins")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|b| b.iter().any(|n| n == "clio-memory"))
+    });
+    ours.then(|| root.to_path_buf())
+}
+
+/// Takes away `other`, an old `cargo install` of this crate that runs first, with
+/// `cargo uninstall` (so cargo's records stay right). `Ok` with what to say when it is gone; `Err`
+/// with the note to give instead (it is not ours to take, there is no cargo, or cargo failed).
+pub fn take_away_shadow(env: &Env, other: &std::path::Path) -> Result<String, String> {
+    let note = || shadowing_note(env, other);
+    let root = cargo_install_root(other).ok_or_else(note)?;
+    let cargo = Some(root.join("bin/cargo"))
+        .filter(|c| is_executable(c))
+        .or_else(|| env.program("cargo"))
+        .ok_or_else(note)?;
+    let done = std::process::Command::new(cargo)
+        .arg("uninstall")
+        .arg("--root")
+        .arg(&root)
+        .arg("clio-memory")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if !done || other.exists() {
+        return Err(note());
+    }
+    Ok(format!(
+        "Quité {}, un clio-memory viejo de `cargo install` que corría antes que este al escribir `clio-memory`",
+        other.display()
+    ))
+}
+
 fn is_executable(p: &std::path::Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)

@@ -11,7 +11,7 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clio_memory::setup::agents::{AgentId, Env, Found, detect, shadowing, shadowing_note};
+use clio_memory::setup::agents::{AgentId, Env, Found, detect, shadowing, take_away_shadow};
 use clio_memory::setup::instructions::instructions_file;
 use clio_memory::setup::model_choice::{
     ModelChoice, default_choice, granite_available, installed_best, to_remove,
@@ -447,7 +447,10 @@ pub fn run(screen: &mut dyn Screen, env: &Env, args: SetupArgs) -> ExitCode {
         }
     }
     if let Some(other) = shadowing(env) {
-        screen.note(&format!("Ojo: {}.", shadowing_note(env, &other)));
+        match take_away_shadow(env, &other) {
+            Ok(said) => screen.note(&format!("{said}.")),
+            Err(note) => screen.note(&format!("Ojo: {note}.")),
+        }
     }
     // Only the agents that are here: a config left by an uninstalled one opens nothing.
     let here: Vec<AgentId> = connected(env)

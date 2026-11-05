@@ -3,6 +3,8 @@ name: ci
 on:
   pull_request:
   workflow_dispatch:
+  # release.yml runs these same checks on the tagged commit, so there is one definition of "checked".
+  workflow_call:
   push:
     branches: [main]
 
@@ -55,3 +57,10 @@ jobs:
       - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # shellcheck ships with the runner image.
+      - run: shellcheck install.sh

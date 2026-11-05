@@ -16,6 +16,15 @@ agents:
                               server (user scope) and install the skill clio-memory; asks before
                               replacing anything of the same name and before adding a line to
                               ~/.claude/CLAUDE.md (the flags answer for it)
+  setup sleep [--remove]      install (or remove) the nightly sleep: a user timer that runs
+                              `clio-memory sleep` every half hour from 23:00 to 05:30
+                              (setup claude-code installs it too)
+  sleep [--now] [--dry-run] [--report]
+                              one night of sleep: check and copy the file, quarantine secrets
+                              and likely attacks, fold repeats, purge what was discarded long
+                              ago; only when nobody used the memory for 30 minutes and it did not
+                              sleep in the last 20 hours (--now skips both waits, --dry-run looks
+                              and changes nothing, --report prints the last night's report)
   setup model [potion]        download the vector model (pinned, sha256-checked): Granite
                               Embedding 311M (GPU or CPU, needs ONNX Runtime installed) to
                               ~/.cache/clio-models/granite-embedding-311m-multilingual-r2, or with
@@ -80,6 +89,14 @@ pub enum Command {
     /// `setup model` (Granite) or `setup model potion` (the static model).
     SetupModel {
         potion: bool,
+    },
+    SetupSleep {
+        remove: bool,
+    },
+    Sleep {
+        now: bool,
+        dry_run: bool,
+        report: bool,
     },
     Scopes,
     Stats,
@@ -370,13 +387,14 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, UsageErro
         }
         "setup" => {
             let replace = rest.switch("--replace");
+            let remove = rest.switch("--remove");
             let claude_md = match (rest.switch("--claude-md"), rest.switch("--no-claude-md")) {
                 (true, true) => return usage("--claude-md or --no-claude-md, not both"),
                 (yes, no) => (yes || no).then_some(yes),
             };
             let what = rest.positionals()?;
             let what: Vec<&str> = what.iter().map(String::as_str).collect();
-            match what[..] {
+            let command = match what[..] {
                 ["claude-code"] => Command::SetupClaudeCode { replace, claude_md },
                 ["model"] if !replace && claude_md.is_none() => {
                     Command::SetupModel { potion: false }
@@ -384,7 +402,27 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, UsageErro
                 ["model", "potion"] if !replace && claude_md.is_none() => {
                     Command::SetupModel { potion: true }
                 }
-                _ => return usage("setup claude-code, setup model or setup model potion"),
+                ["sleep"] if !replace && claude_md.is_none() => Command::SetupSleep { remove },
+                _ => {
+                    return usage(
+                        "setup claude-code, setup model, setup model potion or setup sleep",
+                    );
+                }
+            };
+            if remove && !matches!(command, Command::SetupSleep { .. }) {
+                return usage("--remove goes with setup sleep");
+            }
+            command
+        }
+        "sleep" => {
+            let now = rest.switch("--now");
+            let dry_run = rest.switch("--dry-run");
+            let report = rest.switch("--report");
+            rest.none()?;
+            Command::Sleep {
+                now,
+                dry_run,
+                report,
             }
         }
         "stats" => {

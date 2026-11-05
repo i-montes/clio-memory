@@ -23,18 +23,36 @@ clio-memory es la **memoria propia de un agente**. Guarda lo que vale la pena re
 - **Aceptar, archivar y purgar no son herramientas del agente:** son tuyos, desde la línea de comandos.
 - **El archivo es privado** (0600, en una carpeta 0700). El escritor solo se toma durante cada llamada, así que Clio y otros clientes pueden escribir entre una y otra.
 
+## El sueño
+
+De noche, si nadie la está usando, la memoria se revisa sola. Un timer de usuario despierta `clio-memory sleep` cada media hora entre las 23:00 y las 05:30. Corre como mucho una vez por noche y solo si la memoria lleva 30 minutos quieta. Si alguien la usa mientras duerme, se detiene y sigue en el próximo turno.
+
+Cada noche:
+1. chequea el archivo (`PRAGMA quick_check`); si falla, no toca nada;
+2. guarda una copia en la carpeta `sleep/` de los datos (las 3 últimas);
+3. calcula los vectores que falten;
+4. manda a cuarentena lo que tiene un secreto o parece un ataque (caracteres ocultos, o dos señales juntas: frases de inyección, órdenes de exfiltración, origen externo);
+5. de dos recuerdos casi idénticos (similitud ≥ 0,97, mismo sitio y misma confianza) deja uno: el tuyo, si no el fijado, si no el más usado, si no el más nuevo;
+6. anota «para revisar» las contradicciones;
+7. purga lo que se descartó (olvidado, marcado o mandado por el sueño) hace 30 días o más (7 si era un secreto), solo si la copia salió bien.
+
+Solo mira lo que cambió desde la noche anterior y sus vecinos: lo sólido no se repasa. Nunca toca lo tuyo ni lo fijado: si algo tuyo parece tener un secreto, solo avisa. Tiene topes por noche (cuarentenas: 10 o el 10 % de lo activo; purgas: 50). Todo menos la purga se deshace con `revert`.
+
+A la mañana siguiente, `memory_context` empieza con una línea como `Anoche (sueño): 1 a cuarentena (m12 secreto), 3 unidas en m70 · para revisar: m5 contradice a m61`, y `clio-memory doctor` dice cuándo durmió. En Clio, el sueño además une recuerdos casi iguales con el modelo que tengas configurado, y valida cada unión antes de escribirla.
+
 ## Instalar y usar con Claude Code
 
 ```sh
-cargo install --git https://github.com/i-montes/clio-memory --tag v0.3.0 --features model2vec,granite
+cargo install --git https://github.com/i-montes/clio-memory --tag v0.5.0 --features model2vec,granite
 clio-memory setup model          # el modelo de vectores (opcional; fijado y verificado por sha256)
 clio-memory setup claude-code    # la deja como memoria principal de Claude Code
 ```
 
-`setup claude-code` hace tres cosas:
+`setup claude-code` hace cuatro cosas:
 - registra el servidor MCP `clio-memory` para tu usuario (`claude mcp add --scope user …`);
 - instala la skill `~/.claude/skills/clio-memory/SKILL.md`, que dice cuándo leer y qué guardar, que corrija en vez de duplicar, y sus medidas de seguridad;
-- te pregunta si añade a `~/.claude/CLAUDE.md` una línea que apunta a la skill (`--claude-md` o `--no-claude-md` contestan por ti).
+- te pregunta si añade a `~/.claude/CLAUDE.md` una línea que apunta a la skill (`--claude-md` o `--no-claude-md` contestan por ti);
+- instala el timer del [sueño](#el-sueño) (`clio-memory setup sleep` lo hace solo, y `--remove` lo quita).
 
 No toca otros servidores MCP ni otras skills. Si ya hay algo llamado `clio-memory` que no es esto, te lo dice y pregunta (`--replace` lo reemplaza). Correrlo otra vez no cambia nada.
 
@@ -92,6 +110,8 @@ clio-memory revert 34         # deshace un cambio (de quien sea)
 clio-memory promote 12        # devuelve uno de la cuarentena
 clio-memory purge 12          # borra su contenido para siempre (pregunta antes)
 clio-memory export copia.jsonl
+clio-memory sleep --dry-run --now   # qué haría el sueño ahora, sin cambiar nada
+clio-memory sleep --report    # el informe de la última noche
 clio-memory --help            # todo lo demás
 ```
 
@@ -101,7 +121,7 @@ Sin `--db` usa el archivo compartido. La referencia completa del motor está en 
 
 El esquema del archivo solo cambia de forma compatible hacia atrás. Un binario más viejo se niega a abrir un archivo más nuevo y no lo toca. Clio depende de clio-memory fijado por etiqueta.
 
-En Clio la memoria tiene además a **Jev**, que es opcional y vive solo en Clio. Antes de guardar, Jev revisa si el texto intenta manipular al agente o no vale la pena recordarlo, y si su categoría es la correcta; también elige dónde va y cómo se relaciona con otros recuerdos. Sin Jev, como aquí, todo funciona igual. El modelo de vectores también es opcional: sin él, la búsqueda es por texto.
+En Clio la memoria tiene además a **Jev**, que es opcional y vive solo en Clio. Antes de guardar, Jev revisa si el texto intenta manipular al agente o no vale la pena recordarlo, y si su categoría es la correcta; también elige dónde va y anota las contradicciones seguras con los recuerdos más cercanos. Y en el sueño une recuerdos casi iguales con el modelo que tengas configurado en Clio. Sin Jev, como aquí, todo funciona igual. El modelo de vectores también es opcional: sin él, la búsqueda es por texto.
 
 ## Desarrollo
 

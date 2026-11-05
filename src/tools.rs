@@ -369,6 +369,14 @@ impl Session {
             full,
             near,
         );
+        // Last night's sleep goes first, outside the frame: it is the sleep's own words (ids and
+        // reasons), never memory text.
+        let answer = match crate::sleep::last_report(&self.data)
+            .and_then(|r| crate::sleep::morning_line(&r, now_secs()))
+        {
+            Some(line) if name == "memory_context" => format!("{}\n{answer}", cut(&line, 600)),
+            _ => answer,
+        };
         self.bytes += answer.len();
         Ok(answer)
     }

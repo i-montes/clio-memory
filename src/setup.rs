@@ -108,6 +108,8 @@ pub struct ClaudeCode<'a> {
     pub claude_md: Option<bool>,
     /// Asks the person a yes/no question (false when there is nobody to ask).
     pub ask: &'a dyn Fn(&str) -> bool,
+    /// Runs `systemctl` or `launchctl` to install the nightly sleep (see `install_sleep`).
+    pub service: &'a dyn Fn(&[&str]) -> Result<(), String>,
 }
 
 impl ClaudeCode<'_> {
@@ -181,6 +183,16 @@ impl ClaudeCode<'_> {
                 said.push(format!("línea añadida a {}", md.display()));
             }
         }
+        // The sleep is part of the memory: without a timer it never runs. A machine without
+        // a user service manager still gets the rest.
+        said.push(if sleep_installed(&self.home, &self.exe, &["sleep"]) {
+            "el sueño nocturno ya está instalado".into()
+        } else {
+            match install_sleep(&self.home, &self.exe, &["sleep"], self.service) {
+                Ok(at) => format!("sueño nocturno instalado: {}", at.display()),
+                Err(e) => format!("el sueño nocturno no se instaló ({e}); `clio-memory setup sleep` lo intenta de nuevo"),
+            }
+        });
         Ok(said)
     }
 
@@ -207,6 +219,157 @@ impl ClaudeCode<'_> {
             ))
         }
     }
+}
+
+/// The name of the sleep's unit (systemd) and the stem of its job (launchd), whoever installs it:
+/// the last installation decides the binary.
+pub const SLEEP_UNIT: &str = "clio-memory-sleep";
+const SLEEP_LABEL: &str = "com.clio-memory.sleep";
+/// The nightly slots: every half hour from 23:00 to 05:30, local time.
+const SLEEP_HOURS: [u8; 7] = [23, 0, 1, 2, 3, 4, 5];
+
+/// The systemd user service and timer that run `exe args` at night. No `Persistent`: a night the
+/// machine was off is skipped, never made up by day.
+pub fn sleep_units(exe: &Path, args: &[&str]) -> (String, String) {
+    let quote = |s: &str| {
+        format!(
+            "\"{}\"",
+            s.replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace('%', "%%")
+        )
+    };
+    let mut line = vec![quote(&exe.to_string_lossy())];
+    line.extend(args.iter().map(|a| quote(a)));
+    let service = format!(
+        "[Unit]\nDescription=clio-memory: la fase de sueño de la memoria\n\n[Service]\nType=oneshot\nExecStart={}\nNice=10\nIOSchedulingClass=idle\n",
+        line.join(" ")
+    );
+    let timer = "[Unit]\nDescription=clio-memory: despierta el sueño cada media hora de noche\n\n[Timer]\nOnCalendar=*-*-* 23,00,01,02,03,04,05:00,30:00\nAccuracySec=1min\n\n[Install]\nWantedBy=timers.target\n".to_owned();
+    (service, timer)
+}
+
+/// The launchd job (macOS) for the same slots.
+pub fn launchd_plist(exe: &Path, args: &[&str]) -> String {
+    let esc = |s: &str| {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+    };
+    let mut program = format!("<string>{}</string>", esc(&exe.to_string_lossy()));
+    for a in args {
+        program.push_str(&format!("<string>{}</string>", esc(a)));
+    }
+    let slots: String = SLEEP_HOURS
+        .iter()
+        .flat_map(|h| [0, 30].map(|m| (h, m)))
+        .map(|(h, m)| {
+            format!("<dict><key>Hour</key><integer>{h}</integer><key>Minute</key><integer>{m}</integer></dict>")
+        })
+        .collect();
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>Label</key><string>{SLEEP_LABEL}</string><key>ProgramArguments</key><array>{program}</array><key>StartCalendarInterval</key><array>{slots}</array><key>LowPriorityIO</key><true/><key>Nice</key><integer>10</integer></dict></plist>\n"
+    )
+}
+
+/// Whether the sleep for `exe args` is already installed exactly so.
+pub fn sleep_installed(home: &Path, exe: &Path, args: &[&str]) -> bool {
+    let same = |p: PathBuf, text: &str| std::fs::read_to_string(p).is_ok_and(|t| t == text);
+    if cfg!(target_os = "macos") {
+        return same(
+            home.join("Library/LaunchAgents")
+                .join(format!("{SLEEP_LABEL}.plist")),
+            &launchd_plist(exe, args),
+        );
+    }
+    let dir = home.join(".config/systemd/user");
+    let (service, timer) = sleep_units(exe, args);
+    same(dir.join(format!("{SLEEP_UNIT}.service")), &service)
+        && same(dir.join(format!("{SLEEP_UNIT}.timer")), &timer)
+}
+
+/// Runs a service manager command (`systemctl --user …`, `launchctl …`).
+pub fn service_command(args: &[&str]) -> Result<(), String> {
+    let (program, rest) = args.split_first().ok_or("orden vacía")?;
+    let out = Command::new(program)
+        .args(rest)
+        .output()
+        .map_err(|e| format!("{program}: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "`{}` falló: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
+
+/// Installs the nightly sleep for `exe args` and turns it on; `run` executes the service
+/// manager's commands. Returns the timer (or the launchd job) it wrote.
+pub fn install_sleep(
+    home: &Path,
+    exe: &Path,
+    args: &[&str],
+    run: &dyn Fn(&[&str]) -> Result<(), String>,
+) -> Result<PathBuf, String> {
+    if cfg!(target_os = "macos") {
+        let plist = home
+            .join("Library/LaunchAgents")
+            .join(format!("{SLEEP_LABEL}.plist"));
+        write_private(&plist, &launchd_plist(exe, args))?;
+        let path = plist.to_string_lossy();
+        let _ = run(&["launchctl", "unload", &path]);
+        run(&["launchctl", "load", "-w", &path])?;
+        return Ok(plist);
+    }
+    if !cfg!(target_os = "linux") {
+        return Err("este sistema no tiene un timer conocido (solo Linux y macOS)".into());
+    }
+    let dir = home.join(".config/systemd/user");
+    let (service, timer) = sleep_units(exe, args);
+    write_private(&dir.join(format!("{SLEEP_UNIT}.service")), &service)?;
+    let at = dir.join(format!("{SLEEP_UNIT}.timer"));
+    write_private(&at, &timer)?;
+    run(&["systemctl", "--user", "daemon-reload"])?;
+    run(&[
+        "systemctl",
+        "--user",
+        "enable",
+        "--now",
+        &format!("{SLEEP_UNIT}.timer"),
+    ])?;
+    Ok(at)
+}
+
+/// Turns the nightly sleep off and deletes its files.
+pub fn remove_sleep(
+    home: &Path,
+    run: &dyn Fn(&[&str]) -> Result<(), String>,
+) -> Result<(), String> {
+    let gone = |p: &Path| match std::fs::remove_file(p) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("{}: {e}", p.display())),
+        _ => Ok(()),
+    };
+    if cfg!(target_os = "macos") {
+        let plist = home
+            .join("Library/LaunchAgents")
+            .join(format!("{SLEEP_LABEL}.plist"));
+        let _ = run(&["launchctl", "unload", "-w", &plist.to_string_lossy()]);
+        return gone(&plist);
+    }
+    let dir = home.join(".config/systemd/user");
+    let _ = run(&[
+        "systemctl",
+        "--user",
+        "disable",
+        "--now",
+        &format!("{SLEEP_UNIT}.timer"),
+    ]);
+    gone(&dir.join(format!("{SLEEP_UNIT}.timer")))?;
+    gone(&dir.join(format!("{SLEEP_UNIT}.service")))?;
+    run(&["systemctl", "--user", "daemon-reload"])
 }
 
 /// Writes `text` whole (a temporary file, then rename), making the folders it needs.

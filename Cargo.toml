@@ -1,17 +1,19 @@
 [package]
 name = "clio-memory"
 description = "An agent's own memory on one SQLite file: global, local, shared with Clio."
-version = "0.6.2"
+version = "0.6.3"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/i-montes/clio-memory"
 
 [features]
-# The binary's own parts (the `setup` screen). A program that only uses the library (Clio) takes
-# the crate with `default-features = false` and pulls none of them.
+# The binary's own parts: the `setup` screen, and serde_json's `preserve_order` so the agents'
+# config files it edits keep their key order. A program that only uses the library (Clio) takes
+# the crate with `default-features = false` and pulls none of them; cargo unifies features, so
+# `preserve_order` from the library would change how that whole program writes JSON.
 default = ["cli"]
-cli = ["dep:cliclack", "dep:console"]
+cli = ["dep:cliclack", "dep:console", "serde_json/preserve_order"]
 telemetry = ["dep:tracing"]
 model2vec = ["dep:model2vec-rs"]
 # Granite Embedding 311M through the ONNX Runtime installed on the machine (loaded at run time:
@@ -27,7 +29,7 @@ regex = "1.13.1"
 rusqlite = { version = "0.41.1", features = ["bundled", "backup"] }
 rust-stemmers = "1.2.0"
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = { version = "1.0.154", features = ["preserve_order"] }
+serde_json = "1.0.154"
 # Only with the `telemetry` feature; no attribute macros, no subscriber: the host program picks those.
 tracing = { version = "0.1", default-features = false, features = ["std"], optional = true }
 sha2 = "0.11.1"

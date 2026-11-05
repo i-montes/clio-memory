@@ -17,6 +17,10 @@ fn mode(path: &Path) -> u32 {
 }
 
 #[test]
+#[cfg_attr(
+    not(feature = "cli"),
+    ignore = "the order is kept with serde_json's preserve_order, which `cli` turns on"
+)]
 fn untouched_keys_keep_their_order() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("opencode.json");

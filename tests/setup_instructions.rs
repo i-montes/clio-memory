@@ -263,6 +263,10 @@ fn codex_override_wins() {
 }
 
 #[test]
+#[cfg_attr(
+    not(feature = "cli"),
+    ignore = "the order is kept with serde_json's preserve_order, which `cli` turns on"
+)]
 fn opencode_keeps_the_config_it_does_not_own() {
     let r = rig();
     let env = r.env();
@@ -311,6 +315,10 @@ fn opencode_keeps_the_config_it_does_not_own() {
 }
 
 #[test]
+#[cfg_attr(
+    not(feature = "cli"),
+    ignore = "the order is kept with serde_json's preserve_order, which `cli` turns on"
+)]
 fn opencode_empty_instructions_goes_and_siblings_keep_their_order() {
     let r = rig();
     let env = r.env();

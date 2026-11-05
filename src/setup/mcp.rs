@@ -337,12 +337,11 @@ fn json_set(path: &Path, table: &str, entry: Option<Value>) -> Result<(), String
             }
         }
         None => {
-            // `shift_remove`: with `preserve_order`, `remove` would move the last key into the
-            // hole.
+            // `retain`: with `preserve_order`, `remove` would move the last key into the hole.
             if let Some(Value::Object(servers)) = root.get_mut(table) {
-                servers.shift_remove(NAME);
+                servers.retain(|k, _| k != NAME);
                 if servers.is_empty() {
-                    root.shift_remove(table);
+                    root.retain(|k, _| k != table);
                 }
             }
         }

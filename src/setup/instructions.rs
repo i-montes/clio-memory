@@ -163,8 +163,8 @@ fn remove_opencode(env: &Env, md: PathBuf) -> Result<Option<PathBuf>, String> {
         list.retain(|v| v.as_str() != md.to_str());
         changed = list.len() != before;
         if changed && list.is_empty() {
-            // `shift_remove`: with `preserve_order`, `remove` would move the last key into the hole.
-            object(&path, &mut config)?.shift_remove("instructions");
+            // `retain`: with `preserve_order`, `remove` would move the last key into the hole.
+            object(&path, &mut config)?.retain(|k, _| k != "instructions");
         }
     }
     if changed {

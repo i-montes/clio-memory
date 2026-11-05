@@ -759,15 +759,24 @@ pub fn curl_get_watching(
     to: &Path,
     on_bytes: &dyn Fn(u64),
 ) -> Result<(), String> {
-    let spawned = Command::new(curl)
-        .args(["-fsSL", "--retry", "3", "-o"])
+    let mut cmd = Command::new(curl);
+    cmd.args(["-fsSL", "--retry", "3", "-o"])
         .arg(to)
         .arg(url)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("curl: {e}"))?;
+        .stderr(Stdio::piped());
+    // «Text file busy», as in `command_output`: a program just written, held for a moment.
+    let mut tries = 0;
+    let spawned = loop {
+        match cmd.spawn() {
+            Err(e) if e.raw_os_error() == Some(26) && tries < 50 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            other => break other.map_err(|e| format!("curl: {e}"))?,
+        }
+    };
     let mut guard = KillOnDrop(Some(spawned));
     let size = || std::fs::metadata(to).map(|m| m.len()).unwrap_or(0);
     let status = loop {

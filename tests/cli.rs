@@ -1462,3 +1462,41 @@ fn setup_rerun_without_flags_keeps_what_was_chosen() {
         out(&o)
     );
 }
+
+/// A `clio-memory` in `m.bin`, first on the `PATH`: an old `cargo install`.
+fn old_clio_memory_on_the_path(m: &Machine) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let old = m.bin.join("clio-memory");
+    std::fs::write(&old, "#!/bin/sh\necho viejo\n").unwrap();
+    std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o755)).unwrap();
+    old
+}
+
+#[test]
+fn setup_names_an_older_clio_memory_that_runs_first() {
+    let m = machine();
+    let old = old_clio_memory_on_the_path(&m);
+    let o = setup_on(&m, None, &["setup", "--yes", "--model", "none"]);
+    let text = out(&o);
+    assert_eq!(code(&o), 0, "{text}{}", err(&o));
+    let line = text
+        .lines()
+        .find(|l| l.contains(&old.display().to_string()))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(line.contains("cargo uninstall clio-memory"), "{text}");
+}
+
+#[test]
+fn doctor_warns_of_an_older_clio_memory_that_runs_first_without_failing() {
+    let m = machine();
+    let old = old_clio_memory_on_the_path(&m);
+    let o = m.run(&["doctor"]);
+    let text = out(&o);
+    assert_eq!(code(&o), 0, "{text}");
+    let line = text
+        .lines()
+        .find(|l| l.contains(&old.display().to_string()))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(line.starts_with("--   "), "{text}");
+    assert!(line.contains("cargo uninstall clio-memory"), "{text}");
+}

@@ -408,3 +408,38 @@ fn a_directory_called_like_a_program_is_not_one() {
     assert_eq!(env.program("codex"), None);
     assert_eq!(detect(&env), vec![]);
 }
+
+// An old `cargo install` first on the `PATH` runs instead of this binary: it is named; this binary
+// itself, or a link to it, is not.
+#[test]
+fn another_clio_memory_first_on_the_path_is_found() {
+    use clio_memory::setup::agents::shadowing;
+    let t = tempfile::tempdir().unwrap();
+    let ours = fake_program(&t.path().join("local/bin"), "clio-memory");
+    let cargo = fake_program(&t.path().join("cargo/bin"), "clio-memory");
+    let links = t.path().join("links");
+    std::fs::create_dir_all(&links).unwrap();
+    std::os::unix::fs::symlink(&ours, links.join("clio-memory")).unwrap();
+    let service = |_: &[&str]| Ok(());
+    let env = |path: Vec<PathBuf>| Env {
+        home: t.path().join("home"),
+        exe: ours.clone(),
+        path,
+        codex_home: None,
+        claude: None,
+        bin_dir: None,
+        service: &service,
+    };
+    let local = t.path().join("local/bin");
+    let cargo_dir = t.path().join("cargo/bin");
+    assert_eq!(
+        shadowing(&env(vec![cargo_dir.clone(), local.clone()])),
+        Some(cargo.clone())
+    );
+    assert_eq!(
+        shadowing(&env(vec![local.clone(), cargo_dir.clone()])),
+        None
+    );
+    assert_eq!(shadowing(&env(vec![links, cargo_dir])), None);
+    assert_eq!(shadowing(&env(vec![])), None);
+}

@@ -94,7 +94,7 @@ cargo install --git https://github.com/i-montes/clio-memory --features model2vec
 clio-memory setup
 ```
 
-Compila la rama principal; sin `--features` el binario no puede cargar los modelos. `setup` conecta los agentes con la ruta de ese binario (en `~/.cargo/bin`); `uninstall` lo deja ahí, porque solo borra el que está en `~/.local/bin`.
+Compila la rama principal; sin `--features` el binario no puede cargar los modelos. `setup` conecta los agentes con la ruta de ese binario (en `~/.cargo/bin`); `uninstall` lo deja ahí, porque solo borra el que está en `~/.local/bin`. Si después instalas con la línea de `curl`, el de `~/.cargo/bin` puede ir antes en el `PATH` y ser el que corre al escribir `clio-memory`: `setup` y `doctor` lo dicen, y `cargo uninstall clio-memory` lo quita.
 
 ### El modelo de vectores
 

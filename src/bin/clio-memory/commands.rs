@@ -6,7 +6,7 @@ use clio_memory::{
     SystemClock,
 };
 
-use clio_memory::setup::agents::Env;
+use clio_memory::setup::agents::{Env, shadowing, shadowing_note};
 use clio_memory::setup::plan::{NOT_CONNECTED, agent_report};
 
 use crate::args::{Cli, Command};
@@ -94,6 +94,10 @@ pub fn run(cli: &Cli, machine: Option<&Env>) -> Result<ExitCode, String> {
                     line(&format!("{mark} {}: {}", c.name, clean(&c.detail)));
                 }
                 line(&slept(&cli.db));
+                if let Some(other) = machine.and_then(|env| shadowing(env).map(|o| (env, o))) {
+                    let (env, other) = other;
+                    line(&format!("--   {}", clean(&shadowing_note(env, &other))));
+                }
                 for (agent, ok, detail) in &agents {
                     let mark = match (ok, detail.as_str()) {
                         (false, _) => "FAIL",

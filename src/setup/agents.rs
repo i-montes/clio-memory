@@ -80,6 +80,24 @@ impl Env<'_> {
     }
 }
 
+/// Another `clio-memory` that comes first on the `PATH` (an old `cargo install`): what runs when
+/// the person types `clio-memory`, instead of this binary. `None` when the first one is this
+/// binary (or a link to it) or there is none.
+pub fn shadowing(env: &Env) -> Option<PathBuf> {
+    let canon = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let first = env.program("clio-memory")?;
+    (canon(&first) != canon(&env.exe)).then_some(first)
+}
+
+/// What to say of `shadowing`: the one that runs, and how to take it away.
+pub fn shadowing_note(env: &Env, other: &std::path::Path) -> String {
+    format!(
+        "al escribir `clio-memory` corre {}, no este ({}): si es de `cargo install`, quítalo con `cargo uninstall clio-memory`",
+        other.display(),
+        env.exe.display()
+    )
+}
+
 fn is_executable(p: &std::path::Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)

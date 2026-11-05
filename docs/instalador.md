@@ -149,6 +149,8 @@ FAIL agente opencode: el MCP apunta a /home/tú/.cargo/bin/clio-memory
   - `skill ajena en <ruta>`, `skill desactualizada en <ruta>` o `falta la skill`;
   - el error al leer el estado (por ejemplo, el programa del agente falla).
 
+Antes de las líneas de los agentes, si otro `clio-memory` va antes que este en el `PATH` (por ejemplo, uno viejo de `cargo install` en `~/.cargo/bin`), `doctor` lo dice en una línea `--`: `al escribir `clio-memory` corre <ruta>, no este (<ruta>): si es de `cargo install`, quítalo con `cargo uninstall clio-memory``. No cuenta como fallo. `setup` lo dice también al terminar.
+
 Si algo está en `FAIL`, `doctor` termina con código 1. `--json` agrega `"agents"`, con `agent`, `ok` y `detail` de cada uno. No revisa la línea de instrucciones, que es opcional.
 
 ## `clio-memory uninstall`

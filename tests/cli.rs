@@ -1409,3 +1409,56 @@ fn setup_refuses_options_given_before_it() {
         assert!(err(&o).contains(name), "{args:?}: {}", err(&o));
     }
 }
+
+// A plain re-run keeps what was chosen: no agent that was left out is connected, no line is
+// added to an agent that had none, and no model is downloaded.
+#[test]
+fn setup_rerun_without_flags_keeps_what_was_chosen() {
+    let m = machine();
+    fake_failing_curl(&m.bin);
+    let fakes_dir = m.home.parent().unwrap().join("claude-bin");
+    let claude = fakes::fake_claude_mcp(&fakes_dir);
+    let o = setup_on(
+        &m,
+        Some(&claude),
+        &[
+            "setup",
+            "--yes",
+            "--agents",
+            "claude-code",
+            "--model",
+            "none",
+            "--no-instructions",
+        ],
+    );
+    assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+    // OpenCode appears afterwards (its folder).
+    std::fs::create_dir_all(m.home.join(".config/opencode")).unwrap();
+    let o = setup_on(&m, Some(&claude), &["setup", "--yes"]);
+    let text = out(&o);
+    assert_eq!(code(&o), 0, "{text}{}", err(&o));
+    assert!(fakes::claude_registry(&fakes_dir).is_file(), "{text}");
+    assert!(
+        !m.home.join(".config/opencode/opencode.json").exists(),
+        "OpenCode was connected: {text}"
+    );
+    assert!(!m.home.join(".claude/CLAUDE.md").exists(), "{text}");
+    assert!(!m.bin.join("curl.log").exists(), "{text}");
+    assert!(
+        text.contains("Listo. Abre Claude Code: la memoria ya está ahí."),
+        "{text}"
+    );
+    assert!(text.contains("--agents opencode"), "{text}");
+    // A flag still applies on a re-run.
+    let o = setup_on(
+        &m,
+        Some(&claude),
+        &["setup", "--yes", "--agents", "opencode", "--model", "none"],
+    );
+    assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+    assert!(
+        m.home.join(".config/opencode/opencode.json").is_file(),
+        "{}",
+        out(&o)
+    );
+}

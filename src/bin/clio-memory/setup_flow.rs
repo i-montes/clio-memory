@@ -2,9 +2,10 @@
 //!
 //! The flow asks and tells through a `Screen`: `Plain` (here) prints one line per event, for no
 //! terminal; the TUI draws the same events. Without a terminal, or with `--yes`, nothing is asked:
-//! the flags and, where they are missing, the defaults of the spec decide, and flags only add (no
-//! agent is disconnected, no model deleted, no line taken out). A flag given in a terminal answers
-//! its question the same way.
+//! the flags and, where they are missing, the defaults of the spec decide (on a re-run, what is
+//! there: the agents connected, the model installed, the lines as they are), and flags only add
+//! (no agent is disconnected, no model deleted, no line taken out). A flag given in a terminal
+//! answers its question the same way.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -256,14 +257,32 @@ pub fn run(screen: &mut dyn Screen, env: &Env, args: SetupArgs) -> ExitCode {
         screen.installed(&env.exe);
     }
 
-    // The agents: the flag's, else (asked, or) every one found.
+    // The agents: the flag's, else (asked, or) every one found; without asking, a re-run (some
+    // agent connected already) keeps the ones connected.
     let found = detect(env);
+    let before = connected(env);
+    let rerun = !before.is_empty();
     let mut exclusive = false;
     let agents: Vec<AgentId> = match &args.agents {
         Some(list) => list.clone(),
-        None if args.all || !asks => found.iter().map(|f| f.agent).collect(),
+        None if args.all || (!asks && !rerun) => found.iter().map(|f| f.agent).collect(),
+        None if !asks => {
+            let left: Vec<AgentId> = found
+                .iter()
+                .map(|f| f.agent)
+                .filter(|a| !before.contains(a))
+                .collect();
+            if !left.is_empty() {
+                let keys: Vec<&str> = left.iter().map(|a| a.key()).collect();
+                screen.note(&format!(
+                    "Se queda lo conectado. También está {}: `clio-memory setup --agents {}` lo conecta.",
+                    join_labels(&left),
+                    keys.join(",")
+                ));
+            }
+            before.clone()
+        }
         None => {
-            let before = connected(env);
             let Some(chosen) = screen.choose_agents(&found, &before) else {
                 return cancelled(screen);
             };
@@ -292,7 +311,10 @@ pub fn run(screen: &mut dyn Screen, env: &Env, args: SetupArgs) -> ExitCode {
     let best = installed_best(&env.home);
     let model = match args.model {
         Some(m) => m,
-        // What is recommended here; one as good already installed is kept (`model_steps`).
+        // The one installed is kept; on a re-run with none, still none (nothing is downloaded
+        // that was not asked for); on a first install, the one recommended here.
+        None if !asks && best != ModelChoice::None => best,
+        None if !asks && rerun => ModelChoice::None,
         None if !asks => default_choice(os, arch),
         None => {
             let mut options = Vec::new();
@@ -331,10 +353,12 @@ pub fn run(screen: &mut dyn Screen, env: &Env, args: SetupArgs) -> ExitCode {
         }
     }
 
-    // The instructions line.
+    // The instructions line: without asking, yes on a first install, and on a re-run as it is
+    // (no line added to an agent that has none).
     let instructions = match args.instructions {
         Some(yes) => yes,
-        None if !asks || agents.is_empty() => true,
+        None if !asks => !rerun,
+        None if agents.is_empty() => true,
         None => {
             let files: Vec<String> = agents
                 .iter()

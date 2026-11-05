@@ -52,7 +52,7 @@ Hay binario para Linux (x86_64 y aarch64) y macOS (arm64 e Intel). El instalador
 - instala el modelo de vectores: Granite (1,28 GB) donde corre, potion (531 MB) donde no, o ninguno si lo prefieres (ver [el modelo](#el-modelo-de-vectores));
 - instala el timer del [sueño](#el-sueño).
 
-No toca otros servidores MCP ni otras skills. Si un agente ya tiene algo llamado `clio-memory` que no es esto, te pregunta antes de reemplazarlo. Correrlo otra vez no cambia lo que ya está bien.
+No toca otros servidores MCP ni otras skills. Si un agente ya tiene algo llamado `clio-memory` que no es esto, te pregunta antes de reemplazarlo. Correrlo otra vez actualiza el binario y conserva lo elegido.
 
 **Sin terminal, o sin preguntas.** Con `--yes`, o cuando no hay terminal, no pregunta nada: usa las banderas y, donde faltan, todos los agentes que encuentra, el modelo recomendado y la línea de instrucciones. Las banderas pasan a `setup` tal cual:
 

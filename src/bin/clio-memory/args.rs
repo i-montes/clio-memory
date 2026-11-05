@@ -19,9 +19,12 @@ agents:
                               vector model and the nightly sleep; in a terminal it asks, and with
                               --yes or without a terminal it uses the flags and, where missing:
                               every agent found, granite where it runs (else potion; nothing is
-                              downloaded when one as good is installed), the instructions line.
-                              Flags only add: nothing is disconnected or deleted (that is
-                              `uninstall`). LIST: claude-code,opencode,codex,gemini,antigravity.
+                              downloaded when one as good is installed), the instructions line;
+                              run again, it keeps what is there: the agents connected, the model
+                              installed (none downloaded) and the lines as they are. Without
+                              questions, flags only add: nothing is disconnected or deleted
+                              (that is `uninstall`). LIST: claude-code,opencode,codex,gemini,
+                              antigravity.
                               --from-installer: run by install.sh (says where the binary is and,
                               if its folder is not on the PATH, the line that adds it)
   setup claude-code [--replace] [--claude-md|--no-claude-md]

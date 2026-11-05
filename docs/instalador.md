@@ -35,7 +35,7 @@ Qué es «nuestro»:
 - **Skill.** Es nuestra la que coincide, por sha256, con la de esta versión o con una publicada antes (v0.2.0, v0.4.0, v0.5.0): se actualiza o se mueve. Cualquier otra, incluida una que hayas editado, es ajena.
 - **Claude Code.** Solo cuenta el alcance de usuario (`--scope user`). Una entrada `clio-memory` en el alcance local o de proyecto se lee como «no hay».
 
-Correrlo otra vez no cambia nada: cada paso dice «ya está» y no reescribe lo que ya está bien.
+Correrlo otra vez conserva lo elegido. Sin preguntas (con `--yes` o sin terminal) y sin banderas, se quedan los agentes que ya estaban conectados (uno que no lo estaba se conecta con `--agents`, y `setup` lo dice), el modelo que hay (si no había ninguno, no se baja nada) y las líneas de instrucciones como estaban. Cada paso dice «ya está» y no reescribe lo que ya está bien.
 
 ## Por agente
 
@@ -233,9 +233,9 @@ Los otros cuatro quedan «sin verificar»: no hay ningún recuerdo guardado desd
 | Bandera | Qué hace | Si falta (sin preguntas) |
 |---|---|---|
 | `--yes` | No pregunta nada, ni siquiera en una terminal | |
-| `--agents LISTA` | Conecta solo esos agentes. `LISTA` son claves separadas por comas (`claude-code`, `opencode`, `codex`, `gemini`, `antigravity`), o `all` | todos los agentes que encuentra |
-| `--model granite\|potion\|none` | El modelo de vectores a instalar; `none` es la búsqueda por texto | Granite donde hay ONNX Runtime publicado (Linux x86_64, Linux aarch64, macOS arm64), si no potion; no baja nada si ya hay uno igual o mejor |
-| `--instructions` / `--no-instructions` | Agrega (o no) la línea de instrucciones a cada agente conectado | sí |
+| `--agents LISTA` | Conecta solo esos agentes. `LISTA` son claves separadas por comas (`claude-code`, `opencode`, `codex`, `gemini`, `antigravity`), o `all` | todos los agentes que encuentra; si ya hay alguno conectado (otra corrida), los conectados |
+| `--model granite\|potion\|none` | El modelo de vectores a instalar; `none` es la búsqueda por texto | el que ya está instalado; si no hay ninguno, Granite donde hay ONNX Runtime publicado (Linux x86_64, Linux aarch64, macOS arm64), si no potion; en otra corrida sin modelo, ninguno (no se baja nada) |
+| `--instructions` / `--no-instructions` | Agrega (o no) la línea de instrucciones a cada agente conectado | sí en la primera instalación; en otra corrida, como estaba (no se agrega a quien no la tiene) |
 | `--replace` | Reemplaza sin preguntar un servidor o una skill ajenos llamados `clio-memory` | no reemplaza: ese agente queda en ✖ |
 
 `--from-installer` es interna: la pasa `install.sh`. Hace que `setup` diga dónde quedó el binario y, si su carpeta no está en el `PATH`, la línea que la agrega ([El `PATH`](#el-path)); no cambia qué se instala.

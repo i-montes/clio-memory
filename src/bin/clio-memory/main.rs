@@ -6,6 +6,7 @@
 mod args;
 mod commands;
 mod output;
+mod setup_flow;
 mod write;
 
 use std::process::ExitCode;
@@ -21,6 +22,42 @@ fn main() -> ExitCode {
         Ok(args::Parsed::Version) => {
             output::line(&format!("clio-memory {}", env!("CARGO_PKG_VERSION")));
             ExitCode::SUCCESS
+        }
+        Ok(args::Parsed::Run(args::Cli {
+            command:
+                args::Command::Setup {
+                    yes,
+                    from_installer,
+                    agents,
+                    all,
+                    model,
+                    instructions,
+                    replace,
+                },
+            ..
+        })) => {
+            let env = match machine() {
+                Ok(env) => env,
+                Err(message) => {
+                    output::error(&format!("error: {message}"));
+                    return ExitCode::from(1);
+                }
+            };
+            // Without a terminal (or with `--yes`) the plain lines; the TUI is not here yet.
+            let mut screen = setup_flow::Plain;
+            setup_flow::run(
+                &mut screen,
+                &env,
+                setup_flow::SetupArgs {
+                    yes,
+                    from_installer,
+                    agents,
+                    all,
+                    model,
+                    instructions,
+                    replace,
+                },
+            )
         }
         Ok(args::Parsed::Run(args::Cli {
             command: args::Command::SetupClaudeCode { replace, claude_md },

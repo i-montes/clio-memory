@@ -1,0 +1,560 @@
+//! `clio-memory setup` with no subcommand: the whole flow, from the header to the closing line.
+//!
+//! The flow asks and tells through a `Screen`: `Plain` (here) prints one line per event, for no
+//! terminal; the TUI draws the same events. Without a terminal, or with `--yes`, nothing is asked:
+//! the flags and, where they are missing, the defaults of the spec decide, and flags only add (no
+//! agent is disconnected, no model deleted, no line taken out). A flag given in a terminal answers
+//! its question the same way.
+
+use std::cell::RefCell;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+use clio_memory::setup::agents::{AgentId, Env, Found, detect};
+use clio_memory::setup::instructions::instructions_file;
+use clio_memory::setup::model_choice::{
+    ModelChoice, default_choice, granite_available, installed_best, to_remove,
+};
+use clio_memory::setup::plan::{Selection, Step, apply, connected};
+use clio_memory::setup::{
+    GRANITE, ModelSpec, POTION, RUNTIME_DIR, curl_get_watching, driver_major, install_model,
+    install_runtime, runtime_here, tar_unpack,
+};
+
+/// What `setup` was given on the command line (`args::Command::Setup`).
+#[derive(Debug, Default)]
+pub struct SetupArgs {
+    pub yes: bool,
+    pub from_installer: bool,
+    pub agents: Option<Vec<AgentId>>,
+    pub all: bool,
+    pub model: Option<ModelChoice>,
+    pub instructions: Option<bool>,
+    pub replace: bool,
+}
+
+/// How the flow shows itself and asks. Every `choose_*` and `confirm` returns `None` when the
+/// person cancelled.
+pub trait Screen {
+    fn header(&mut self, version: &str);
+    fn machine(&mut self, os: &str, arch: &str, gpu: Option<&str>);
+    /// clio-memory is installed at `at` (only when it comes from the installer).
+    fn installed(&mut self, at: &Path);
+    fn choose_agents(&mut self, found: &[Found], connected: &[AgentId]) -> Option<Vec<AgentId>>;
+    fn choose_model(
+        &mut self,
+        options: &[ModelChoice],
+        current: ModelChoice,
+    ) -> Option<ModelChoice>;
+    fn confirm(&mut self, question: &str, default: bool) -> Option<bool>;
+    fn step(&mut self, step: &Step);
+    /// A download of `label` starts (`total` bytes, when known): the returned function gets the
+    /// bytes so far, many times a second.
+    fn download(&mut self, label: &str, total: Option<u64>) -> Box<dyn Fn(u64) + '_>;
+    fn note(&mut self, text: &str);
+    /// The end: the agents where the memory is now, and whether something failed.
+    fn done(&mut self, agents: &[AgentId], failed: bool);
+}
+
+/// One line per event on stdout, nothing drawn or redrawn: for no terminal (a pipe, a log). Asked
+/// anything, it answers what was proposed.
+pub struct Plain;
+
+impl Plain {
+    fn line(text: &str) {
+        crate::output::line(text);
+    }
+}
+
+impl Screen for Plain {
+    fn header(&mut self, version: &str) {
+        Self::line(&format!("clio-memory {version}"));
+    }
+
+    fn machine(&mut self, os: &str, arch: &str, gpu: Option<&str>) {
+        let gpu = gpu.map(|g| format!(", {g}")).unwrap_or_default();
+        Self::line(&format!("✓ Esta máquina · {os} {arch}{gpu}"));
+    }
+
+    fn installed(&mut self, at: &Path) {
+        Self::line(&format!("✓ clio-memory instalado · {}", at.display()));
+    }
+
+    fn choose_agents(&mut self, found: &[Found], _connected: &[AgentId]) -> Option<Vec<AgentId>> {
+        Some(found.iter().map(|f| f.agent).collect())
+    }
+
+    fn choose_model(
+        &mut self,
+        _options: &[ModelChoice],
+        current: ModelChoice,
+    ) -> Option<ModelChoice> {
+        Some(current)
+    }
+
+    fn confirm(&mut self, _question: &str, default: bool) -> Option<bool> {
+        Some(default)
+    }
+
+    fn step(&mut self, step: &Step) {
+        let what = match step.agent {
+            Some(agent) => agent.label(),
+            None => step.what.as_str(),
+        };
+        // One line per event, even when a program's error took several.
+        let one = |text: &str| text.lines().map(str::trim).collect::<Vec<_>>().join(" / ");
+        Self::line(&match &step.outcome {
+            Ok(detail) => format!("✓ {what} · {}", one(detail)),
+            Err(why) => format!("✖ {what} · {}", one(why)),
+        });
+    }
+
+    /// Nothing per tick: the model's step says how it ended.
+    fn download(&mut self, _label: &str, _total: Option<u64>) -> Box<dyn Fn(u64) + '_> {
+        Box::new(|_| {})
+    }
+
+    fn note(&mut self, text: &str) {
+        Self::line(text);
+    }
+
+    fn done(&mut self, agents: &[AgentId], failed: bool) {
+        if failed {
+            Self::line("Algo no se pudo hacer (las líneas con ✖); lo demás quedó hecho.");
+        }
+        if agents.is_empty() {
+            Self::line(
+                "Listo. Ningún agente quedó conectado: cuando instales uno, corre `clio-memory setup`.",
+            );
+        } else {
+            Self::line(&format!(
+                "Listo. Abre {}: la memoria ya está ahí.",
+                join_labels(agents)
+            ));
+        }
+    }
+}
+
+/// Whether the flow asks: only with no `--yes` and a terminal on stderr. The one place this is
+/// decided, so the screen and the flow agree.
+pub fn interactive(yes: bool, terminal: bool) -> bool {
+    !yes && terminal
+}
+
+/// `Claude Code`, `Claude Code y Codex`, `Claude Code, Codex y Gemini CLI`.
+pub fn join_labels(agents: &[AgentId]) -> String {
+    let labels: Vec<&str> = agents.iter().map(|a| a.label()).collect();
+    match labels.split_last() {
+        None => String::new(),
+        Some((last, [])) => (*last).to_owned(),
+        Some((last, rest)) => format!("{} y {last}", rest.join(", ")),
+    }
+}
+
+/// The line to add to the shell's startup file so `bin_dir` is on the `PATH`, or `None` when it
+/// already is. `home` only makes the line shorter (`$HOME/.local/bin`); `shell` is `$SHELL`.
+pub fn path_hint(bin_dir: &Path, home: &Path, path_env: &str, shell: &str) -> Option<String> {
+    if std::env::split_paths(path_env).any(|p| p == bin_dir) {
+        return None;
+    }
+    let (sh, fish) = match bin_dir.strip_prefix(home) {
+        Ok(rel) => (
+            format!("$HOME/{}", rel.display()),
+            format!("~/{}", rel.display()),
+        ),
+        Err(_) => (bin_dir.display().to_string(), bin_dir.display().to_string()),
+    };
+    let export = |rc: &str| format!(r#"echo 'export PATH="{sh}:$PATH"' >> {rc}"#);
+    Some(match shell.rsplit('/').next().unwrap_or(shell) {
+        "zsh" => export("~/.zshrc"),
+        "bash" => export("~/.bashrc"),
+        "fish" => format!("fish_add_path {fish}"),
+        _ => export("~/.profile"),
+    })
+}
+
+/// Better models rank higher: Granite over potion over none.
+fn rank(m: ModelChoice) -> u8 {
+    match m {
+        ModelChoice::None => 0,
+        ModelChoice::Potion => 1,
+        ModelChoice::Granite => 2,
+    }
+}
+
+fn model_label(m: ModelChoice) -> &'static str {
+    match m {
+        ModelChoice::Granite => "Granite 311M",
+        ModelChoice::Potion => "potion",
+        ModelChoice::None => "ninguno",
+    }
+}
+
+/// `1,3 GB`, `512 MB`: the size shown before deleting.
+fn human(bytes: u64) -> String {
+    let (n, unit) = match bytes {
+        b if b >= 1_000_000_000 => (b as f64 / 1e9, "GB"),
+        b if b >= 1_000_000 => (b as f64 / 1e6, "MB"),
+        b => (b as f64 / 1e3, "KB"),
+    };
+    format!("{n:.1} {unit}").replace('.', ",")
+}
+
+/// The flow's own step (not an agent's).
+fn step(what: &str, outcome: Result<String, String>) -> Step {
+    Step {
+        agent: None,
+        what: what.to_owned(),
+        outcome,
+    }
+}
+
+/// The person cancelled a question: nothing more is done.
+fn cancelled(screen: &mut dyn Screen) -> ExitCode {
+    screen.note("Cancelado: no se cambió nada más.");
+    ExitCode::from(1)
+}
+
+/// The NVIDIA card, when there is one with its driver loaded.
+fn gpu() -> Option<String> {
+    let text = std::fs::read_to_string("/proc/driver/nvidia/version").ok()?;
+    Some(match driver_major(&text) {
+        Some(major) => format!("GPU NVIDIA (driver {major})"),
+        None => "GPU NVIDIA".to_owned(),
+    })
+}
+
+/// The whole of `setup`: what was chosen is done step by step, and one step that fails (an agent,
+/// the model) leaves the others done and makes the exit code 1.
+pub fn run(screen: &mut dyn Screen, env: &Env, args: SetupArgs) -> ExitCode {
+    use std::io::IsTerminal;
+    let asks = interactive(args.yes, std::io::stderr().is_terminal());
+    let (os, arch) = (std::env::consts::OS, std::env::consts::ARCH);
+    screen.header(env!("CARGO_PKG_VERSION"));
+    let os_label = match os {
+        "linux" => "Linux",
+        "macos" => "macOS",
+        other => other,
+    };
+    screen.machine(os_label, arch, gpu().as_deref());
+    if args.from_installer {
+        screen.installed(&env.exe);
+    }
+
+    // The agents: the flag's, else (asked, or) every one found.
+    let found = detect(env);
+    let mut exclusive = false;
+    let agents: Vec<AgentId> = match &args.agents {
+        Some(list) => list.clone(),
+        None if args.all || !asks => found.iter().map(|f| f.agent).collect(),
+        None => {
+            let before = connected(env);
+            let Some(chosen) = screen.choose_agents(&found, &before) else {
+                return cancelled(screen);
+            };
+            let dropped: Vec<AgentId> = before
+                .iter()
+                .copied()
+                .filter(|a| !chosen.contains(a))
+                .collect();
+            if !dropped.is_empty() {
+                let question = format!("¿Desconecto {}?", join_labels(&dropped));
+                match screen.confirm(&question, false) {
+                    Some(yes) => exclusive = yes,
+                    None => return cancelled(screen),
+                }
+            }
+            chosen
+        }
+    };
+    if found.is_empty() && args.agents.is_none() {
+        screen.note(
+            "No encontré ningún agente en esta máquina: el binario y el modelo sirven igual, y luego `clio-memory setup` los conecta.",
+        );
+    }
+
+    // The model: the flag's, else (asked, or) the best one installed or the one recommended here.
+    let best = installed_best(&env.home);
+    let model = match args.model {
+        Some(m) => m,
+        // What is recommended here; one as good already installed is kept (`model_steps`).
+        None if !asks => default_choice(os, arch),
+        None => {
+            let mut options = Vec::new();
+            if granite_available(os, arch) {
+                options.push(ModelChoice::Granite);
+            }
+            options.extend([ModelChoice::Potion, ModelChoice::None]);
+            let current = if best == ModelChoice::None {
+                default_choice(os, arch)
+            } else {
+                best
+            };
+            match screen.choose_model(&options, current) {
+                Some(m) => m,
+                None => return cancelled(screen),
+            }
+        }
+    };
+    // A lesser model than the one installed deletes the better one, only when chosen on the
+    // screen and confirmed: the loader always takes the best one there is.
+    let mut removal = Vec::new();
+    if asks && args.model.is_none() && rank(model) < rank(best) {
+        let gone = to_remove(&env.home, model);
+        if !gone.is_empty() {
+            let size: u64 = gone.iter().map(|(_, n)| n).sum();
+            let list: Vec<String> = gone.iter().map(|(p, _)| p.display().to_string()).collect();
+            let question = format!("¿Borro {} ({})?", list.join(", "), human(size));
+            match screen.confirm(&question, false) {
+                Some(true) => removal = gone,
+                Some(false) => screen.note(&format!(
+                    "Se queda {}: es el que se usa.",
+                    model_label(best)
+                )),
+                None => return cancelled(screen),
+            }
+        }
+    }
+
+    // The instructions line.
+    let instructions = match args.instructions {
+        Some(yes) => yes,
+        None if !asks || agents.is_empty() => true,
+        None => {
+            let files: Vec<String> = agents
+                .iter()
+                .map(|a| instructions_file(env, *a).display().to_string())
+                .collect();
+            screen.note(&format!("Archivos de instrucciones: {}", files.join(", ")));
+            match screen.confirm(
+                "¿Agrego una línea en el archivo de instrucciones de cada agente que apunte a la skill?",
+                true,
+            ) {
+                Some(yes) => yes,
+                None => return cancelled(screen),
+            }
+        }
+    };
+
+    // Everything is decided: now it is done.
+    let mut failed = false;
+    if !agents.is_empty() {
+        let sel = Selection {
+            agents,
+            instructions,
+            replace: args.replace,
+            exclusive,
+        };
+        let steps = {
+            let cell = RefCell::new(&mut *screen);
+            let ask = |q: &str| asks && cell.borrow_mut().confirm(q, false).unwrap_or(false);
+            apply(env, &sel, &ask)
+        };
+        for s in &steps {
+            failed |= s.outcome.is_err();
+            screen.step(s);
+        }
+    }
+    for (dir, size) in &removal {
+        let s = step(
+            "modelo",
+            std::fs::remove_dir_all(dir)
+                .map(|()| format!("borrado {} ({})", dir.display(), human(*size)))
+                .map_err(|e| format!("{}: {e}", dir.display())),
+        );
+        failed |= s.outcome.is_err();
+        screen.step(&s);
+    }
+    for s in model_steps(screen, &env.home, model) {
+        failed |= s.outcome.is_err();
+        screen.step(&s);
+    }
+
+    if args.from_installer {
+        let bin_dir = env
+            .bin_dir
+            .clone()
+            .unwrap_or_else(|| env.home.join(".local/bin"));
+        let path_env = std::env::join_paths(&env.path)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let shell = std::env::var("SHELL").unwrap_or_default();
+        if let Some(line) = path_hint(&bin_dir, &env.home, &path_env, &shell) {
+            screen.note(&format!(
+                "{} no está en tu PATH. Para agregarla:\n  {line}\nMientras tanto: {} doctor",
+                bin_dir.display(),
+                env.exe.display()
+            ));
+        }
+    }
+    screen.done(&connected(env), failed);
+    if failed {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// Installs `model` unless one as good is already there (the loader takes the best one, so
+/// nothing lesser is ever downloaded, and nothing is deleted here).
+fn model_steps(screen: &mut dyn Screen, home: &Path, model: ModelChoice) -> Vec<Step> {
+    let best = installed_best(home);
+    let spec: &ModelSpec = match model {
+        ModelChoice::Granite => &GRANITE,
+        ModelChoice::Potion => &POTION,
+        ModelChoice::None if best == ModelChoice::None => {
+            return vec![step(
+                "modelo",
+                Ok("ninguno: la búsqueda será por texto".to_owned()),
+            )];
+        }
+        ModelChoice::None => {
+            return vec![step(
+                "modelo",
+                Ok(format!(
+                    "{} sigue instalado y es el que se usa",
+                    model_label(best)
+                )),
+            )];
+        }
+    };
+    if rank(best) >= rank(model) {
+        return vec![step(
+            "modelo",
+            Ok(format!("{} ya está instalado", model_label(best))),
+        )];
+    }
+    let curl = PathBuf::from("curl");
+    let cell = RefCell::new(screen);
+    // A download through `curl_get_watching`, its bytes on the screen. A failed one leaves its
+    // partial file: `install_model` and `install_runtime` remove it.
+    let watched = |label: &str, url: &str, total: Option<u64>, to: &Path| {
+        let mut s = cell.borrow_mut();
+        let tick = s.download(label, total);
+        curl_get_watching(&curl, url, to, &*tick)
+    };
+    let label = model_label(model);
+    let dest = home.join(spec.dir);
+    let fetch = |name: &str, to: &Path| {
+        let url = spec
+            .url(name)
+            .ok_or_else(|| format!("{name} no es un archivo del modelo"))?;
+        let size = spec.files.iter().find(|f| f.local == name).map(|f| f.size);
+        watched(&format!("{label} · {name}"), &url, size, to)
+    };
+    let mut steps = vec![step(
+        "modelo",
+        install_model(&dest, &spec.pairs(), &fetch)
+            .map(|_| format!("{label} listo en {}", dest.display())),
+    )];
+    if model != ModelChoice::Granite || steps[0].outcome.is_err() {
+        return steps;
+    }
+    // What Granite runs on: the CPU runtime, or with an NVIDIA card the GPU one and the CUDA
+    // libraries the system lacks.
+    let runtime = runtime_here();
+    if runtime.is_empty() {
+        steps.push(step(
+            "runtime",
+            Err(
+                "no hay ONNX Runtime publicado para este sistema: se usará potion o el texto"
+                    .into(),
+            ),
+        ));
+        return steps;
+    }
+    let gpu = runtime.len() > 1 || runtime[0].url.contains("gpu");
+    let root = home.join(RUNTIME_DIR);
+    let fetch = |url: &str, to: &Path| {
+        let name = url.rsplit('/').next().unwrap_or(url);
+        watched(name, url, None, to)
+    };
+    steps.push(step(
+        "runtime",
+        install_runtime(&root, &runtime, &fetch, &tar_unpack).map(|_| {
+            format!(
+                "listo en {} ({})",
+                root.display(),
+                if gpu {
+                    "GPU, y el procesador si la GPU no responde"
+                } else {
+                    "procesador"
+                }
+            )
+        }),
+    ));
+    steps
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn path_hint_cases() {
+        let home = Path::new("/home/ana");
+        let bin = Path::new("/home/ana/.local/bin");
+        let path = "/usr/bin:/bin";
+        let export = |rc: &str| format!(r#"echo 'export PATH="$HOME/.local/bin:$PATH"' >> {rc}"#);
+        assert_eq!(
+            path_hint(bin, home, path, "/bin/zsh"),
+            Some(export("~/.zshrc"))
+        );
+        assert_eq!(
+            path_hint(bin, home, path, "/usr/bin/bash"),
+            Some(export("~/.bashrc"))
+        );
+        assert_eq!(
+            path_hint(bin, home, path, "/usr/bin/fish"),
+            Some("fish_add_path ~/.local/bin".to_owned())
+        );
+        assert_eq!(
+            path_hint(bin, home, path, "/bin/dash"),
+            Some(export("~/.profile"))
+        );
+        assert_eq!(path_hint(bin, home, path, ""), Some(export("~/.profile")));
+        assert_eq!(
+            path_hint(bin, home, "/usr/bin:/home/ana/.local/bin:/bin", "/bin/zsh"),
+            None
+        );
+        assert_eq!(
+            path_hint(bin, home, "/home/ana/.local/bin/", "/bin/zsh"),
+            None
+        );
+        // `$CLIO_MEMORY_BIN_DIR` outside the home: the whole path.
+        assert_eq!(
+            path_hint(Path::new("/opt/clio/bin"), home, path, "/usr/bin/fish"),
+            Some("fish_add_path /opt/clio/bin".to_owned())
+        );
+    }
+
+    #[test]
+    fn labels_are_joined_with_commas_and_y() {
+        use AgentId::{ClaudeCode, Codex, Gemini};
+        assert_eq!(join_labels(&[Codex]), "Codex");
+        assert_eq!(join_labels(&[Codex, Gemini]), "Codex y Gemini CLI");
+        assert_eq!(
+            join_labels(&[ClaudeCode, Codex, Gemini]),
+            "Claude Code, Codex y Gemini CLI"
+        );
+    }
+
+    #[test]
+    fn interactive_needs_a_terminal_and_no_yes() {
+        assert!(interactive(false, true));
+        assert!(!interactive(true, true));
+        assert!(!interactive(false, false));
+        assert!(!interactive(true, false));
+    }
+
+    #[test]
+    fn plain_never_asks_and_proposes_what_it_was_given() {
+        let mut p = Plain;
+        assert_eq!(p.confirm("¿?", false), Some(false));
+        assert_eq!(p.confirm("¿?", true), Some(true));
+        assert_eq!(
+            p.choose_model(&[ModelChoice::Potion], ModelChoice::Potion),
+            Some(ModelChoice::Potion)
+        );
+    }
+}

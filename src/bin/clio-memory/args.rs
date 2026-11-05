@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 
 use clio_memory::setup::agents::AgentId;
+use clio_memory::setup::model_choice::ModelChoice;
 use clio_memory::{JobState, MemoryId, MemoryType, OpId, Origin, Signal, State};
 
 pub const USAGE: &str = "\
@@ -12,6 +13,17 @@ usage: clio-memory [--db PATH] [--actor NAME] [--model DIR] [--json] <command> [
 agents:
   mcp                         serve the memory tools to an agent (MCP over stdin and stdout); the
                               file is <folder>/memory.db, the project is the current folder's
+  setup [--yes] [--agents LIST|all] [--model granite|potion|none]
+        [--instructions|--no-instructions] [--replace] [--from-installer]
+                              connect clio-memory to the agents on this machine and install the
+                              vector model and the nightly sleep; in a terminal it asks, and
+                              with --yes or without one it uses the flags and, where missing:
+                              every agent found, granite where it runs (else potion; nothing is
+                              downloaded when one as good is installed), the instructions line.
+                              Flags only add: nothing is disconnected or deleted (that is
+                              `uninstall`). LIST: claude-code,opencode,codex,gemini,antigravity.
+                              --from-installer: run by install.sh (says where the binary is and,
+                              if its folder is not on the PATH, the line that adds it)
   setup claude-code [--replace] [--claude-md|--no-claude-md]
                               make clio-memory Claude Code's primary memory: register this MCP
                               server (user scope) and install the skill clio-memory; asks before
@@ -93,6 +105,17 @@ pub struct UsageError(pub String);
 pub enum Command {
     /// The MCP server for an agent.
     Mcp,
+    /// `setup` with no subcommand: the agents (`all`: every one found), the model and the
+    /// instructions line, each `None` when not given (asked, or the default without a terminal).
+    Setup {
+        yes: bool,
+        from_installer: bool,
+        agents: Option<Vec<AgentId>>,
+        all: bool,
+        model: Option<ModelChoice>,
+        instructions: Option<bool>,
+        replace: bool,
+    },
     /// `setup claude-code`: replace what has the same name; the CLAUDE.md line (None: ask).
     SetupClaudeCode {
         replace: bool,
@@ -249,6 +272,14 @@ impl Rest {
         Ok(Some(value))
     }
 
+    /// Removes every bare `--name` switch: one given twice (install.sh adds a `--yes` of its own)
+    /// is the same as once.
+    fn switch_all(&mut self, name: &str) -> bool {
+        let before = self.0.len();
+        self.0.retain(|a| a != name);
+        self.0.len() != before
+    }
+
     /// Removes a bare `--name` switch if present.
     fn switch(&mut self, name: &str) -> bool {
         match self.0.iter().position(|a| a == name) {
@@ -362,6 +393,15 @@ fn parse_state(s: &str) -> Result<State, UsageError> {
     }
 }
 
+fn parse_model_choice(s: &str) -> Result<ModelChoice, UsageError> {
+    match s {
+        "granite" => Ok(ModelChoice::Granite),
+        "potion" => Ok(ModelChoice::Potion),
+        "none" => Ok(ModelChoice::None),
+        _ => usage(format!("unknown model {s:?} (granite|potion|none)")),
+    }
+}
+
 fn parse_job_state(s: &str) -> Result<JobState, UsageError> {
     match s {
         "pending" => Ok(JobState::Pending),
@@ -382,7 +422,7 @@ fn parse_agents(list: &str) -> Result<Vec<AgentId>, UsageError> {
         .map(|k| {
             AgentId::from_key(k).ok_or_else(|| {
                 let keys: Vec<&str> = AgentId::ALL.iter().map(|a| a.key()).collect();
-                UsageError(format!("unknown agent {k:?} ({})", keys.join("|")))
+                UsageError(format!("unknown agent {k:?} ({})", keys.join(", ")))
             })
         })
         .collect::<Result<Vec<_>, _>>()
@@ -434,9 +474,47 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, UsageErro
                 (true, true) => return usage("--claude-md or --no-claude-md, not both"),
                 (yes, no) => (yes || no).then_some(yes),
             };
+            // `setup` alone: these are its flags, and no subcommand takes them.
+            let yes = rest.switch_all("--yes");
+            let from_installer = rest.switch_all("--from-installer");
+            let agents = rest.flag("--agents")?;
+            let model = rest.flag("--model")?;
+            let instructions = match (
+                rest.switch("--instructions"),
+                rest.switch("--no-instructions"),
+            ) {
+                (true, true) => return usage("--instructions or --no-instructions, not both"),
+                (yes, no) => (yes || no).then_some(yes),
+            };
+            let bare = yes
+                || from_installer
+                || agents.is_some()
+                || model.is_some()
+                || instructions.is_some();
             let what = rest.positionals()?;
             let what: Vec<&str> = what.iter().map(String::as_str).collect();
             let command = match what[..] {
+                [] if claude_md.is_none() => {
+                    let all = agents.as_deref() == Some("all");
+                    Command::Setup {
+                        yes,
+                        from_installer,
+                        agents: agents
+                            .filter(|_| !all)
+                            .map(|list| parse_agents(&list))
+                            .transpose()?,
+                        all,
+                        model: model.map(|m| parse_model_choice(&m)).transpose()?,
+                        instructions,
+                        replace,
+                    }
+                }
+                _ if bare => {
+                    return usage(
+                        "--yes, --from-installer, --agents, --model and --instructions go with \
+                         setup alone",
+                    );
+                }
                 ["claude-code"] => Command::SetupClaudeCode { replace, claude_md },
                 ["model"] if !replace && claude_md.is_none() => {
                     Command::SetupModel { potion: false }
@@ -447,7 +525,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, UsageErro
                 ["sleep"] if !replace && claude_md.is_none() => Command::SetupSleep { remove },
                 _ => {
                     return usage(
-                        "setup claude-code, setup model, setup model potion or setup sleep",
+                        "setup, setup claude-code, setup model, setup model potion or setup sleep",
                     );
                 }
             };

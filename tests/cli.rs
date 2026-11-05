@@ -1117,3 +1117,280 @@ fn uninstall_data_deletes_only_the_memorys_files() {
         assert_eq!(std::fs::read(m.data.join(name)).unwrap(), bytes, "{name}");
     }
 }
+
+// ---- `setup` with no subcommand: without a terminal, the plain lines ----
+
+/// A setup run on `m`: the fake agents in `m.bin` (on the `PATH`, with links to the few system
+/// tools the fakes use), Codex's home in the temporary folder, fake `systemctl` and `launchctl`
+/// for the sleep, and `CLIO_MEMORY_CLAUDE` at a fake `claude` when `claude` is given (else Claude
+/// Code is nowhere: the `PATH` is only `m.bin`).
+fn setup_on(m: &Machine, claude: Option<&Path>, args: &[&str]) -> Output {
+    use std::os::unix::fs::PermissionsExt;
+    for tool in ["cat", "grep", "rm", "mkdir", "dirname"] {
+        let link = m.bin.join(tool);
+        if let Some(real) = ["/usr/bin", "/bin"]
+            .iter()
+            .map(|d| Path::new(d).join(tool))
+            .find(|p| p.is_file())
+            .filter(|_| !link.exists())
+        {
+            std::os::unix::fs::symlink(real, link).unwrap();
+        }
+    }
+    let launchctl = m.bin.join("launchctl");
+    if !launchctl.exists() {
+        std::fs::write(&launchctl, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&launchctl, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let codex_home = m.home.join(".codex");
+    std::fs::create_dir_all(&codex_home).unwrap();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_clio-memory"));
+    cmd.env("HOME", &m.home)
+        .env("PATH", &m.bin)
+        .env("CLIO_MEMORY_DATA", &m.data)
+        .env("CODEX_HOME", &codex_home)
+        .env("SHELL", "/bin/bash")
+        .env_remove("CLIO_MEMORY_BIN_DIR")
+        .env_remove("CLIO_MEMORY_CLAUDE");
+    if let Some(claude) = claude {
+        cmd.env("CLIO_MEMORY_CLAUDE", claude);
+    }
+    cmd.args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn setup_yes_connects_found_agents() {
+    let m = machine();
+    fakes::fake_codex(&m.bin, false);
+    fakes::fake_gemini(&m.bin, &m.home);
+    let o = setup_on(&m, None, &["setup", "--yes", "--model", "none"]);
+    let text = out(&o);
+    assert_eq!(code(&o), 0, "{text}{}", err(&o));
+    assert!(text.contains("✓ Codex · "), "{text}");
+    assert!(text.contains("✓ Gemini CLI · "), "{text}");
+    assert!(
+        text.contains("Listo. Abre Codex y Gemini CLI: la memoria ya está ahí."),
+        "{text}"
+    );
+    assert!(fakes::codex_registry(&m.home.join(".codex")).is_file());
+    // Line-based: no carriage returns, no escapes.
+    assert!(!text.contains('\r') && !text.contains('\u{1b}'), "{text:?}");
+}
+
+#[test]
+fn setup_agents_flag_only_adds() {
+    let m = machine();
+    let fakes_dir = m.home.parent().unwrap().join("claude-bin");
+    let claude = fakes::fake_claude_mcp(&fakes_dir);
+    fakes::fake_codex(&m.bin, false);
+    let o = setup_on(
+        &m,
+        Some(&claude),
+        &[
+            "setup",
+            "--yes",
+            "--agents",
+            "claude-code",
+            "--model",
+            "none",
+        ],
+    );
+    assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+    assert!(fakes::claude_registry(&fakes_dir).is_file(), "{}", out(&o));
+    let o = setup_on(
+        &m,
+        Some(&claude),
+        &["setup", "--yes", "--agents", "codex", "--model", "none"],
+    );
+    let text = out(&o);
+    assert_eq!(code(&o), 0, "{text}{}", err(&o));
+    assert!(fakes::claude_registry(&fakes_dir).is_file(), "{text}");
+    assert!(
+        !fakes::calls(&fakes_dir, "claude")
+            .iter()
+            .any(|c| c.get(1).is_some_and(|a| a == "remove")),
+        "Claude Code was disconnected: {text}"
+    );
+    assert!(
+        text.contains("Listo. Abre Claude Code y Codex: la memoria ya está ahí."),
+        "{text}"
+    );
+}
+
+#[test]
+fn setup_unknown_agent_is_usage_error() {
+    let m = machine();
+    let o = setup_on(&m, None, &["setup", "--yes", "--agents", "cursor"]);
+    assert_eq!(code(&o), 2, "{}{}", out(&o), err(&o));
+    assert!(
+        err(&o).contains("claude-code, opencode, codex, gemini, antigravity"),
+        "{}",
+        err(&o)
+    );
+    assert!(err(&o).contains("cursor"), "{}", err(&o));
+}
+
+#[test]
+fn setup_requested_but_missing_agent_fails_only_that_step() {
+    let m = machine();
+    fakes::fake_codex(&m.bin, false);
+    let o = setup_on(
+        &m,
+        None,
+        &[
+            "setup",
+            "--yes",
+            "--agents",
+            "opencode,codex",
+            "--model",
+            "none",
+        ],
+    );
+    let text = out(&o);
+    assert_eq!(code(&o), 1, "{text}{}", err(&o));
+    assert!(text.contains("✖ OpenCode"), "{text}");
+    assert!(text.contains("✓ Codex · "), "{text}");
+    assert!(fakes::codex_registry(&m.home.join(".codex")).is_file());
+}
+
+// install.sh appends `--yes` when there is no terminal, so a person's own `--yes` comes twice.
+#[test]
+fn setup_accepts_repeated_yes_and_from_installer() {
+    let m = machine();
+    let o = setup_on(
+        &m,
+        None,
+        &[
+            "setup",
+            "--from-installer",
+            "--yes",
+            "--from-installer",
+            "--yes",
+            "--model",
+            "none",
+        ],
+    );
+    let text = out(&o);
+    assert_eq!(code(&o), 0, "{text}{}", err(&o));
+    // From the installer, with ~/.local/bin off the PATH: the line for bash.
+    assert!(
+        text.contains(r#"echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc"#),
+        "{text}"
+    );
+    assert!(text.contains("clio-memory instalado"), "{text}");
+}
+
+#[test]
+fn setup_flags_that_contradict_are_usage_errors() {
+    let m = machine();
+    for args in [
+        &["setup", "--instructions", "--no-instructions"][..],
+        &["setup", "--model", "big"],
+        &["setup", "claude-code", "--yes"],
+        &["setup", "model", "--agents", "codex"],
+    ] {
+        let o = setup_on(&m, None, args);
+        assert_eq!(code(&o), 2, "{args:?}: {}{}", out(&o), err(&o));
+    }
+}
+
+#[test]
+fn setup_model_none_with_nothing_installed_says_text_search() {
+    let m = machine();
+    let o = setup_on(&m, None, &["setup", "--yes", "--model", "none"]);
+    let text = out(&o);
+    assert_eq!(code(&o), 0, "{text}{}", err(&o));
+    assert!(text.contains("búsqueda será por texto"), "{text}");
+    assert!(!m.home.join(".cache/clio-models").exists(), "{text}");
+}
+
+/// A fake `curl` that logs its call, writes part of the file to `-o` and fails.
+fn fake_failing_curl(bin: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let curl = bin.join("curl");
+    std::fs::write(
+        &curl,
+        format!(
+            "#!/bin/sh\necho \"$@\" >> '{}'\nwhile [ $# -gt 0 ]; do [ \"$1\" = -o ] && printf partial > \"$2\"; shift; done\necho 'curl: (56) Recv failure' >&2\nexit 56\n",
+            bin.join("curl.log").display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&curl, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+// A better or equal model already there: the default asks for nothing to be downloaded.
+#[test]
+fn setup_default_model_downloads_nothing_when_a_good_one_is_installed() {
+    let m = machine();
+    fake_failing_curl(&m.bin);
+    let granite = m
+        .home
+        .join(".cache/clio-models/granite-embedding-311m-multilingual-r2");
+    std::fs::create_dir_all(&granite).unwrap();
+    for f in clio_memory::setup::GRANITE.files {
+        std::fs::write(granite.join(f.local), "pesos").unwrap();
+    }
+    let o = setup_on(&m, None, &["setup", "--yes"]);
+    let text = out(&o);
+    assert_eq!(code(&o), 0, "{text}{}", err(&o));
+    assert!(!m.bin.join("curl.log").exists(), "{text}");
+    assert!(text.contains("Granite"), "{text}");
+}
+
+// A download that breaks: its step says so, nothing half-downloaded stays, the agents are
+// connected anyway, and the exit code is not 0.
+#[test]
+fn setup_failed_download_leaves_no_partial_file_and_the_agents_connected() {
+    let m = machine();
+    fake_failing_curl(&m.bin);
+    fakes::fake_codex(&m.bin, false);
+    let o = setup_on(&m, None, &["setup", "--yes", "--model", "potion"]);
+    let text = out(&o);
+    assert_eq!(code(&o), 1, "{text}{}", err(&o));
+    assert!(m.bin.join("curl.log").is_file(), "{text}");
+    assert!(text.contains("✖ modelo · "), "{text}");
+    assert!(text.contains("✓ Codex · "), "{text}");
+    let potion = m.home.join(".cache/clio-models/potion-multilingual-128M");
+    let left: Vec<_> = std::fs::read_dir(&potion)
+        .map(|d| d.flatten().map(|e| e.file_name()).collect())
+        .unwrap_or_default();
+    assert!(left.is_empty(), "{left:?}");
+}
+
+// An agent's program that is there but fails: its step says why and the others are connected
+// anyway; the exit code is not 0. A reason of several lines (the service manager's) stays one
+// line of output.
+#[test]
+fn setup_a_failing_step_is_one_line_and_the_others_go_on() {
+    use std::os::unix::fs::PermissionsExt;
+    let m = machine();
+    fakes::fake_codex(&m.bin, false);
+    let failing = "#!/bin/sh\necho 'primera línea' >&2\necho 'segunda línea' >&2\nexit 1\n";
+    for program in ["gemini", "systemctl", "launchctl"] {
+        let p = m.bin.join(program);
+        std::fs::write(&p, failing).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let o = setup_on(&m, None, &["setup", "--yes", "--model", "none"]);
+    let text = out(&o);
+    assert_eq!(code(&o), 1, "{text}{}", err(&o));
+    assert!(
+        text.lines()
+            .any(|l| l.starts_with("✖ Gemini CLI · ") && l.contains("primera línea")),
+        "{text}"
+    );
+    assert!(
+        text.lines()
+            .any(|l| l.starts_with("✖ sueño · ") && l.contains("primera línea / segunda línea")),
+        "{text}"
+    );
+    assert!(text.contains("✓ Codex · "), "{text}");
+    assert!(
+        text.contains("Listo. Abre Codex: la memoria ya está ahí."),
+        "{text}"
+    );
+}

@@ -1,4 +1,5 @@
 #![allow(clippy::unwrap_used)] // tests: panicking is the failure mode
+#![cfg_attr(not(target_os = "linux"), allow(unused_imports, dead_code))] // some tests are Linux-only (systemd)
 //! The sleep on a machine: the timer that wakes it at night, the command, the line the agent reads
 //! the morning after and what `doctor` says. Nothing here touches the real system: the commands
 //! that would talk to systemd are recorded instead.

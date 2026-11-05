@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-pub use state::{SleepState, last_report};
+pub use state::{SleepState, dir as sleep_dir, last_report};
 
 use crate::agent::memory::{DB_FILE, EmbedModel};
 use crate::{

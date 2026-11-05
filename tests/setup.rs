@@ -2,36 +2,15 @@
 //! `clio-memory setup`: Claude Code through its own command line (a fake `claude` here, which
 //! records what it was asked), and the vector model through a fake download.
 
+mod common;
+
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use clio_memory::setup::{ClaudeCode, POTION, install_model};
-
-/// A fake `claude` in `dir`: logs its arguments, answers `mcp get` from a file it keeps.
-fn fake_claude(dir: &Path) -> PathBuf {
-    let bin = dir.join("claude");
-    let log = dir.join("log");
-    let reg = dir.join("registered");
-    std::fs::write(
-        &bin,
-        format!(
-            r#"#!/bin/sh
-echo "$*" >> {log}
-case "$1 $2" in
-  "--version "*) echo "2.0.0 (Claude Code)";;
-  "mcp get") [ -f {reg} ] && cat {reg} && exit 0; exit 1;;
-  "mcp add") shift 2; echo "clio-memory: $*" > {reg};;
-  "mcp remove") rm -f {reg};;
-esac
-"#,
-            log = log.display(),
-            reg = reg.display()
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-    bin
-}
+use common::fakes::{
+    CLAUDE_USER_SCOPE, calls, claude_get_output, claude_registry, fake_claude_mcp,
+};
 
 struct Rig {
     _t: tempfile::TempDir,
@@ -46,7 +25,7 @@ fn rig() -> Rig {
     let dir = t.path().join("fake");
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&dir).unwrap();
-    let claude = fake_claude(&dir);
+    let claude = fake_claude_mcp(&dir);
     Rig {
         home,
         dir,
@@ -69,8 +48,13 @@ impl Rig {
         .run()
     }
 
+    /// The calls the fake `claude` received, one per line, its arguments joined by spaces.
     fn log(&self) -> String {
-        std::fs::read_to_string(self.dir.join("log")).unwrap_or_default()
+        calls(&self.dir, "claude")
+            .iter()
+            .map(|c| c.join(" "))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn skill(&self) -> PathBuf {
@@ -96,7 +80,11 @@ fn setup_registers_the_mcp_and_installs_the_skill() {
 #[test]
 fn an_existing_clio_memory_server_is_not_replaced_without_replace() {
     let r = rig();
-    std::fs::write(r.dir.join("registered"), "clio-memory: clio memory mcp\n").unwrap();
+    std::fs::write(
+        claude_registry(&r.dir),
+        claude_get_output(CLAUDE_USER_SCOPE, "user", "clio", "memory mcp"),
+    )
+    .unwrap();
     let e = r.setup(false, Some(false)).unwrap_err();
     assert!(e.contains("--replace"), "{e}");
     assert!(!r.log().contains("mcp add"), "{}", r.log());

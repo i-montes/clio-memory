@@ -183,8 +183,12 @@ fn memory_context_starts_with_last_nights_line() {
 }
 
 fn cli(data: &Path, args: &[&str]) -> std::process::Output {
+    // No `PATH`: `doctor` finds none of this machine's agents.
     std::process::Command::new(env!("CARGO_BIN_EXE_clio-memory"))
         .env("HOME", data)
+        .env("PATH", data.join("no-programs"))
+        .env_remove("CLIO_MEMORY_CLAUDE")
+        .env_remove("CODEX_HOME")
         .arg("--db")
         .arg(data.join("memory.db"))
         .args(args)

@@ -8,22 +8,37 @@
 //! match replaces nothing.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use sha2::{Digest, Sha256};
 
-/// The skill installed for Claude Code.
-pub const SKILL: &str = include_str!("../skill/SKILL.md");
-/// The line added to `~/.claude/CLAUDE.md` when the person says yes.
-pub const CLAUDE_MD_LINE: &str =
-    "- Mi memoria principal es clio-memory (MCP): úsala según la skill clio-memory.";
-const NAME: &str = "clio-memory";
+pub mod agents;
+pub mod config_file;
+pub mod instructions;
+pub mod mcp;
+pub mod model_choice;
+pub mod plan;
+pub mod skill;
 
-/// One file of a model: where it is in the repository, its name on disk, its sha256.
+use agents::{AgentId, Env};
+use instructions::has_instructions;
+
+/// The skill installed for Claude Code.
+pub const SKILL: &str = include_str!("../../skill/SKILL.md");
+/// The line added to each agent's instructions file (`~/.claude/CLAUDE.md` and the like) when the
+/// person says yes.
+pub const INSTRUCTIONS_LINE: &str =
+    "- Mi memoria principal es clio-memory (MCP): úsala según la skill clio-memory.";
+/// The name Claude Code's flow knew it by.
+pub const CLAUDE_MD_LINE: &str = INSTRUCTIONS_LINE;
+
+/// One file of a model: where it is in the repository, its name on disk, its sha256 and its size in
+/// bytes (the `content-length` of its pinned URL, for the progress of the download).
 pub struct ModelFile {
     pub remote: &'static str,
     pub local: &'static str,
     pub sha256: &'static str,
+    pub size: u64,
 }
 
 /// A vector model as `setup model` installs it: Hugging Face repository, pinned revision, files,
@@ -62,11 +77,13 @@ pub const GRANITE: ModelSpec = ModelSpec {
             remote: "tokenizer.json",
             local: "tokenizer.json",
             sha256: "0087c868b33bad550a78a08d19798cfd7f713cde4f020803b8f51f405503e15f",
+            size: 33384821,
         },
         ModelFile {
             remote: "onnx/model.onnx",
             local: "model.onnx",
             sha256: "75f9f258bf5013f5fe8a4dad61dd0fd16ac0cbaa7a106e3d3f41c2d04a42d541",
+            size: 1247170481,
         },
     ],
 };
@@ -81,16 +98,19 @@ pub const POTION: ModelSpec = ModelSpec {
             remote: "config.json",
             local: "config.json",
             sha256: "595e4cab2093732efd5dbe084fd5c1826b5eea693b73b4c1fd971672867d2e54",
+            size: 271,
         },
         ModelFile {
             remote: "tokenizer.json",
             local: "tokenizer.json",
             sha256: "19f1909063da3cfe3bd83a782381f040dccea475f4816de11116444a73e1b6a1",
+            size: 18616131,
         },
         ModelFile {
             remote: "model.safetensors",
             local: "model.safetensors",
             sha256: "14b5eb39cb4ce5666da8ad1f3dc6be4346e9b2d601c073302fa0a31bf7943397",
+            size: 512361560,
         },
     ],
 };
@@ -122,106 +142,93 @@ impl ClaudeCode<'_> {
                 self.claude.display()
             )
         })?;
-        let ours = format!("{} mcp", self.exe.display());
-        let registered = self.claude(&["mcp", "get", NAME]).ok();
-        let ours_already = registered.as_deref().is_some_and(|r| r.contains(&ours));
-        let skill = self.home.join(".claude/skills").join(NAME).join("SKILL.md");
-        let skill_now = std::fs::read_to_string(&skill).ok();
-        let skill_ok = skill_now.as_deref() == Some(SKILL);
-        // Something of the same name that is not this one: only with a yes.
-        let foreign = (
-            registered.is_some() && !ours_already,
-            skill_now.is_some() && !skill_ok,
-        );
-        if (foreign.0 || foreign.1) && !self.replace {
-            let what = match foreign {
-                (true, true) => "un servidor MCP y una skill llamados clio-memory",
-                (true, false) => "un servidor MCP llamado clio-memory",
-                _ => "una skill clio-memory distinta",
-            };
-            if !(self.ask)(&format!("Claude Code ya tiene {what}. ¿Reemplazarlo?")) {
-                return Err(format!(
-                    "Claude Code ya tiene {what}: no se cambió nada (usa --replace para reemplazarlo)"
-                ));
-            }
-        }
-        let mut said = Vec::new();
-        if skill_ok {
-            said.push(format!("la skill ya está en {}", skill.display()));
-        } else {
-            write_private(&skill, SKILL)?;
-            said.push(format!("skill instalada en {}", skill.display()));
-        }
-        if ours_already {
-            said.push("el servidor MCP clio-memory ya está registrado".into());
-        } else {
-            if registered.is_some() {
-                self.claude(&["mcp", "remove", "--scope", "user", NAME])?;
-            }
-            let exe = self.exe.to_string_lossy();
-            self.claude(&["mcp", "add", "--scope", "user", NAME, "--", &exe, "mcp"])?;
-            said.push(format!("servidor MCP clio-memory registrado: {ours}"));
-        }
+        // Only Claude Code is driven here: no other agent's program is run. The others' state is
+        // read from their files where it can be; where it cannot, their skill is left as it is.
+        let env = Env {
+            home: self.home.clone(),
+            exe: self.exe.clone(),
+            path: Vec::new(),
+            codex_home: None,
+            claude: Some(self.claude.clone()),
+            bin_dir: None,
+            service: self.service,
+        };
         let md = self.home.join(".claude/CLAUDE.md");
-        let text = std::fs::read_to_string(&md).unwrap_or_default();
-        if text.lines().any(|l| l.trim() == CLAUDE_MD_LINE) {
-            said.push("la línea de CLAUDE.md ya está".into());
-        } else {
-            let yes = self.claude_md.unwrap_or_else(|| {
+        let instructions = has_instructions(&env, AgentId::ClaudeCode)
+            || self.claude_md.unwrap_or_else(|| {
                 (self.ask)(&format!(
                     "¿Añado a {} la línea «{CLAUDE_MD_LINE}»?",
                     md.display()
                 ))
             });
-            if yes {
-                let sep = if text.is_empty() || text.ends_with('\n') {
-                    ""
-                } else {
-                    "\n"
-                };
-                write_private(&md, &format!("{text}{sep}{CLAUDE_MD_LINE}\n"))?;
-                said.push(format!("línea añadida a {}", md.display()));
+        let selection = plan::Selection {
+            agents: vec![AgentId::ClaudeCode],
+            instructions,
+            replace: self.replace,
+            exclusive: false,
+        };
+        let mut said = Vec::new();
+        for step in plan::apply(&env, &selection, self.ask) {
+            match step.outcome {
+                Ok(line) => said.push(line),
+                // A machine without a user service manager still gets the rest.
+                Err(e) if step.what == plan::SLEEP => said.push(e),
+                Err(e) => return Err(e),
             }
         }
-        // The sleep is part of the memory: without a timer it never runs. A machine without
-        // a user service manager still gets the rest.
-        said.push(if sleep_installed(&self.home, &self.exe, &["sleep"]) {
-            "el sueño nocturno ya está instalado".into()
-        } else if sleep_present(&self.home) {
-            // Clio's (`clio memory sleep`) also merges with the person's model: not replaced.
-            "ya hay otro sueño nocturno instalado (de Clio u otro binario): no se cambió; `clio-memory setup sleep` lo reemplaza".into()
-        } else {
-            match install_sleep(&self.home, &self.exe, &["sleep"], self.service) {
-                Ok(at) => format!("sueño nocturno instalado: {}", at.display()),
-                Err(e) => format!("el sueño nocturno no se instaló ({e}); `clio-memory setup sleep` lo intenta de nuevo"),
-            }
-        });
         Ok(said)
     }
 
     fn claude(&self, args: &[&str]) -> Result<String, String> {
-        // «Text file busy» (ETXTBSY): the program was just written and another thread's child
-        // still holds it for a moment; it is there, so try again.
-        let mut tries = 0;
-        let out = loop {
-            match Command::new(&self.claude).args(args).output() {
-                Err(e) if e.raw_os_error() == Some(26) && tries < 50 => {
-                    tries += 1;
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                other => break other.map_err(|e| e.to_string())?,
+        run_program(&self.claude, args)
+    }
+}
+
+/// Runs `program args` and returns what it printed; one that fails says which command and why.
+pub(crate) fn run_program(program: &Path, args: &[&str]) -> Result<String, String> {
+    run_command(Command::new(program).args(args))
+}
+
+/// `run_program` for a command with more set up (its environment).
+pub(crate) fn run_command(cmd: &mut Command) -> Result<String, String> {
+    let out = command_output(cmd)?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        Err(format!(
+            "`{}` falló: {}",
+            command_line(cmd),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
+
+/// Runs `cmd` to the end, whatever its exit code; only a program that cannot be started is an
+/// error.
+pub(crate) fn command_output(cmd: &mut Command) -> Result<std::process::Output, String> {
+    // «Text file busy» (ETXTBSY): the program was just written and another thread's child
+    // still holds it for a moment; it is there, so try again.
+    let mut tries = 0;
+    loop {
+        match cmd.output() {
+            Err(e) if e.raw_os_error() == Some(26) && tries < 50 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(10));
             }
-        };
-        if out.status.success() {
-            Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-        } else {
-            Err(format!(
-                "`claude {}` falló: {}",
-                args.join(" "),
-                String::from_utf8_lossy(&out.stderr).trim()
-            ))
+            other => break other.map_err(|e| format!("{}: {e}", cmd.get_program().display())),
         }
     }
+}
+
+/// `cmd` as the person would type it: the program's name and its arguments.
+fn command_line(cmd: &Command) -> String {
+    let program = Path::new(cmd.get_program());
+    let name = program.file_name().unwrap_or(program.as_os_str());
+    std::iter::once(name)
+        .chain(cmd.get_args())
+        .map(|a| a.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The name of the sleep's unit (systemd) and the stem of its job (launchd), whoever installs it:
@@ -292,7 +299,7 @@ pub fn sleep_installed(home: &Path, exe: &Path, args: &[&str]) -> bool {
 }
 
 /// Whether some sleep is installed, whatever it runs.
-fn sleep_present(home: &Path) -> bool {
+pub(crate) fn sleep_present(home: &Path) -> bool {
     if cfg!(target_os = "macos") {
         return home
             .join("Library/LaunchAgents")
@@ -302,6 +309,50 @@ fn sleep_present(home: &Path) -> bool {
     home.join(".config/systemd/user")
         .join(format!("{SLEEP_UNIT}.service"))
         .is_file()
+}
+
+/// Whether the sleep installed is a `clio-memory sleep`, of this binary or of another
+/// `clio-memory` (an older install): not Clio's `clio memory sleep` nor anything else.
+pub(crate) fn sleep_is_clio_memorys(home: &Path) -> bool {
+    if cfg!(target_os = "macos") {
+        let plist = home
+            .join("Library/LaunchAgents")
+            .join(format!("{SLEEP_LABEL}.plist"));
+        return std::fs::read_to_string(plist)
+            .is_ok_and(|t| t.contains("/clio-memory</string><string>sleep</string></array>"));
+    }
+    let service = home
+        .join(".config/systemd/user")
+        .join(format!("{SLEEP_UNIT}.service"));
+    std::fs::read_to_string(service).is_ok_and(|t| {
+        t.lines().any(|l| {
+            l.strip_prefix("ExecStart=")
+                .and_then(|l| l.strip_suffix(" \"sleep\""))
+                .is_some_and(|program| {
+                    program.starts_with('"') && program.ends_with("/clio-memory\"")
+                })
+        })
+    })
+}
+
+/// The nightly sleep for this binary: installed if it is not, re-pointed if it is an older
+/// `clio-memory`'s; another program's (Clio's, which also merges with the person's model) is
+/// left as it is. The `Err` says it was not installed, and how to try again.
+pub fn ensure_sleep(env: &Env) -> Result<String, String> {
+    let (home, exe) = (&env.home, &env.exe);
+    if sleep_installed(home, exe, &["sleep"]) {
+        return Ok("el sueño nocturno ya está instalado".into());
+    }
+    if sleep_present(home) && !sleep_is_clio_memorys(home) {
+        return Ok("ya hay otro sueño nocturno instalado (de Clio u otro binario): no se cambió; `clio-memory setup sleep` lo reemplaza".into());
+    }
+    install_sleep(home, exe, &["sleep"], env.service)
+        .map(|at| format!("sueño nocturno instalado: {}", at.display()))
+        .map_err(|e| {
+            format!(
+                "el sueño nocturno no se instaló ({e}); `clio-memory setup sleep` lo intenta de nuevo"
+            )
+        })
 }
 
 /// Runs a service manager command (`systemctl --user …`, `launchctl …`).
@@ -389,11 +440,29 @@ pub fn remove_sleep(
 }
 
 /// Writes `text` whole (a temporary file, then rename), making the folders it needs.
-fn write_private(path: &Path, text: &str) -> Result<(), String> {
+pub(crate) fn write_private(path: &Path, text: &str) -> Result<(), String> {
+    write_whole(path, text, None)
+}
+
+/// `write_private` for a file of the person's: one that exists keeps its permission bits (a
+/// `CLAUDE.md` kept at 0600 stays so); a new one is written as `write_private` writes it.
+pub(crate) fn write_keeping_mode(path: &Path, text: &str) -> Result<(), String> {
+    let mode = std::fs::metadata(path).ok().map(|m| m.permissions());
+    write_whole(path, text, mode)
+}
+
+fn write_whole(path: &Path, text: &str, mode: Option<std::fs::Permissions>) -> Result<(), String> {
     let dir = path.parent().ok_or("ruta sin carpeta")?;
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let tmp = path.with_extension("tmp-clio-memory");
     std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    if let Some(mode) = mode {
+        // On the temporary file, before the rename: the file is never seen with other bits.
+        if let Err(e) = std::fs::set_permissions(&tmp, mode) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(format!("{}: {e}", tmp.display()));
+        }
+    }
     std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
@@ -659,6 +728,76 @@ pub fn curl_get(curl: &Path, url: &str, to: &Path) -> Result<(), String> {
     } else {
         Err(format!("no se pudo descargar {url}"))
     }
+}
+
+/// Kills and reaps its child when dropped: a return, an error or a panic of the caller's callback
+/// never leaves a `curl` running.
+struct KillOnDrop(Option<std::process::Child>);
+
+impl KillOnDrop {
+    fn child(&mut self) -> &mut std::process::Child {
+        self.0.as_mut().expect("armed until it is dropped")
+    }
+}
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        if let Some(mut c) = self.0.take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+}
+
+/// Downloads `url` to `to` like `curl_get`, but silent (the caller draws the progress): while `curl`
+/// runs, every 200 ms the size of `to` goes to `on_bytes`, and once more, with the final size, when
+/// it ends well. No thread is started, and `curl` is killed and reaped on any early exit (an error,
+/// or `on_bytes` panicking). On an error `to` may be left partial: removing it is the caller's.
+pub fn curl_get_watching(
+    curl: &Path,
+    url: &str,
+    to: &Path,
+    on_bytes: &dyn Fn(u64),
+) -> Result<(), String> {
+    let mut cmd = Command::new(curl);
+    cmd.args(["-fsSL", "--retry", "3", "-o"])
+        .arg(to)
+        .arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    // «Text file busy», as in `command_output`: a program just written, held for a moment.
+    let mut tries = 0;
+    let spawned = loop {
+        match cmd.spawn() {
+            Err(e) if e.raw_os_error() == Some(26) && tries < 50 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            other => break other.map_err(|e| format!("curl: {e}"))?,
+        }
+    };
+    let mut guard = KillOnDrop(Some(spawned));
+    let size = || std::fs::metadata(to).map(|m| m.len()).unwrap_or(0);
+    let status = loop {
+        match guard.child().try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                on_bytes(size());
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            Err(e) => return Err(format!("curl: {e}")),
+        }
+    };
+    if status.success() {
+        on_bytes(size());
+        return Ok(());
+    }
+    let mut why = String::new();
+    if let Some(mut e) = guard.child().stderr.take() {
+        let _ = std::io::Read::read_to_string(&mut e, &mut why);
+    }
+    Err(format!("no se pudo descargar {url}: {}", why.trim()))
 }
 
 /// Unpacks a `.tgz` or `.tar.xz` into `into`, without its top folder, with the system's `tar`.

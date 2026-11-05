@@ -6,15 +6,75 @@
 mod args;
 mod commands;
 mod output;
+mod palette;
+mod setup_flow;
+mod tui;
 mod write;
 
 use std::process::ExitCode;
+
+use clio_memory::setup::agents::{AgentId, Env};
 
 fn main() -> ExitCode {
     match args::parse(std::env::args().skip(1)) {
         Ok(args::Parsed::Help) => {
             output::line(args::USAGE);
             ExitCode::SUCCESS
+        }
+        Ok(args::Parsed::Version) => {
+            output::line(&format!("clio-memory {}", env!("CARGO_PKG_VERSION")));
+            ExitCode::SUCCESS
+        }
+        Ok(args::Parsed::Run(args::Cli {
+            command:
+                args::Command::Setup {
+                    yes,
+                    from_installer,
+                    agents,
+                    all,
+                    model,
+                    instructions,
+                    replace,
+                },
+            ..
+        })) => {
+            let env = match machine() {
+                Ok(env) => env,
+                Err(message) => {
+                    output::error(&format!("error: {message}"));
+                    return ExitCode::from(1);
+                }
+            };
+            let terminal = std::io::IsTerminal::is_terminal(&std::io::stderr());
+            // In a terminal (and no `--yes`) the TUI; else the plain lines.
+            let mut tui;
+            let mut plain = setup_flow::Plain;
+            let screen: &mut dyn setup_flow::Screen = if setup_flow::interactive(yes, terminal) {
+                let mode = palette::color_mode(
+                    std::env::var("COLORTERM").ok().as_deref(),
+                    std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()),
+                    terminal,
+                );
+                tui = tui::Tui::new(mode, env.home.clone());
+                &mut tui
+            } else {
+                &mut plain
+            };
+            setup_flow::run(
+                screen,
+                &env,
+                setup_flow::SetupArgs {
+                    yes,
+                    from_installer,
+                    agents,
+                    all,
+                    model,
+                    instructions,
+                    replace,
+                    terminal,
+                    curl: "curl".into(),
+                },
+            )
         }
         Ok(args::Parsed::Run(args::Cli {
             command: args::Command::SetupClaudeCode { replace, claude_md },
@@ -40,6 +100,17 @@ fn main() -> ExitCode {
             json,
             ..
         })) => done(sleep(&db, model, now, dry_run, report, json)),
+        Ok(args::Parsed::Run(args::Cli {
+            command:
+                args::Command::Uninstall {
+                    agents,
+                    models,
+                    data,
+                    yes,
+                },
+            db,
+            ..
+        })) => uninstall(&db, agents.as_deref(), models, data, yes),
         Ok(args::Parsed::Run(cli)) if matches!(cli.command, args::Command::Mcp) => {
             match mcp(&cli.db) {
                 Ok(()) => ExitCode::SUCCESS,
@@ -49,7 +120,7 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Ok(args::Parsed::Run(cli)) => match commands::run(&cli) {
+        Ok(args::Parsed::Run(cli)) => match commands::run(&cli, machine().ok().as_ref()) {
             Ok(code) => code,
             Err(message) => {
                 output::error(&format!("error: {message}"));
@@ -125,6 +196,176 @@ fn ask(question: &str) -> bool {
         answer.trim().to_lowercase().as_str(),
         "s" | "si" | "sí" | "y" | "yes"
     )
+}
+
+/// This machine, as setup sees it: the home, this binary, the `PATH`, and the overrides of
+/// where Codex and Claude Code are and of where the installer puts the binary.
+fn machine() -> Result<Env<'static>, String> {
+    let var = |name: &str| {
+        std::env::var_os(name)
+            .filter(|v| !v.is_empty())
+            .map(std::path::PathBuf::from)
+    };
+    Ok(Env {
+        home: home()?,
+        exe: std::env::current_exe().map_err(|e| e.to_string())?,
+        path: std::env::var_os("PATH")
+            .map(|p| std::env::split_paths(&p).collect())
+            .unwrap_or_default(),
+        codex_home: var("CODEX_HOME"),
+        claude: var("CLIO_MEMORY_CLAUDE"),
+        bin_dir: var("CLIO_MEMORY_BIN_DIR"),
+        service: &clio_memory::setup::service_command,
+    })
+}
+
+/// `clio-memory uninstall`: every step says how it went; any that failed makes the exit code 1.
+fn uninstall(
+    db: &std::path::Path,
+    agents: Option<&[AgentId]>,
+    models: bool,
+    data: bool,
+    yes: bool,
+) -> ExitCode {
+    use clio_memory::setup::plan::{self, Step};
+    let fail = |message: String, code: u8| {
+        output::error(&format!("error: {message}"));
+        ExitCode::from(code)
+    };
+    let env = match machine() {
+        Ok(env) => env,
+        Err(e) => return fail(e, 1),
+    };
+    // The memory goes only with a yes, asked before anything else: a no changes nothing.
+    let memory = match data.then(|| memory_files(db)).transpose() {
+        Ok(memory) => memory,
+        Err(e) => return fail(e, 2),
+    };
+    if let Some(memory) = memory.as_ref().filter(|_| !yes) {
+        if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            return fail(
+                format!(
+                    "--data borra para siempre {}: sin terminal, confírmalo con --yes",
+                    memory.what()
+                ),
+                2,
+            );
+        }
+        if !ask(&format!("¿Borro {}? No se puede deshacer.", memory.what())) {
+            return fail("no se cambió nada".into(), 1);
+        }
+    }
+    // The models and the memory go before the binary, which goes last and stays if either fails.
+    let gone = || {
+        let mut gone = Vec::new();
+        if models {
+            let dir = env.home.join(".cache/clio-models");
+            gone.push(Step {
+                agent: None,
+                what: "modelos".into(),
+                outcome: remove_folder(&dir).map(|()| {
+                    format!(
+                        "modelos borrados: {} (también eran de Clio; `clio-memory setup model` los vuelve a bajar)",
+                        dir.display()
+                    )
+                }),
+            });
+        }
+        if let Some(memory) = &memory {
+            gone.push(Step {
+                agent: None,
+                what: "datos".into(),
+                outcome: memory
+                    .remove()
+                    .map(|()| format!("memoria borrada: {}", memory.what())),
+            });
+        }
+        gone
+    };
+    let steps = plan::uninstall_with(&env, agents, &gone);
+    if steps.is_empty() {
+        output::line("nada que quitar");
+    }
+    for step in &steps {
+        output::line(&step.line());
+    }
+    if steps.iter().any(|s| s.outcome.is_err()) {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// What `--data` deletes: the memory file with what SQLite and the locks keep beside it, and
+/// the sleep's folder (its state, reports and nightly copies of the file). Nothing else of the
+/// folder they are in: Clio keeps its own data there (its vault among it).
+struct MemoryFiles {
+    db: std::path::PathBuf,
+    files: Vec<std::path::PathBuf>,
+    sleep: std::path::PathBuf,
+}
+
+impl MemoryFiles {
+    /// For the person: the file and the sleep's copies.
+    fn what(&self) -> String {
+        format!(
+            "la memoria: {} y las copias del sueño en {}",
+            self.db.display(),
+            self.sleep.display()
+        )
+    }
+
+    /// Deletes them; one that is not there is already gone.
+    fn remove(&self) -> Result<(), String> {
+        for file in &self.files {
+            match std::fs::remove_file(file) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(format!("{}: {e}", file.display()));
+                }
+                _ => {}
+            }
+        }
+        remove_folder(&self.sleep)
+    }
+}
+
+/// The memory's files for `--db`, which must be a file called `memory.db` (the sleep's folder is
+/// only that file's beside it).
+fn memory_files(db: &std::path::Path) -> Result<MemoryFiles, String> {
+    use clio_memory::agent::memory::DB_FILE;
+    let data = db
+        .parent()
+        .filter(|_| db.file_name().is_some_and(|n| n == DB_FILE))
+        .ok_or_else(|| {
+            format!(
+                "--data borra {DB_FILE} y lo que lo acompaña, y {} no es un {DB_FILE}",
+                db.display()
+            )
+        })?;
+    // SQLite's `-wal` and `-shm`, the writer's lock and the sleep's lock.
+    let files = ["", "-wal", "-shm", ".lock", ".sleep.lock"]
+        .into_iter()
+        .map(|suffix| {
+            let mut name = db.as_os_str().to_owned();
+            name.push(suffix);
+            std::path::PathBuf::from(name)
+        })
+        .collect();
+    Ok(MemoryFiles {
+        db: db.to_path_buf(),
+        files,
+        sleep: clio_memory::sleep::sleep_dir(data),
+    })
+}
+
+/// Deletes a folder and everything in it; one that is not there is already gone.
+fn remove_folder(dir: &std::path::Path) -> Result<(), String> {
+    match std::fs::remove_dir_all(dir) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(format!("{}: {e}", dir.display()))
+        }
+        _ => Ok(()),
+    }
 }
 
 fn setup_claude_code(replace: bool, claude_md: Option<bool>) -> Result<Vec<String>, String> {

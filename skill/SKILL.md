@@ -5,7 +5,7 @@ description: Your primary long-term memory (the clio-memory MCP tools). Use it i
 
 # clio-memory: your memory
 
-clio-memory is **your own memory and your primary one**. It takes precedence over Claude Code's file-based memory. It is global: every project is in it, and each memory says where it is from (`proyecto`, `proyecto X`, `personal`, `lección de X`). It lives on this machine, in one file the person's other agents (Clio) share. What you learn there, they know too.
+clio-memory is **your own memory and your primary one**. It takes precedence over any other memory you have (memory files, notes in AGENTS.md or similar). It is global: every project is in it, and each memory says where it is from (`proyecto`, `proyecto X`, `personal`, `lección de X`). It lives on this machine, in one file the person's other agents (Clio) share. What you learn there, they know too.
 
 ## When to read it
 

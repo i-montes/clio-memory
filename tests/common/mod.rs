@@ -1,5 +1,7 @@
 #![allow(dead_code, clippy::unwrap_used)] // test helpers: panicking is the failure mode
 
+pub mod fakes;
+
 use std::path::PathBuf;
 
 use clio_memory::*;

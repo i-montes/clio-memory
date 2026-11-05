@@ -9,6 +9,15 @@ use std::sync::Arc;
 use clio_memory::*;
 use common::*;
 
+/// The binary, kept away from this machine's agents: `doctor` looks for them in the home and
+/// the `PATH`, and here there are none.
+fn isolated(cmd: &mut Command) -> &mut Command {
+    cmd.env("HOME", "/nonexistent/clio-memory-test-home")
+        .env("PATH", "/nonexistent/clio-memory-test-path")
+        .env_remove("CLIO_MEMORY_CLAUDE")
+        .env_remove("CODEX_HOME")
+}
+
 fn run(db: Option<&Path>, args: &[&str]) -> Output {
     // Tests run in parallel threads. While one thread holds an engine open, another can fork a
     // child that inherits a copy of the lock file until its `exec`; the lock then outlives the
@@ -19,7 +28,7 @@ fn run(db: Option<&Path>, args: &[&str]) -> Output {
         if let Some(db) = db {
             cmd.arg("--db").arg(db);
         }
-        let o = cmd
+        let o = isolated(&mut cmd)
             .env("USER", "tester")
             .env("CLIO_MEMORY_DATA", "/nonexistent/clio-memory-test")
             .args(args)
@@ -36,7 +45,8 @@ fn run(db: Option<&Path>, args: &[&str]) -> Output {
     if let Some(db) = db {
         cmd.arg("--db").arg(db);
     }
-    cmd.env("USER", "tester")
+    isolated(&mut cmd)
+        .env("USER", "tester")
         .env("CLIO_MEMORY_DATA", "/nonexistent/clio-memory-test")
         .args(args)
         .output()
@@ -89,6 +99,26 @@ fn no_command_or_unknown_command_exits_2_with_usage() {
     let o = run(None, &["--help"]);
     assert_eq!(code(&o), 0);
     assert!(out(&o).contains("clio-memory [--db PATH]") && out(&o).contains("mcp"));
+}
+
+#[test]
+fn version_prints_the_crate_version() {
+    // Scripts (install.sh, the release workflow) compare this line; it must not open the file.
+    let dir = tempfile::tempdir().unwrap();
+    for flag in ["--version", "-V"] {
+        let o = Command::new(env!("CARGO_BIN_EXE_clio-memory"))
+            .env("CLIO_MEMORY_DATA", dir.path())
+            .arg(flag)
+            .output()
+            .unwrap();
+        assert_eq!(code(&o), 0, "{flag}: {}", err(&o));
+        assert_eq!(
+            out(&o),
+            format!("clio-memory {}\n", env!("CARGO_PKG_VERSION")),
+            "{flag}"
+        );
+    }
+    assert!(listing(dir.path()).is_empty());
 }
 
 #[test]
@@ -861,4 +891,711 @@ fn without_home_or_clio_memory_data_nothing_is_created_in_the_current_folder() {
     assert_eq!(code(&o), 2, "{}", err(&o));
     assert!(err(&o).contains("CLIO_MEMORY_DATA"), "{}", err(&o));
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
+// ---- the agents: `uninstall` and the agent lines of `doctor` ----
+
+/// A machine for the agents' commands: a temporary home, a `PATH` with only `bin` (a fake
+/// `systemctl` there, so the real one is never touched), and the memory in `data`.
+struct Machine {
+    _t: tempfile::TempDir,
+    home: std::path::PathBuf,
+    bin: std::path::PathBuf,
+    data: std::path::PathBuf,
+    /// This binary as it sees itself: what its MCP entries point at.
+    exe: std::path::PathBuf,
+}
+
+fn machine() -> Machine {
+    use std::os::unix::fs::PermissionsExt;
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path().join("home");
+    let bin = t.path().join("bin");
+    let data = t.path().join("data");
+    for d in [&home, &bin, &data] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let systemctl = bin.join("systemctl");
+    std::fs::write(&systemctl, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&systemctl, std::fs::Permissions::from_mode(0o755)).unwrap();
+    {
+        let e = Engine::open(
+            &data.join("memory.db"),
+            OpenMode::ReadWrite,
+            Arc::new(SystemClock),
+        )
+        .unwrap();
+        e.create_scope("main", "es").unwrap();
+    }
+    let exe = std::fs::canonicalize(env!("CARGO_BIN_EXE_clio-memory")).unwrap();
+    Machine {
+        _t: t,
+        home,
+        bin,
+        data,
+        exe,
+    }
+}
+
+impl Machine {
+    fn run(&self, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_clio-memory"))
+            .env("HOME", &self.home)
+            .env("PATH", &self.bin)
+            .env("CLIO_MEMORY_DATA", &self.data)
+            .env_remove("CLIO_MEMORY_CLAUDE")
+            .env_remove("CLIO_MEMORY_BIN_DIR")
+            .env_remove("CODEX_HOME")
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap()
+    }
+
+    /// OpenCode connected to this binary, with its skill.
+    fn opencode_connected(&self) -> std::path::PathBuf {
+        let config = self.home.join(".config/opencode/opencode.json");
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        std::fs::write(
+            &config,
+            serde_json::json!({"mcp": {"clio-memory": {"type": "local", "command": [self.exe, "mcp"], "enabled": true}}})
+                .to_string(),
+        )
+        .unwrap();
+        let skill = self
+            .home
+            .join(".config/opencode/skills/clio-memory/SKILL.md");
+        std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
+        std::fs::write(&skill, clio_memory::setup::SKILL).unwrap();
+        config
+    }
+}
+
+#[test]
+fn uninstall_data_needs_yes_without_tty() {
+    let m = machine();
+    let config = m.opencode_connected();
+    let before = std::fs::read(&config).unwrap();
+    let o = m.run(&["uninstall", "--data"]);
+    assert!(matches!(code(&o), 1 | 2), "{}", err(&o));
+    assert!(err(&o).contains("--yes"), "{}", err(&o));
+    assert!(
+        m.data.join("memory.db").is_file(),
+        "the memory is still there"
+    );
+    assert_eq!(std::fs::read(&config).unwrap(), before, "nothing was done");
+}
+
+#[test]
+fn uninstall_with_data_and_yes_takes_everything_out() {
+    let m = machine();
+    let config = m.opencode_connected();
+    let models = m.home.join(".cache/clio-models/potion-multilingual-128M");
+    std::fs::create_dir_all(&models).unwrap();
+    std::fs::write(models.join("model.safetensors"), "pesos").unwrap();
+    let o = m.run(&["uninstall", "--data", "--models", "--yes"]);
+    assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+    assert!(!m.data.join("memory.db").exists(), "{}", out(&o));
+    assert!(m.data.is_dir(), "the folder itself stays");
+    assert!(!m.home.join(".cache/clio-models").exists());
+    assert!(m.home.is_dir());
+    let left: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+    assert!(left.get("mcp").is_none(), "{left}");
+    assert!(!m.home.join(".config/opencode/skills/clio-memory").exists());
+    assert!(out(&o).contains("✔ OpenCode"), "{}", out(&o));
+    // The models were Clio's too: the line says so.
+    assert!(
+        out(&o)
+            .lines()
+            .any(|l| l.contains("modelos borrados") && l.contains("también eran de Clio")),
+        "{}",
+        out(&o)
+    );
+}
+
+#[test]
+fn uninstall_without_data_keeps_the_memory_and_takes_the_agents_listed() {
+    let m = machine();
+    let config = m.opencode_connected();
+    let o = m.run(&["uninstall", "--agents", "antigravity"]);
+    assert_eq!(code(&o), 0, "{}", err(&o));
+    assert!(
+        std::fs::read_to_string(&config)
+            .unwrap()
+            .contains("clio-memory")
+    );
+    let o = m.run(&["uninstall", "--agents", "opencode,antigravity"]);
+    assert_eq!(code(&o), 0, "{}", err(&o));
+    assert!(
+        !std::fs::read_to_string(&config)
+            .unwrap()
+            .contains("clio-memory")
+    );
+    assert!(m.data.join("memory.db").is_file());
+    let o = m.run(&["uninstall", "--agents", "vscode"]);
+    assert_eq!(code(&o), 2);
+    assert!(err(&o).contains("vscode"), "{}", err(&o));
+}
+
+#[test]
+fn doctor_lists_agents() {
+    use std::os::unix::fs::PermissionsExt;
+    let m = machine();
+    m.opencode_connected();
+    // Gemini CLI is there, not connected; Antigravity points at an older binary.
+    let gemini = m.bin.join("gemini");
+    std::fs::write(&gemini, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&gemini, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let old = m.home.join(".cargo/bin/clio-memory");
+    let antigravity = m.home.join(".gemini/config/mcp_config.json");
+    std::fs::create_dir_all(antigravity.parent().unwrap()).unwrap();
+    std::fs::write(
+        &antigravity,
+        serde_json::json!({"mcpServers": {"clio-memory": {"command": old, "args": ["mcp"]}}})
+            .to_string(),
+    )
+    .unwrap();
+    let o = m.run(&["doctor"]);
+    let text = out(&o);
+    assert_eq!(code(&o), 1, "{text}");
+    assert!(text.contains("ok   agente opencode: conectado\n"), "{text}");
+    assert!(
+        text.contains("--   agente gemini: no conectado\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "FAIL agente antigravity: el MCP apunta a {}\n",
+            old.display()
+        )),
+        "{text}"
+    );
+    assert!(!text.contains("agente claude-code"), "{text}");
+    // The agent lines come after the checks.
+    assert!(
+        text.find("ok   agente").unwrap() > text.find("info sueño").unwrap(),
+        "{text}"
+    );
+    // Only FAIL changes the exit code.
+    std::fs::remove_file(&antigravity).unwrap();
+    let o = m.run(&["doctor"]);
+    assert_eq!(code(&o), 0, "{}", out(&o));
+    let o = m.run(&["--json", "doctor"]);
+    let v: serde_json::Value = serde_json::from_str(&out(&o)).unwrap();
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["agents"][0]["agent"], "opencode");
+    assert_eq!(v["agents"][0]["ok"], true);
+}
+
+#[test]
+fn uninstall_data_deletes_only_the_memorys_files() {
+    let m = machine();
+    // The memory's own files, and its sleep's folder...
+    let ours = [
+        "memory.db-wal",
+        "memory.db-shm",
+        "memory.db.lock",
+        "memory.db.sleep.lock",
+    ];
+    for name in ours {
+        std::fs::write(m.data.join(name), "de la memoria").unwrap();
+    }
+    std::fs::create_dir_all(m.data.join("sleep")).unwrap();
+    std::fs::write(m.data.join("sleep/state.json"), "{}").unwrap();
+    // ...beside what Clio keeps in the same folder.
+    let foreign = [
+        ("vault.bin", &b"\x00secreto\xff"[..]),
+        ("runs/x", b"una corrida"),
+        ("projects.json", b"{\"p\": 1}"),
+    ];
+    for (name, bytes) in foreign {
+        let p = m.data.join(name);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, bytes).unwrap();
+    }
+    let o = m.run(&["uninstall", "--data", "--yes"]);
+    assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+    assert!(!m.data.join("memory.db").exists(), "{}", out(&o));
+    for name in ours {
+        assert!(!m.data.join(name).exists(), "{name}");
+    }
+    assert!(!m.data.join("sleep").exists());
+    for (name, bytes) in foreign {
+        assert_eq!(std::fs::read(m.data.join(name)).unwrap(), bytes, "{name}");
+    }
+}
+
+// ---- `setup` with no subcommand: without a terminal, the plain lines ----
+
+/// A setup run on `m`: the fake agents in `m.bin` (on the `PATH`, with links to the few system
+/// tools the fakes use), Codex's home in the temporary folder, fake `systemctl` and `launchctl`
+/// for the sleep, and `CLIO_MEMORY_CLAUDE` at a fake `claude` when `claude` is given (else Claude
+/// Code is nowhere: the `PATH` is only `m.bin`).
+fn setup_on(m: &Machine, claude: Option<&Path>, args: &[&str]) -> Output {
+    use std::os::unix::fs::PermissionsExt;
+    for tool in ["cat", "grep", "rm", "mkdir", "dirname"] {
+        let link = m.bin.join(tool);
+        if let Some(real) = ["/usr/bin", "/bin"]
+            .iter()
+            .map(|d| Path::new(d).join(tool))
+            .find(|p| p.is_file())
+            .filter(|_| !link.exists())
+        {
+            std::os::unix::fs::symlink(real, link).unwrap();
+        }
+    }
+    let launchctl = m.bin.join("launchctl");
+    if !launchctl.exists() {
+        std::fs::write(&launchctl, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&launchctl, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let codex_home = m.home.join(".codex");
+    std::fs::create_dir_all(&codex_home).unwrap();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_clio-memory"));
+    cmd.env("HOME", &m.home)
+        .env("PATH", &m.bin)
+        .env("CLIO_MEMORY_DATA", &m.data)
+        .env("CODEX_HOME", &codex_home)
+        .env("SHELL", "/bin/bash")
+        .env_remove("CLIO_MEMORY_BIN_DIR")
+        .env_remove("CLIO_MEMORY_CLAUDE");
+    if let Some(claude) = claude {
+        cmd.env("CLIO_MEMORY_CLAUDE", claude);
+    }
+    cmd.args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn setup_yes_connects_found_agents() {
+    let m = machine();
+    fakes::fake_codex(&m.bin, false);
+    fakes::fake_gemini(&m.bin, &m.home);
+    let o = setup_on(&m, None, &["setup", "--yes", "--model", "none"]);
+    let text = out(&o);
+    assert_eq!(code(&o), 0, "{text}{}", err(&o));
+    assert!(text.contains("✓ Codex · "), "{text}");
+    assert!(text.contains("✓ Gemini CLI · "), "{text}");
+    assert!(
+        text.contains("Listo. Abre Codex y Gemini CLI: la memoria ya está ahí."),
+        "{text}"
+    );
+    assert!(fakes::codex_registry(&m.home.join(".codex")).is_file());
+    // Line-based: no carriage returns, no escapes.
+    assert!(!text.contains('\r') && !text.contains('\u{1b}'), "{text:?}");
+}
+
+#[test]
+fn setup_agents_flag_only_adds() {
+    let m = machine();
+    let fakes_dir = m.home.parent().unwrap().join("claude-bin");
+    let claude = fakes::fake_claude_mcp(&fakes_dir);
+    fakes::fake_codex(&m.bin, false);
+    let o = setup_on(
+        &m,
+        Some(&claude),
+        &[
+            "setup",
+            "--yes",
+            "--agents",
+            "claude-code",
+            "--model",
+            "none",
+        ],
+    );
+    assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+    assert!(fakes::claude_registry(&fakes_dir).is_file(), "{}", out(&o));
+    let o = setup_on(
+        &m,
+        Some(&claude),
+        &["setup", "--yes", "--agents", "codex", "--model", "none"],
+    );
+    let text = out(&o);
+    assert_eq!(code(&o), 0, "{text}{}", err(&o));
+    assert!(fakes::claude_registry(&fakes_dir).is_file(), "{text}");
+    assert!(
+        !fakes::calls(&fakes_dir, "claude")
+            .iter()
+            .any(|c| c.get(1).is_some_and(|a| a == "remove")),
+        "Claude Code was disconnected: {text}"
+    );
+    assert!(
+        text.contains("Listo. Abre Claude Code y Codex: la memoria ya está ahí."),
+        "{text}"
+    );
+}
+
+#[test]
+fn setup_unknown_agent_is_usage_error() {
+    let m = machine();
+    let o = setup_on(&m, None, &["setup", "--yes", "--agents", "cursor"]);
+    assert_eq!(code(&o), 2, "{}{}", out(&o), err(&o));
+    assert!(
+        err(&o).contains("claude-code, opencode, codex, gemini, antigravity"),
+        "{}",
+        err(&o)
+    );
+    assert!(err(&o).contains("cursor"), "{}", err(&o));
+}
+
+#[test]
+fn setup_requested_but_missing_agent_fails_only_that_step() {
+    let m = machine();
+    fakes::fake_codex(&m.bin, false);
+    let o = setup_on(
+        &m,
+        None,
+        &[
+            "setup",
+            "--yes",
+            "--agents",
+            "opencode,codex",
+            "--model",
+            "none",
+        ],
+    );
+    let text = out(&o);
+    assert_eq!(code(&o), 1, "{text}{}", err(&o));
+    assert!(text.contains("✖ OpenCode"), "{text}");
+    assert!(text.contains("✓ Codex · "), "{text}");
+    assert!(fakes::codex_registry(&m.home.join(".codex")).is_file());
+}
+
+// install.sh appends `--yes` when there is no terminal, so a person's own `--yes` comes twice.
+#[test]
+fn setup_accepts_repeated_yes_and_from_installer() {
+    let m = machine();
+    let o = setup_on(
+        &m,
+        None,
+        &[
+            "setup",
+            "--from-installer",
+            "--yes",
+            "--from-installer",
+            "--yes",
+            "--model",
+            "none",
+        ],
+    );
+    let text = out(&o);
+    assert_eq!(code(&o), 0, "{text}{}", err(&o));
+    // From the installer, with ~/.local/bin off the PATH: the line for bash.
+    assert!(
+        text.contains(r#"echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc"#),
+        "{text}"
+    );
+    assert!(text.contains("clio-memory instalado"), "{text}");
+}
+
+#[test]
+fn setup_flags_that_contradict_are_usage_errors() {
+    let m = machine();
+    for args in [
+        &["setup", "--instructions", "--no-instructions"][..],
+        &["setup", "--model", "big"],
+        &["setup", "claude-code", "--yes"],
+        &["setup", "model", "--agents", "codex"],
+    ] {
+        let o = setup_on(&m, None, args);
+        assert_eq!(code(&o), 2, "{args:?}: {}{}", out(&o), err(&o));
+    }
+}
+
+#[test]
+fn setup_model_none_with_nothing_installed_says_text_search() {
+    let m = machine();
+    let o = setup_on(&m, None, &["setup", "--yes", "--model", "none"]);
+    let text = out(&o);
+    assert_eq!(code(&o), 0, "{text}{}", err(&o));
+    assert!(text.contains("búsqueda será por texto"), "{text}");
+    assert!(!m.home.join(".cache/clio-models").exists(), "{text}");
+}
+
+/// A fake `curl` that logs its call, writes part of the file to `-o` and fails.
+fn fake_failing_curl(bin: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let curl = bin.join("curl");
+    std::fs::write(
+        &curl,
+        format!(
+            "#!/bin/sh\necho \"$@\" >> '{}'\nwhile [ $# -gt 0 ]; do [ \"$1\" = -o ] && printf partial > \"$2\"; shift; done\necho 'curl: (56) Recv failure' >&2\nexit 56\n",
+            bin.join("curl.log").display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&curl, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+// A better or equal model already there: the default asks for nothing to be downloaded.
+#[test]
+fn setup_default_model_downloads_nothing_when_a_good_one_is_installed() {
+    let m = machine();
+    fake_failing_curl(&m.bin);
+    let granite = m
+        .home
+        .join(".cache/clio-models/granite-embedding-311m-multilingual-r2");
+    std::fs::create_dir_all(&granite).unwrap();
+    for f in clio_memory::setup::GRANITE.files {
+        std::fs::write(granite.join(f.local), "pesos").unwrap();
+    }
+    let o = setup_on(&m, None, &["setup", "--yes"]);
+    let text = out(&o);
+    assert_eq!(code(&o), 0, "{text}{}", err(&o));
+    assert!(!m.bin.join("curl.log").exists(), "{text}");
+    assert!(text.contains("Granite"), "{text}");
+}
+
+// A download that breaks: its step says so, nothing half-downloaded stays, the agents are
+// connected anyway, and the exit code is not 0.
+#[test]
+fn setup_failed_download_leaves_no_partial_file_and_the_agents_connected() {
+    let m = machine();
+    fake_failing_curl(&m.bin);
+    fakes::fake_codex(&m.bin, false);
+    let o = setup_on(&m, None, &["setup", "--yes", "--model", "potion"]);
+    let text = out(&o);
+    assert_eq!(code(&o), 1, "{text}{}", err(&o));
+    assert!(m.bin.join("curl.log").is_file(), "{text}");
+    assert!(text.contains("✖ modelo · "), "{text}");
+    assert!(text.contains("✓ Codex · "), "{text}");
+    let potion = m.home.join(".cache/clio-models/potion-multilingual-128M");
+    let left: Vec<_> = std::fs::read_dir(&potion)
+        .map(|d| d.flatten().map(|e| e.file_name()).collect())
+        .unwrap_or_default();
+    assert!(left.is_empty(), "{left:?}");
+}
+
+// An agent's program that is there but fails: its step says why and the others are connected
+// anyway; the exit code is not 0. A reason of several lines (the service manager's) stays one
+// line of output.
+#[test]
+fn setup_a_failing_step_is_one_line_and_the_others_go_on() {
+    use std::os::unix::fs::PermissionsExt;
+    let m = machine();
+    fakes::fake_codex(&m.bin, false);
+    let failing = "#!/bin/sh\necho 'primera línea' >&2\necho 'segunda línea' >&2\nexit 1\n";
+    for program in ["gemini", "systemctl", "launchctl"] {
+        let p = m.bin.join(program);
+        std::fs::write(&p, failing).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let o = setup_on(&m, None, &["setup", "--yes", "--model", "none"]);
+    let text = out(&o);
+    assert_eq!(code(&o), 1, "{text}{}", err(&o));
+    assert!(
+        text.lines()
+            .any(|l| l.starts_with("✖ Gemini CLI · ") && l.contains("primera línea")),
+        "{text}"
+    );
+    assert!(
+        text.lines()
+            .any(|l| l.starts_with("✖ sueño · ") && l.contains("primera línea / segunda línea")),
+        "{text}"
+    );
+    assert!(text.contains("✓ Codex · "), "{text}");
+    assert!(
+        text.contains("Listo. Abre Codex: la memoria ya está ahí."),
+        "{text}"
+    );
+}
+
+#[test]
+fn setup_refuses_options_given_before_it() {
+    let m = machine();
+    for (args, name) in [
+        (&["--model", "/tmp/x", "setup", "--yes"][..], "--model"),
+        (&["--db", "/tmp/memory.db", "setup", "--yes"], "--db"),
+        (&["--actor", "ana", "setup", "--yes"], "--actor"),
+        (&["--json", "setup", "--yes"], "--json"),
+    ] {
+        let o = setup_on(&m, None, args);
+        assert_eq!(code(&o), 2, "{args:?}: {}{}", out(&o), err(&o));
+        assert!(err(&o).contains(name), "{args:?}: {}", err(&o));
+    }
+}
+
+// A plain re-run keeps what was chosen: no agent that was left out is connected, no line is
+// added to an agent that had none, and no model is downloaded.
+#[test]
+fn setup_rerun_without_flags_keeps_what_was_chosen() {
+    let m = machine();
+    fake_failing_curl(&m.bin);
+    let fakes_dir = m.home.parent().unwrap().join("claude-bin");
+    let claude = fakes::fake_claude_mcp(&fakes_dir);
+    let o = setup_on(
+        &m,
+        Some(&claude),
+        &[
+            "setup",
+            "--yes",
+            "--agents",
+            "claude-code",
+            "--model",
+            "none",
+            "--no-instructions",
+        ],
+    );
+    assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+    // OpenCode appears afterwards (its folder).
+    std::fs::create_dir_all(m.home.join(".config/opencode")).unwrap();
+    let o = setup_on(&m, Some(&claude), &["setup", "--yes"]);
+    let text = out(&o);
+    assert_eq!(code(&o), 0, "{text}{}", err(&o));
+    assert!(fakes::claude_registry(&fakes_dir).is_file(), "{text}");
+    assert!(
+        !m.home.join(".config/opencode/opencode.json").exists(),
+        "OpenCode was connected: {text}"
+    );
+    assert!(!m.home.join(".claude/CLAUDE.md").exists(), "{text}");
+    assert!(!m.bin.join("curl.log").exists(), "{text}");
+    assert!(
+        text.contains("Listo. Abre Claude Code: la memoria ya está ahí."),
+        "{text}"
+    );
+    assert!(text.contains("--agents opencode"), "{text}");
+    // A flag still applies on a re-run.
+    let o = setup_on(
+        &m,
+        Some(&claude),
+        &["setup", "--yes", "--agents", "opencode", "--model", "none"],
+    );
+    assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+    assert!(
+        m.home.join(".config/opencode/opencode.json").is_file(),
+        "{}",
+        out(&o)
+    );
+}
+
+#[test]
+fn setup_rerun_skips_an_agent_that_is_no_longer_installed() {
+    let m = machine();
+    fake_failing_curl(&m.bin);
+    let fakes_dir = m.home.parent().unwrap().join("claude-bin");
+    let claude = fakes::fake_claude_mcp(&fakes_dir);
+    let o = setup_on(
+        &m,
+        Some(&claude),
+        &[
+            "setup",
+            "--yes",
+            "--agents",
+            "claude-code",
+            "--model",
+            "none",
+        ],
+    );
+    assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+    // Gemini CLI was connected once and then uninstalled: its settings remain, `gemini` does not.
+    let settings = m.home.join(".gemini/settings.json");
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    std::fs::write(
+        &settings,
+        r#"{"mcpServers":{"clio-memory":{"command":"/old/bin/clio-memory","args":["mcp"]}}}"#,
+    )
+    .unwrap();
+    let o = setup_on(&m, Some(&claude), &["setup", "--yes"]);
+    let text = out(&o);
+    assert_eq!(code(&o), 0, "{text}{}", err(&o));
+    assert!(!text.contains("no se encontró"), "{text}");
+    assert!(
+        text.contains("Listo. Abre Claude Code: la memoria ya está ahí."),
+        "{text}"
+    );
+}
+
+/// A `clio-memory` in `m.bin`, first on the `PATH`: an old `cargo install`.
+fn old_clio_memory_on_the_path(m: &Machine) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let old = m.bin.join("clio-memory");
+    std::fs::write(&old, "#!/bin/sh\necho viejo\n").unwrap();
+    std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o755)).unwrap();
+    old
+}
+
+#[test]
+fn setup_names_an_older_clio_memory_that_runs_first() {
+    let m = machine();
+    let old = old_clio_memory_on_the_path(&m);
+    let o = setup_on(&m, None, &["setup", "--yes", "--model", "none"]);
+    let text = out(&o);
+    assert_eq!(code(&o), 0, "{text}{}", err(&o));
+    let line = text
+        .lines()
+        .find(|l| l.contains(&old.display().to_string()))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(line.contains("cargo uninstall clio-memory"), "{text}");
+}
+
+#[test]
+fn doctor_warns_of_an_older_clio_memory_that_runs_first_without_failing() {
+    let m = machine();
+    let old = old_clio_memory_on_the_path(&m);
+    let o = m.run(&["doctor"]);
+    let text = out(&o);
+    assert_eq!(code(&o), 0, "{text}");
+    let line = text
+        .lines()
+        .find(|l| l.contains(&old.display().to_string()))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(line.starts_with("--   "), "{text}");
+    assert!(line.contains("cargo uninstall clio-memory"), "{text}");
+}
+
+// Right after an install nothing has used the memory yet: doctor says so, still checks the
+// agents, and only an agent's FAIL makes it fail.
+#[test]
+fn doctor_before_the_first_memory_is_not_a_failure() {
+    use std::os::unix::fs::PermissionsExt;
+    let m = machine();
+    std::fs::remove_file(m.data.join("memory.db")).unwrap();
+    m.opencode_connected();
+    let o = m.run(&["doctor"]);
+    let text = out(&o);
+    assert_eq!(code(&o), 0, "{text}{}", err(&o));
+    assert!(
+        text.contains("todavía no hay memoria: se crea la primera vez que un agente la usa"),
+        "{text}"
+    );
+    assert!(text.contains("ok   agente opencode: conectado\n"), "{text}");
+    assert!(
+        !m.data.join("memory.db").exists(),
+        "doctor created the memory"
+    );
+    let o = m.run(&["--json", "doctor"]);
+    let v: serde_json::Value = serde_json::from_str(&out(&o)).unwrap();
+    assert_eq!(v["ok"], true, "{v}");
+    assert_eq!(v["agents"][0]["agent"], "opencode");
+    // An agent that fails still fails it.
+    let gemini = m.bin.join("gemini");
+    std::fs::write(&gemini, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&gemini, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let settings = m.home.join(".gemini/settings.json");
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    std::fs::write(&settings, "{ esto no es JSON").unwrap();
+    let o = m.run(&["doctor"]);
+    let text = out(&o);
+    assert_eq!(
+        code(&o),
+        0,
+        "unreadable and not connected is not a failure: {text}"
+    );
+    assert!(
+        text.lines()
+            .any(|l| l.starts_with("--   agente gemini: ") && l.contains("settings.json")),
+        "{text}"
+    );
+    std::fs::write(
+        m.home.join(".config/opencode/opencode.json"),
+        serde_json::json!({"mcp": {"clio-memory": {"type": "local", "command": ["/viejo/clio-memory", "mcp"]}}})
+            .to_string(),
+    )
+    .unwrap();
+    let o = m.run(&["doctor"]);
+    assert_eq!(code(&o), 1, "{}", out(&o));
+    assert!(out(&o).contains("FAIL agente opencode"), "{}", out(&o));
 }

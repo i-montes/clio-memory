@@ -23,7 +23,8 @@ pub struct SleepState {
     pub pending: Vec<i64>,
 }
 
-pub(crate) fn dir(data: &Path) -> PathBuf {
+/// The folder the sleep keeps all of this in, beside the memory file.
+pub fn dir(data: &Path) -> PathBuf {
     data.join("sleep")
 }
 

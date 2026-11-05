@@ -6,14 +6,22 @@ use clio_memory::{
     SystemClock,
 };
 
+use clio_memory::setup::agents::{Env, shadowing, shadowing_note};
+use clio_memory::setup::plan::{Health, agent_report};
+
 use crate::args::{Cli, Command};
 use crate::output::{clean, clean_multiline, line};
 
 const JOB_LIMIT: usize = 200;
 
-pub fn run(cli: &Cli) -> Result<ExitCode, String> {
+/// Runs a command that reads; `machine` is where `doctor` looks for the agents (`None`: no
+/// agent lines, as without a home).
+pub fn run(cli: &Cli, machine: Option<&Env>) -> Result<ExitCode, String> {
     if cli.command.writes() {
         return crate::write::run(cli);
+    }
+    if matches!(cli.command, Command::Doctor) {
+        return doctor(cli, machine);
     }
     let engine = open_read(cli)?;
     let fail = |e: Error| e.to_string();
@@ -67,23 +75,8 @@ pub fn run(cli: &Cli) -> Result<ExitCode, String> {
                 ));
             }
         }
-        Command::Doctor => {
-            let report = engine.doctor().map_err(fail)?;
-            if cli.json {
-                json(&serde_json::json!({ "ok": report.all_ok(), "checks": report.checks }))?;
-            } else {
-                for c in &report.checks {
-                    let mark = if c.ok { "ok  " } else { "FAIL" };
-                    line(&format!("{mark} {}: {}", c.name, clean(&c.detail)));
-                }
-                line(&slept(&cli.db));
-            }
-            return Ok(if report.all_ok() {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::from(1)
-            });
-        }
+        // Handled before the file is opened: it may not exist yet.
+        Command::Doctor => return doctor(cli, machine),
         Command::List { scope, state } => {
             let rows = engine
                 .list(scope_id(&engine, scope)?, *state, None)
@@ -269,6 +262,74 @@ fn slept(db: &std::path::Path) -> String {
         }
     }
 }
+
+/// `doctor`: the file's checks (or, before the first memory, that there is none yet: not a
+/// failure), whether another `clio-memory` runs first on the `PATH`, and one line per agent found.
+/// Only a FAIL makes the exit code 1.
+fn doctor(cli: &Cli, machine: Option<&Env>) -> Result<ExitCode, String> {
+    let report = if cli.db.try_exists().unwrap_or(true) {
+        Some(open_read(cli)?.doctor().map_err(|e| e.to_string())?)
+    } else {
+        None
+    };
+    let checks_ok = report.as_ref().is_none_or(|r| r.all_ok());
+    let agents = machine.map(agent_report).unwrap_or_default();
+    let agents_ok = agents.iter().all(|(_, h, _)| *h != Health::Fail);
+    let shadow = machine.and_then(|env| shadowing(env).map(|o| shadowing_note(env, &o)));
+    if cli.json {
+        let agents: Vec<_> = agents
+            .iter()
+            .map(|(a, health, detail)| {
+                serde_json::json!({ "agent": a.key(), "ok": *health != Health::Fail, "detail": detail })
+            })
+            .collect();
+        let mut out = serde_json::json!({
+            "ok": checks_ok && agents_ok,
+            "checks": report.as_ref().map(|r| &r.checks),
+            "agents": agents,
+        });
+        let notes: Vec<&str> = report
+            .is_none()
+            .then_some(NO_MEMORY_YET)
+            .into_iter()
+            .chain(shadow.as_deref())
+            .collect();
+        if !notes.is_empty() {
+            out["notes"] = serde_json::json!(notes);
+        }
+        json(&out)?;
+    } else {
+        match &report {
+            Some(report) => {
+                for c in &report.checks {
+                    let mark = if c.ok { "ok  " } else { "FAIL" };
+                    line(&format!("{mark} {}: {}", c.name, clean(&c.detail)));
+                }
+                line(&slept(&cli.db));
+            }
+            None => line(&format!("--   {NO_MEMORY_YET}")),
+        }
+        if let Some(note) = &shadow {
+            line(&format!("--   {}", clean(note)));
+        }
+        for (agent, health, detail) in &agents {
+            let mark = match health {
+                Health::Fail => "FAIL",
+                Health::Off => "--  ",
+                Health::Ok => "ok  ",
+            };
+            line(&format!("{mark} agente {}: {}", agent.key(), clean(detail)));
+        }
+    }
+    Ok(if checks_ok && agents_ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    })
+}
+
+/// What `doctor` says when the memory's file is not there yet.
+const NO_MEMORY_YET: &str = "todavía no hay memoria: se crea la primera vez que un agente la usa";
 
 fn open_read(cli: &Cli) -> Result<Engine, String> {
     let engine =

@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use clio_memory::setup::agents::{AgentId, Env};
 use clio_memory::setup::mcp::{McpState, mcp_connect, mcp_disconnect, mcp_state};
 use common::fakes::{
-    calls, claude_get_output, claude_registry, codex_get_json, codex_registry, fake_claude_mcp,
-    fake_codex, fake_gemini,
+    CLAUDE_LOCAL_SCOPE, CLAUDE_USER_SCOPE, calls, claude_get_output, claude_registry,
+    codex_get_json, codex_registry, fake_claude_mcp, fake_codex, fake_gemini,
 };
 use serde_json::{Value, json};
 
@@ -171,14 +171,18 @@ fn old_cargo_install_is_other_path() {
     ));
 
     // The same old install, as each command line reports it.
-    std::fs::write(claude_registry(&r.bin), claude_get_output(cargo, "mcp")).unwrap();
+    std::fs::write(
+        claude_registry(&r.bin),
+        claude_get_output(CLAUDE_USER_SCOPE, "user", cargo, "mcp"),
+    )
+    .unwrap();
     assert_eq!(
         mcp_state(&env, AgentId::ClaudeCode).unwrap(),
         McpState::OtherPath(PathBuf::from(cargo))
     );
     std::fs::write(
         claude_registry(&r.bin),
-        claude_get_output("clio", "memory mcp"),
+        claude_get_output(CLAUDE_USER_SCOPE, "user", "clio", "memory mcp"),
     )
     .unwrap();
     assert!(matches!(
@@ -198,6 +202,86 @@ fn old_cargo_install_is_other_path() {
     // Connecting re-points it.
     mcp_connect(&env, AgentId::Codex).unwrap();
     assert_eq!(mcp_state(&env, AgentId::Codex).unwrap(), McpState::Ours);
+}
+
+#[test]
+fn a_claude_entry_in_another_scope_is_not_the_users() {
+    // `claude mcp get` also finds the entries of the directory it runs in: those are not the
+    // user's, so for setup there is nothing there.
+    for command in [EXE, "/home/x/.cargo/bin/clio-memory"] {
+        let r = rig(false);
+        let env = r.env();
+        let local = claude_get_output(CLAUDE_LOCAL_SCOPE, "local", command, "mcp");
+        std::fs::write(claude_registry(&r.bin), local).unwrap();
+        assert_eq!(
+            mcp_state(&env, AgentId::ClaudeCode).unwrap(),
+            McpState::Absent,
+            "{command}"
+        );
+        mcp_disconnect(&env, AgentId::ClaudeCode).unwrap();
+        mcp_connect(&env, AgentId::ClaudeCode).unwrap();
+        assert_eq!(
+            add_call(&r, "claude"),
+            [
+                "mcp",
+                "add",
+                "--scope",
+                "user",
+                "clio-memory",
+                "--",
+                EXE,
+                "mcp"
+            ]
+        );
+        assert!(
+            !calls(&r.bin, "claude").iter().any(|c| c[1] == "remove"),
+            "{command}"
+        );
+        assert_eq!(
+            mcp_state(&env, AgentId::ClaudeCode).unwrap(),
+            McpState::Ours
+        );
+    }
+}
+
+#[test]
+fn a_disabled_entry_is_reconnected() {
+    // Ours, but switched off: read as an install to re-point (connecting turns it back on).
+    let r = rig(false);
+    let env = r.env();
+    let ours_off = McpState::OtherPath(PathBuf::from(EXE));
+
+    write(
+        &r.opencode(),
+        &json!({"mcp": {"clio-memory": {"type": "local", "command": [EXE, "mcp"], "enabled": false}}}),
+    );
+    assert_eq!(mcp_state(&env, AgentId::OpenCode).unwrap(), ours_off);
+    mcp_connect(&env, AgentId::OpenCode).unwrap();
+    assert_eq!(
+        read(&r.opencode())["mcp"]["clio-memory"]["enabled"],
+        json!(true)
+    );
+    assert_eq!(mcp_state(&env, AgentId::OpenCode).unwrap(), McpState::Ours);
+
+    write(
+        &r.antigravity(),
+        &json!({"mcpServers": {"clio-memory": {"command": EXE, "args": ["mcp"], "disabled": true}}}),
+    );
+    assert_eq!(mcp_state(&env, AgentId::Antigravity).unwrap(), ours_off);
+    mcp_connect(&env, AgentId::Antigravity).unwrap();
+    assert_eq!(
+        mcp_state(&env, AgentId::Antigravity).unwrap(),
+        McpState::Ours
+    );
+
+    let mut off: Value = serde_json::from_str(&codex_get_json(EXE, &["mcp"])).unwrap();
+    off["enabled"] = json!(false);
+    std::fs::write(codex_registry(&r.codex_home), off.to_string()).unwrap();
+    assert_eq!(mcp_state(&env, AgentId::Codex).unwrap(), ours_off);
+    mcp_connect(&env, AgentId::Codex).unwrap();
+    assert_eq!(mcp_state(&env, AgentId::Codex).unwrap(), McpState::Ours);
+    let removed = calls(&r.bin, "codex");
+    assert!(removed.iter().any(|c| c[1] == "remove"), "{removed:?}");
 }
 
 #[test]

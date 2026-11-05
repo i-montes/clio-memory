@@ -42,16 +42,23 @@ pub fn claude_registry(dir: &Path) -> PathBuf {
     dir.join("claude.registered")
 }
 
-/// What Claude Code's `claude mcp get <name>` prints for a stdio server (the format in its
-/// bundle: `Command:` and `Args:` on lines of their own, the arguments joined by spaces).
-pub fn claude_get_output(command: &str, args: &str) -> String {
+/// The scope line `claude mcp get` prints for a server in the user's config.
+pub const CLAUDE_USER_SCOPE: &str = "User config (available in all your projects)";
+/// The same for one in the local config of the current directory.
+pub const CLAUDE_LOCAL_SCOPE: &str = "Local config (private to you in this project)";
+
+/// What Claude Code's `claude mcp get clio-memory` prints for a stdio server, as recorded (the
+/// format in its bundle: `Command:` and `Args:` on lines of their own, the arguments joined by
+/// spaces). `remove_scope` is the `-s` of the last line (`user`, `local`).
+pub fn claude_get_output(scope: &str, remove_scope: &str, command: &str, args: &str) -> String {
     format!(
-        "clio-memory:\n  Scope: User config (available in all your projects)\n  Status: ✓ Connected\n  Type: stdio\n  Command: {command}\n  Args: {args}\n\nTo remove this server, run: claude mcp remove \"clio-memory\" -s user\n"
+        "clio-memory:\n  Scope: {scope}\n  Status: ✔ Connected\n  Type: stdio\n  Command: {command}\n  Args: {args}\n  Environment:\n\nTo remove this server, run: claude mcp remove clio-memory -s {remove_scope}\n"
     )
 }
 
 /// A fake `claude`: `mcp add --scope user clio-memory -- <cmd> <args>` registers, `mcp get`
-/// prints it (exit 1 when there is none), `mcp remove` forgets it.
+/// prints it (exit 1 when there is none), `mcp remove --scope user` forgets it (and fails, as the
+/// real one does, when what is there is not in the user's scope).
 pub fn fake_claude_mcp(dir: &Path) -> PathBuf {
     let reg = claude_registry(dir);
     write_program(
@@ -63,8 +70,10 @@ case "$1 $2" in
   "mcp get") [ -f "$reg" ] && cat "$reg" && exit 0
     echo "No MCP server found with name: $3" >&2; exit 1;;
   "mcp add") shift 6; cmd=$1; shift
-    printf 'clio-memory:\n  Scope: User config (available in all your projects)\n  Status: ✓ Connected\n  Type: stdio\n  Command: %s\n  Args: %s\n' "$cmd" "$*" > "$reg";;
-  "mcp remove") [ -f "$reg" ] || exit 1; rm -f "$reg";;
+    printf 'clio-memory:\n  Scope: User config (available in all your projects)\n  Status: ✔ Connected\n  Type: stdio\n  Command: %s\n  Args: %s\n  Environment:\n\nTo remove this server, run: claude mcp remove clio-memory -s user\n' "$cmd" "$*" > "$reg";;
+  "mcp remove") grep -q 'Scope: User config' "$reg" 2>/dev/null \
+      || {{ echo "No user-scoped MCP server found with name: $3" >&2; exit 1; }}
+    rm -f "$reg";;
 esac
 "#,
             reg = reg.display()

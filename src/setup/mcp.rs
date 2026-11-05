@@ -24,7 +24,8 @@ pub enum McpState {
     /// This binary, with `mcp`.
     Ours,
     /// A `clio-memory` binary elsewhere, with `mcp`: an older install (`~/.cargo/bin`), ours to
-    /// re-point.
+    /// re-point. Also this binary when the agent has it switched off (`"enabled": false`,
+    /// `"disabled": true`): ours, but not as connecting leaves it, so connecting redoes it.
     OtherPath(PathBuf),
     /// Anything else, as the agent describes it.
     Foreign(String),
@@ -82,28 +83,37 @@ pub fn mcp_connect(env: &Env, agent: AgentId) -> Result<(), String> {
             "mcpServers",
             Some(json!({"command": exe, "args": ["mcp"]})),
         ),
-        AgentId::ClaudeCode | AgentId::Codex | AgentId::Gemini => {
-            match mcp_state(env, agent)? {
-                McpState::Ours => return Ok(()),
-                McpState::Absent => {}
-                McpState::OtherPath(_) | McpState::Foreign(_) => mcp_disconnect(env, agent)?,
-            }
-            match agent {
-                AgentId::ClaudeCode => run_program(
-                    &claude(env)?,
-                    &["mcp", "add", "--scope", "user", NAME, "--", exe, "mcp"],
-                ),
-                AgentId::Codex => {
-                    run_command(&mut codex(env, &["mcp", "add", NAME, "--", exe, "mcp"])?)
-                }
-                _ => run_program(
-                    &program(env, "gemini")?,
-                    &["mcp", "add", "-s", "user", NAME, exe, "mcp"],
-                ),
-            }
-            .map(drop)
-        }
+        AgentId::ClaudeCode => cli_connect(env, agent, || {
+            run_program(
+                &claude(env)?,
+                &["mcp", "add", "--scope", "user", NAME, "--", exe, "mcp"],
+            )
+        }),
+        AgentId::Codex => cli_connect(env, agent, || {
+            run_command(&mut codex(env, &["mcp", "add", NAME, "--", exe, "mcp"])?)
+        }),
+        AgentId::Gemini => cli_connect(env, agent, || {
+            run_program(
+                &program(env, "gemini")?,
+                &["mcp", "add", "-s", "user", NAME, exe, "mcp"],
+            )
+        }),
     }
+}
+
+/// Connecting through an agent's command line: nothing when it is ours already, else what is
+/// there is removed and `add` runs.
+fn cli_connect(
+    env: &Env,
+    agent: AgentId,
+    add: impl FnOnce() -> Result<String, String>,
+) -> Result<(), String> {
+    match mcp_state(env, agent)? {
+        McpState::Ours => return Ok(()),
+        McpState::Absent => {}
+        McpState::OtherPath(_) | McpState::Foreign(_) => mcp_disconnect(env, agent)?,
+    }
+    add().map(drop)
 }
 
 /// Removes `clio-memory` from `agent`; nothing to do when it is not there.
@@ -111,23 +121,31 @@ pub fn mcp_disconnect(env: &Env, agent: AgentId) -> Result<(), String> {
     match agent {
         AgentId::OpenCode => json_set(&opencode_config(&env.home), "mcp", None),
         AgentId::Antigravity => json_set(&antigravity_config(env), "mcpServers", None),
-        AgentId::ClaudeCode | AgentId::Codex | AgentId::Gemini => {
-            if mcp_state(env, agent)? == McpState::Absent {
-                return Ok(());
-            }
-            match agent {
-                AgentId::ClaudeCode => {
-                    run_program(&claude(env)?, &["mcp", "remove", "--scope", "user", NAME])
-                }
-                AgentId::Codex => run_command(&mut codex(env, &["mcp", "remove", NAME])?),
-                _ => run_program(
-                    &program(env, "gemini")?,
-                    &["mcp", "remove", "-s", "user", NAME],
-                ),
-            }
-            .map(drop)
-        }
+        AgentId::ClaudeCode => cli_disconnect(env, agent, || {
+            run_program(&claude(env)?, &["mcp", "remove", "--scope", "user", NAME])
+        }),
+        AgentId::Codex => cli_disconnect(env, agent, || {
+            run_command(&mut codex(env, &["mcp", "remove", NAME])?)
+        }),
+        AgentId::Gemini => cli_disconnect(env, agent, || {
+            run_program(
+                &program(env, "gemini")?,
+                &["mcp", "remove", "-s", "user", NAME],
+            )
+        }),
     }
+}
+
+/// Disconnecting through an agent's command line: `remove` runs only when something is there.
+fn cli_disconnect(
+    env: &Env,
+    agent: AgentId,
+    remove: impl FnOnce() -> Result<String, String>,
+) -> Result<(), String> {
+    if mcp_state(env, agent)? == McpState::Absent {
+        return Ok(());
+    }
+    remove().map(drop)
 }
 
 fn program(env: &Env, name: &str) -> Result<PathBuf, String> {
@@ -161,6 +179,22 @@ fn antigravity_config(env: &Env) -> PathBuf {
     env.home.join(".gemini/config/mcp_config.json")
 }
 
+/// Whether the agent has the entry switched off: OpenCode's and Codex's `"enabled": false`, the
+/// `"disabled": true` of the `mcpServers` configs.
+fn switched_off(entry: &Value) -> bool {
+    entry.get("enabled") == Some(&Value::Bool(false))
+        || entry.get("disabled") == Some(&Value::Bool(true))
+}
+
+/// `state` for an entry that may be switched off: this binary switched off is to be redone,
+/// as a binary elsewhere is (see `McpState::OtherPath`).
+fn unless_off(exe: &Path, state: McpState, entry: &Value) -> McpState {
+    match state {
+        McpState::Ours if switched_off(entry) => McpState::OtherPath(exe.to_path_buf()),
+        state => state,
+    }
+}
+
 /// A server that runs `command args`.
 fn classify(exe: &Path, command: &str, args: &[&str]) -> McpState {
     let path = Path::new(command);
@@ -185,19 +219,27 @@ fn classify(exe: &Path, command: &str, args: &[&str]) -> McpState {
 /// ```text
 /// clio-memory:
 ///   Scope: User config (available in all your projects)
-///   Status: ✓ Connected
+///   Status: ✔ Connected
 ///   Type: stdio
 ///   Command: /home/x/.local/bin/clio-memory
 ///   Args: mcp
+///   Environment:
+///
+/// To remove this server, run: claude mcp remove clio-memory -s user
 /// ```
 ///
-/// with the arguments joined by spaces, and a remote one with `URL:` instead.
+/// with the arguments joined by spaces, and a remote one with `URL:` instead. `get` also finds
+/// the local and project entries of the directory it runs in; only the user's scope is what setup
+/// adds and removes, so an entry in any other scope reads as `Absent`.
 fn claude_entry(exe: &Path, text: &str) -> McpState {
     let field = |key: &str| {
         text.lines()
             .find_map(|l| l.trim_start().strip_prefix(key))
             .map(str::trim_end)
     };
+    if !field("Scope: ").is_some_and(|s| s.starts_with("User config")) {
+        return McpState::Absent;
+    }
     match field("Command: ") {
         Some(command) => {
             let args: Vec<&str> = field("Args: ").unwrap_or("").split_whitespace().collect();
@@ -220,7 +262,7 @@ fn codex_entry(exe: &Path, text: &str) -> Result<McpState, String> {
     let v: Value = serde_json::from_str(text)
         .map_err(|e| format!("`codex mcp get {NAME} --json` no respondió JSON: {e}"))?;
     let transport = v.get("transport").unwrap_or(&Value::Null);
-    Ok(command_args_entry(exe, transport))
+    Ok(unless_off(exe, command_args_entry(exe, transport), &v))
 }
 
 /// An entry `{"command": "...", "args": [...]}` (Gemini, Antigravity, Codex's transport).
@@ -231,7 +273,7 @@ fn command_args_entry(exe: &Path, entry: &Value) -> McpState {
         Some(a) => strings(a),
     };
     match (command, args) {
-        (Some(command), Some(args)) => classify(exe, command, &args),
+        (Some(command), Some(args)) => unless_off(exe, classify(exe, command, &args), entry),
         _ => McpState::Foreign(entry.to_string()),
     }
 }
@@ -239,7 +281,7 @@ fn command_args_entry(exe: &Path, entry: &Value) -> McpState {
 /// OpenCode's entry: `{"type": "local", "command": ["<program>", "<arg>", ...]}`.
 fn opencode_entry(exe: &Path, entry: &Value) -> McpState {
     match entry.get("command").and_then(strings).as_deref() {
-        Some([command, args @ ..]) => classify(exe, command, args),
+        Some([command, args @ ..]) => unless_off(exe, classify(exe, command, args), entry),
         _ => McpState::Foreign(entry.to_string()),
     }
 }

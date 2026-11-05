@@ -1256,7 +1256,12 @@ impl Store for SqliteStore {
 
     fn count_quarantined_by(&self, scope: ScopeId, actor: ActorId) -> Result<usize> {
         let n: i64 = self.reader()?.query_row(
-            "SELECT COUNT(*) FROM memories WHERE scope = ?1 AND actor = ?2 AND state = 'Quarantine'",
+            // What the sleep put in quarantine is not the author's to review: it does not fill
+            // the author's limit, so a writer cannot fill it on purpose through the sleep.
+            "SELECT COUNT(*) FROM memories m WHERE scope = ?1 AND actor = ?2 AND state = 'Quarantine'
+             AND NOT EXISTS (SELECT 1 FROM operations o JOIN actors a ON a.id = o.actor
+                 WHERE o.id = (SELECT MAX(op) FROM operation_memories WHERE memory = m.id)
+                 AND a.kind = 'System' AND o.kind = 'Forget')",
             params![scope.0, actor.0],
             |r| r.get(0),
         )?;
@@ -1606,6 +1611,16 @@ impl Store for SqliteStore {
             params![SYSTEM_ACTOR, enc(&ActorKind::System), i64::from(u32::MAX)],
         )?;
         Ok(ActorId(conn.last_insert_rowid()))
+    }
+
+    fn last_activity(&self, except: ActorId) -> Result<i64> {
+        Ok(self.reader()?.query_row(
+            "SELECT MAX(COALESCE((SELECT MAX(at) FROM operations WHERE actor != ?1), 0),
+                        COALESCE((SELECT MAX(last_used) FROM usage), 0),
+                        COALESCE((SELECT MAX(created_at) FROM jobs WHERE kind = ?2), 0))",
+            params![except.0, enc(&JobKind::Touch)],
+            |r| r.get(0),
+        )?)
     }
 
     fn backup_to(&self, path: &Path) -> Result<()> {

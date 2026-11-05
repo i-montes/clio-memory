@@ -151,6 +151,9 @@ pub trait Store: VectorIndex + Send + Sync {
     fn decay_candidates(&self, scope: ScopeId, cutoff: i64) -> Result<Vec<MemoryRow>>;
     /// The internal actor that signs background operations; created on first use.
     fn system_actor(&self) -> Result<ActorId>;
+    /// When the memory was last written by an actor other than `except`, or last used (a recall,
+    /// applied or still queued); 0 when never.
+    fn last_activity(&self, except: ActorId) -> Result<i64>;
 
     /// Hot backup with SQLite's online backup API into a new file `path` (mode 0600). Written to
     /// `<path>.tmp` first and published with a hard link, so an existing `path` is never

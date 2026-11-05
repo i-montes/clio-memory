@@ -1,13 +1,17 @@
 [package]
 name = "clio-memory"
 description = "An agent's own memory on one SQLite file: global, local, shared with Clio."
-version = "0.6.1"
+version = "0.6.2"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/i-montes/clio-memory"
 
 [features]
+# The binary's own parts (the `setup` screen). A program that only uses the library (Clio) takes
+# the crate with `default-features = false` and pulls none of them.
+default = ["cli"]
+cli = ["dep:cliclack", "dep:console"]
 telemetry = ["dep:tracing"]
 model2vec = ["dep:model2vec-rs"]
 # Granite Embedding 311M through the ONNX Runtime installed on the machine (loaded at run time:
@@ -31,8 +35,8 @@ thiserror = "2.0.21"
 unicode-normalization = "0.1.26"
 # The `setup` screen of the binary (prompts on stderr) and its colors; console is the one cliclack
 # draws with, so the theme's styles are its type.
-cliclack = "0.5.7"
-console = "0.16.6"
+cliclack = { version = "0.5.7", optional = true }
+console = { version = "0.16.6", optional = true }
 
 [lints.rust]
 unsafe_code = "forbid"
@@ -45,6 +49,11 @@ tempfile = "3.27.0"
 # The telemetry tests record spans with a subscriber written in the test itself.
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 tracing-core = "0.1"
+
+[[bin]]
+name = "clio-memory"
+path = "src/bin/clio-memory/main.rs"
+required-features = ["cli"]
 
 [[example]]
 name = "granite_time"

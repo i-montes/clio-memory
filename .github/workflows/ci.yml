@@ -29,6 +29,8 @@ jobs:
       # --all-features builds the engine's telemetry and the vector model too.
       - run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - run: cargo test --locked --all-features --no-fail-fast
+      # The library as Clio takes it: without the binary's parts (`cli`).
+      - run: cargo clippy --locked --lib --no-default-features --features model2vec,granite,telemetry -- -D warnings
       # Acceptance 25: recall over 50k memories in under 150 ms; ignored in the normal run because it builds a big file
       - run: cargo test --locked --release --test recall t25 -- --ignored --nocapture
         if: matrix.os == 'ubuntu-latest'

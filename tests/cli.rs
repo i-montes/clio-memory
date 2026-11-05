@@ -1531,6 +1531,84 @@ fn setup_names_an_older_clio_memory_that_runs_first() {
     assert!(line.contains("cargo uninstall clio-memory"), "{text}");
 }
 
+/// Makes the old `clio-memory` in `m.bin` a `cargo install` (its root is `m.bin`'s parent), with
+/// a `cargo` that logs its arguments and, when `works`, takes the binary away.
+fn as_a_cargo_install(m: &Machine, works: bool) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let root = m.bin.parent().unwrap().to_path_buf();
+    std::fs::write(
+        root.join(".crates2.json"),
+        r#"{"installs":{"clio-memory 0.5.0 (path+file:///src/clio-memory)":{"bins":["clio-memory"]}}}"#,
+    )
+    .unwrap();
+    let cargo = m.bin.join("cargo");
+    let body = if works {
+        "#!/bin/sh\necho \"$@\" > \"$(dirname \"$0\")/../cargo.log\"\nrm \"$(dirname \"$0\")/clio-memory\"\n"
+    } else {
+        "#!/bin/sh\necho \"$@\" > \"$(dirname \"$0\")/../cargo.log\"\nexit 101\n"
+    };
+    std::fs::write(&cargo, body).unwrap();
+    std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
+    root
+}
+
+#[test]
+fn setup_takes_away_an_older_cargo_install_that_runs_first() {
+    let m = machine();
+    let old = old_clio_memory_on_the_path(&m);
+    let root = as_a_cargo_install(&m, true);
+    let o = setup_on(&m, None, &["setup", "--yes", "--model", "none"]);
+    let text = out(&o);
+    assert_eq!(code(&o), 0, "{text}{}", err(&o));
+    assert!(!old.exists(), "{text}");
+    let log = std::fs::read_to_string(root.join("cargo.log")).unwrap();
+    assert_eq!(
+        log.trim(),
+        format!("uninstall --root {} clio-memory", root.display())
+    );
+    let line = text
+        .lines()
+        .find(|l| l.contains(&old.display().to_string()))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(line.contains("Quité"), "{text}");
+    assert!(!text.contains("cargo uninstall clio-memory"), "{text}");
+}
+
+#[test]
+fn setup_only_warns_when_cargo_cannot_take_the_old_one_away() {
+    let m = machine();
+    let old = old_clio_memory_on_the_path(&m);
+    as_a_cargo_install(&m, false);
+    let o = setup_on(&m, None, &["setup", "--yes", "--model", "none"]);
+    let text = out(&o);
+    assert_eq!(code(&o), 0, "{text}{}", err(&o));
+    assert!(old.exists());
+    let line = text
+        .lines()
+        .find(|l| l.contains(&old.display().to_string()))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(line.contains("cargo uninstall clio-memory"), "{text}");
+}
+
+#[test]
+fn setup_leaves_an_older_clio_memory_that_cargo_did_not_install() {
+    let m = machine();
+    let old = old_clio_memory_on_the_path(&m);
+    // cargo is here, but its records name another crate
+    as_a_cargo_install(&m, true);
+    std::fs::write(
+        m.bin.parent().unwrap().join(".crates2.json"),
+        r#"{"installs":{"ripgrep 14.1.0 (registry+https://github.com/rust-lang/crates.io-index)":{"bins":["rg"]}}}"#,
+    )
+    .unwrap();
+    let o = setup_on(&m, None, &["setup", "--yes", "--model", "none"]);
+    let text = out(&o);
+    assert_eq!(code(&o), 0, "{text}{}", err(&o));
+    assert!(old.exists(), "{text}");
+    assert!(!m.bin.parent().unwrap().join("cargo.log").exists());
+    assert!(text.contains("cargo uninstall clio-memory"), "{text}");
+}
+
 #[test]
 fn doctor_warns_of_an_older_clio_memory_that_runs_first_without_failing() {
     let m = machine();

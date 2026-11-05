@@ -12,8 +12,9 @@ use std::process::Command;
 
 use sha2::{Digest, Sha256};
 
+
 /// The skill installed for Claude Code.
-pub const SKILL: &str = include_str!("../skill/SKILL.md");
+pub const SKILL: &str = include_str!("../../skill/SKILL.md");
 /// The line added to `~/.claude/CLAUDE.md` when the person says yes.
 pub const CLAUDE_MD_LINE: &str =
     "- Mi memoria principal es clio-memory (MCP): úsala según la skill clio-memory.";

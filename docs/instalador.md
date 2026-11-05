@@ -2,11 +2,11 @@
 
 clio-memory se conecta a cinco agentes: Claude Code, OpenCode, Codex, Gemini CLI y Antigravity (el IDE y su CLI `agy`). Esta página dice, agente por agente, qué archivos toca, qué comandos corre y qué deja como estaba. Todo sale del código de `src/setup/`; lo que no se pudo comprobar en una máquina real está marcado como «sin verificar».
 
-Qué existe hoy, para no esperar de más:
+Los comandos que lo hacen:
 
-- `clio-memory setup claude-code` conecta Claude Code, con el sueño nocturno.
-- `clio-memory uninstall` y `clio-memory doctor` ya conocen a los cinco agentes.
-- Conectar los otros cuatro desde la línea de comandos llega con `clio-memory setup` (versión 0.6.0). La lógica que lo hace ya está en el código, pero todavía no tiene comando. Lo que dice esta página de ellos es lo que ese comando hará.
+- `clio-memory setup` es el flujo completo: elige agentes, modelo y línea de instrucciones, y conecta, instala el modelo y el sueño. Es lo que `install.sh` lanza al terminar. Sus banderas están en [Modo sin terminal](#modo-sin-terminal).
+- `clio-memory setup claude-code` conecta solo Claude Code, con el sueño nocturno.
+- `clio-memory uninstall` y `clio-memory doctor` conocen a los cinco agentes.
 
 Cómo se baja e instala el binario (`install.sh`) está en [releases.md](releases.md).
 
@@ -14,7 +14,7 @@ Cómo se baja e instala el binario (`install.sh`) está en [releases.md](release
 
 | Agente | Se detecta por | Servidor MCP | Línea de instrucciones |
 |---|---|---|---|
-| Claude Code | `claude` en el `PATH` (o `CLIO_MEMORY_CLAUDE`) | `claude mcp add --scope user clio-memory -- <bin> mcp` | `~/.claude/CLAUDE.md` |
+| Claude Code | `claude` en el `PATH`, o `CLIO_MEMORY_CLAUDE` tal como esté (no se comprueba que exista) | `claude mcp add --scope user clio-memory -- <bin> mcp` | `~/.claude/CLAUDE.md` |
 | OpenCode | `opencode` en el `PATH`, o la carpeta `~/.config/opencode/` | se edita `~/.config/opencode/opencode.json` | `~/.config/opencode/clio-memory.md`, enlazado en `instructions` de `opencode.json` |
 | Codex | `codex` en el `PATH` | `codex mcp add clio-memory -- <bin> mcp` | `~/.codex/AGENTS.md` (o `$CODEX_HOME/AGENTS.md`) |
 | Gemini CLI | `gemini` en el `PATH` | `gemini mcp add -s user clio-memory <bin> mcp` | `~/.gemini/GEMINI.md` |
@@ -59,7 +59,7 @@ OpenCode no tiene un comando para registrar un MCP, así que se edita su configu
 ### Codex
 
 - `codex mcp get clio-memory --json` para ver qué hay, y `codex mcp add clio-memory -- <bin> mcp` para registrarlo (`codex mcp remove clio-memory` para quitarlo). Es Codex quien escribe su `config.toml`; el instalador no lo toca. Se le pasa `CODEX_HOME` tal como esté en tu entorno.
-- La línea va en `AGENTS.md` dentro de `CODEX_HOME` (o `~/.codex`). Si existe un `AGENTS.override.md` con algo escrito, va en ese, porque Codex lee el override en vez de `AGENTS.md`. Al quitarla, sale de los dos archivos.
+- La línea va en `AGENTS.md` dentro de `CODEX_HOME` (o `~/.codex`). Si existe un `AGENTS.override.md` no vacío, va en ese, porque Codex lee el override en vez de `AGENTS.md`. Al quitarla, sale de los dos archivos.
 - Verificado el 2026-11-05 con codex-cli 0.159.2: `codex mcp add` registra en el alcance global (de usuario), y `get --json`, `remove` y el error de un servidor que no existe se comportan como el código espera.
 
 ### Gemini CLI
@@ -85,7 +85,7 @@ Los JSON que se editan (`opencode.json`, `mcp_config.json`) se tratan con cuidad
 - Un archivo con comentarios o con comas de más no es JSON: se rechaza antes de escribir nada y te dice que lo edites a mano. Un archivo cuya raíz, o cuya tabla `mcp`/`mcpServers`, no es un objeto, también se rechaza («no se tocó»).
 - Al desconectar se quita solo nuestra clave, y la tabla (`mcp`, `mcpServers`) si queda vacía.
 
-Los archivos de instrucciones (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`) solo reciben una línea al final, y al quitarla solo salen las líneas iguales a la nuestra. Cada otro byte queda como estaba, y el archivo conserva sus permisos.
+Los archivos de instrucciones (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`) solo reciben una línea al final, y al quitarla solo salen las líneas iguales a la nuestra, sin contar los espacios de los bordes. Cada otro byte queda como estaba, y el archivo conserva sus permisos.
 
 La línea, igual para todos los agentes:
 
@@ -203,15 +203,16 @@ Mientras tanto, corre `~/.local/bin/clio-memory doctor` con la ruta completa. Qu
 
 ## El modelo
 
-El instalador no guarda ninguna preferencia de modelo. El binario usa el mejor que haya en disco: Granite, si no potion, si no búsqueda por texto. `clio-memory setup model` instala Granite y `setup model potion` el estático; los detalles están en el [README](../README.md#el-modelo-de-vectores).
+El instalador no guarda ninguna preferencia de modelo. El binario usa el mejor que haya en disco: Granite, si no potion, si no búsqueda por texto. `clio-memory setup` te deja elegir (en una terminal) o usa `--model`; `clio-memory setup model` instala Granite y `setup model potion` el estático. Los detalles están en el [README](../README.md#el-modelo-de-vectores).
 
+- Tamaños de la descarga completa: Granite 1,28 GB (el modelo y su tokenizador; ONNX Runtime se baja aparte) y potion 531 MB.
 - Granite necesita ONNX Runtime, que `setup model` baja solo. Hay runtime publicado para Linux x86_64, Linux aarch64 y macOS arm64. En **macOS x86_64** no lo hay, así que ahí sirve potion, o texto.
 - No hay forma de quitar un solo modelo: `uninstall --models` borra todos (ver arriba).
-- Las banderas del modelo del setup (elegir uno al instalar) llegan con `clio-memory setup`; hasta entonces `setup model` es el camino. Con las banderas, el modo sin terminal solo agrega y nunca borra un modelo.
+- En una terminal, elegir un modelo peor que el instalado ofrece borrar el mejor (y ONNX Runtime) y pregunta antes, con su tamaño; un no lo deja. Con banderas o sin terminal nunca se borra un modelo.
 
 ## La firma de cada agente
 
-Un cliente MCP escribe como `mcp:<su nombre>`, con el `clientInfo.name` que manda al iniciar. El nombre se pasa a minúsculas, deja solo `a-z`, `0-9` y `-` (lo demás pasa a `-`), se corta en 40 caracteres, y si no queda nada, firma `mcp:cliente`. Cada firma tiene su cuota de 500 escrituras por hora.
+Un cliente MCP escribe como `mcp:<su nombre>`, con el `clientInfo.name` que manda al iniciar. El nombre se pasa a minúsculas y conserva solo `a-z`, `0-9` y `-` (lo demás pasa a `-`), sin guiones repetidos ni en los bordes; se corta en 40 caracteres, y si no queda nada, firma `mcp:cliente`. Cada firma tiene su cuota de 500 escrituras por hora.
 
 Qué manda de verdad cada agente se ve en la firma de un recuerdo guardado desde él (`clio-memory history <id>`). Con lo que hay hoy en la memoria compartida de esta máquina (2026-11-05):
 
@@ -227,13 +228,34 @@ Los otros cuatro quedan «sin verificar»: no hay ningún recuerdo guardado desd
 
 ## Modo sin terminal
 
-<!-- completar en la tarea 13 -->
+`clio-memory setup` pregunta solo en una terminal (stderr es una terminal) y sin `--yes`. Sin terminal, o con `--yes`, no pregunta nada: cada pregunta se contesta con la bandera que la responde y, si falta, con el valor por defecto. En una terminal, una bandera también contesta su pregunta. Sin terminal, cada paso sale como una línea (`✓` o `✖`) y no se dibuja nada.
 
-Lo que existe hoy: cuando no hay terminal, las preguntas se contestan con un no.
+| Bandera | Qué hace | Si falta (sin preguntas) |
+|---|---|---|
+| `--yes` | No pregunta nada, ni siquiera en una terminal | |
+| `--agents LISTA` | Conecta solo esos agentes. `LISTA` son claves separadas por comas (`claude-code`, `opencode`, `codex`, `gemini`, `antigravity`), o `all` | todos los agentes que encuentra |
+| `--model granite\|potion\|none` | El modelo de vectores a instalar; `none` es la búsqueda por texto | Granite donde hay ONNX Runtime publicado (Linux x86_64, Linux aarch64, macOS arm64), si no potion; no baja nada si ya hay uno igual o mejor |
+| `--instructions` / `--no-instructions` | Agrega (o no) la línea de instrucciones a cada agente conectado | sí |
+| `--replace` | Reemplaza sin preguntar un servidor o una skill ajenos llamados `clio-memory` | no reemplaza: ese agente queda en ✖ |
 
-- `setup claude-code --replace` reemplaza sin preguntar, y `--claude-md` o `--no-claude-md` contestan por la línea de instrucciones.
-- `uninstall --data` exige `--yes`.
-- Las banderas del `setup` completo (qué agentes, qué modelo, la línea) se documentan aquí cuando existan.
+`--from-installer` es interna: la pasa `install.sh`. Hace que `setup` diga dónde quedó el binario y, si su carpeta no está en el `PATH`, la línea que la agrega ([El `PATH`](#el-path)); no cambia qué se instala.
+
+Qué quieren decir:
+
+- **Las banderas solo agregan.** Nada se desconecta, ni se quita una línea de instrucciones, ni se borra un modelo. Para eso está `uninstall`.
+- **`--agents` no desconecta a los demás.** Un agente de la lista que no está en la máquina queda en ✖ (`no se encontró …`) y la salida es distinta de cero; los demás se conectan igual. Un nombre que no es una clave es un error de uso (código 2) y no se hace nada. Sin ningún agente en la máquina y sin `--agents`, `setup` lo dice e instala igual el modelo.
+- **`--model` nunca borra.** Con `--model potion` y Granite ya instalado, no hace nada y lo dice (Granite es el que se usa); con `--model none` tampoco borra lo instalado, y dice cuál sigue en uso. Con `--model granite` en macOS Intel, donde no hay ONNX Runtime publicado, el modelo se baja y el paso del runtime queda en ✖.
+- **`--yes` junto a `--yes`** (la de `install.sh` más la tuya) vale una vez.
+- Estas banderas son de `setup` solo: con `setup claude-code`, `setup model` o `setup sleep` son un error de uso. Lo que sí tienen esos subcomandos: `setup claude-code --replace`, `--claude-md` y `--no-claude-md`, que contestan por la línea de instrucciones.
+- `uninstall --data` exige `--yes` sin terminal.
+
+Por el `curl`, las banderas van después de `sh -s --`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/i-montes/clio-memory/main/install.sh | sh -s -- --yes --agents codex,gemini --model potion
+```
+
+`install.sh` pasa sus argumentos a `setup` como están. Si hay una terminal (`/dev/tty`), `setup` la lee aunque el script venga por una tubería; si no la hay, agrega `--yes` por su cuenta. Un código de salida distinto de cero quiere decir que algún paso quedó en ✖ (las líneas lo dicen), y los demás pasos se hicieron.
 
 ## Variables de entorno que se leen
 

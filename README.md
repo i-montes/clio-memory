@@ -40,25 +40,31 @@ Solo mira lo que cambió desde la noche anterior y sus vecinos: lo sólido no se
 
 A la mañana siguiente, `memory_context` empieza con una línea como `Anoche (sueño): 1 a cuarentena (m12 secreto), 3 unidas en m70 · para revisar: m5 contradice a m61`, y `clio-memory doctor` dice cuándo durmió. En Clio, el sueño además une recuerdos casi iguales con el modelo que tengas configurado, y valida cada unión antes de escribirla.
 
-## Instalar y usar con Claude Code
+## Instalar
 
 ```sh
-cargo install --git https://github.com/i-montes/clio-memory --tag v0.5.0 --features model2vec,granite
-clio-memory setup model          # el modelo de vectores (opcional; fijado y verificado por sha256)
-clio-memory setup claude-code    # la deja como memoria principal de Claude Code
+curl -fsSL https://raw.githubusercontent.com/i-montes/clio-memory/main/install.sh | sh
 ```
 
-`setup claude-code` hace cuatro cosas:
-- registra el servidor MCP `clio-memory` para tu usuario (`claude mcp add --scope user …`);
-- instala la skill `~/.claude/skills/clio-memory/SKILL.md`, que dice cuándo leer y qué guardar, que corrija en vez de duplicar, y sus medidas de seguridad;
-- te pregunta si añade a `~/.claude/CLAUDE.md` una línea que apunta a la skill (`--claude-md` o `--no-claude-md` contestan por ti);
-- instala el timer del [sueño](#el-sueño) (`clio-memory setup sleep` lo hace solo, y `--remove` lo quita).
+Hay binario para Linux (x86_64 y aarch64) y macOS (arm64 e Intel). El instalador hace cuatro cosas:
+- baja el binario de tu plataforma del último release, comprueba su sha256 contra `SHA256SUMS` (y su atestación de GitHub, si tienes `gh` con sesión) y solo entonces lo deja en `~/.local/bin` (o `$CLIO_MEMORY_BIN_DIR`). No edita ningún archivo de tu shell: si esa carpeta no está en tu `PATH`, te dice la línea que la agrega;
+- busca los agentes que tienes (Claude Code, OpenCode, Codex, Gemini CLI y Antigravity), te deja elegir y conecta la memoria en cada uno: el servidor MCP, la skill y, si quieres, una línea en su archivo de instrucciones;
+- instala el modelo de vectores: Granite (1,28 GB) donde corre, potion (531 MB) donde no, o ninguno si lo prefieres (ver [el modelo](#el-modelo-de-vectores));
+- instala el timer del [sueño](#el-sueño).
 
-No toca otros servidores MCP ni otras skills. Si ya hay algo llamado `clio-memory` que no es esto, te lo dice y pregunta (`--replace` lo reemplaza). Correrlo otra vez no cambia nada.
+No toca otros servidores MCP ni otras skills. Si un agente ya tiene algo llamado `clio-memory` que no es esto, te pregunta antes de reemplazarlo. Correrlo otra vez no cambia lo que ya está bien.
+
+**Sin terminal, o sin preguntas.** Con `--yes`, o cuando no hay terminal, no pregunta nada: usa las banderas y, donde faltan, todos los agentes que encuentra, el modelo recomendado y la línea de instrucciones. Las banderas pasan a `setup` tal cual:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/i-montes/clio-memory/main/install.sh | sh -s -- --yes --agents codex,gemini --model potion
+```
+
+Las banderas solo agregan: nunca desconectan un agente ni borran un modelo (para eso, `uninstall`). Todas están en [docs/instalador.md](docs/instalador.md#modo-sin-terminal). `CLIO_MEMORY_VERSION=vX.Y.Z` fija la versión que se baja.
 
 ### Los agentes
 
-clio-memory se conecta a cinco agentes. En todos, el servidor MCP es `<ruta absoluta del binario> mcp`, la skill es la misma, y la línea de instrucciones es una sola: `- Mi memoria principal es clio-memory (MCP): úsala según la skill clio-memory.`
+En todos, el servidor MCP es `<ruta absoluta del binario> mcp`, la skill es la misma, y la línea de instrucciones es una sola: `- Mi memoria principal es clio-memory (MCP): úsala según la skill clio-memory.`
 
 | Agente | Se detecta por | Servidor MCP | Línea de instrucciones |
 |---|---|---|---|
@@ -68,7 +74,7 @@ clio-memory se conecta a cinco agentes. En todos, el servidor MCP es `<ruta abso
 | Gemini CLI | `gemini` | `gemini mcp add -s user …` | `~/.gemini/GEMINI.md` |
 | Antigravity | `agy`, `antigravity` o `~/.gemini/config/` | `mcpServers.clio-memory` en `~/.gemini/config/mcp_config.json` | `~/.gemini/GEMINI.md` (la de Gemini CLI) |
 
-La skill va en la menor cantidad de carpetas que cubra a los agentes conectados, para que ninguno la vea dos veces si se puede evitar. Hoy `setup claude-code` conecta Claude Code; conectar los otros cuatro desde la línea de comandos llega con `clio-memory setup` (versión 0.6.0). `doctor` y `uninstall` ya conocen a los cinco. Los archivos exactos, los comandos, dónde va la skill en cada combinación y lo que está sin verificar: [docs/instalador.md](docs/instalador.md).
+La skill va en la menor cantidad de carpetas que cubra a los agentes conectados, para que ninguno la vea dos veces si se puede evitar. Para conectar solo Claude Code, `clio-memory setup claude-code` (con `--replace`, y `--claude-md` o `--no-claude-md` para contestar por la línea de instrucciones). Los archivos exactos, los comandos, dónde va la skill en cada combinación y lo que está sin verificar: [docs/instalador.md](docs/instalador.md).
 
 ### Desinstalar
 
@@ -79,15 +85,24 @@ clio-memory uninstall --models                # además borra ~/.cache/clio-mode
 clio-memory uninstall --data                  # además borra la memoria (pregunta antes)
 ```
 
-Quita de cada agente el servidor MCP `clio-memory`, la skill y la línea de instrucciones, pero **solo lo que es nuestro**: un servidor o una skill ajenos con ese nombre no se tocan. Sin `--agents` quita también el timer del sueño y, al final, el binario si está en `~/.local/bin` (o en `$CLIO_MEMORY_BIN_DIR`); si algo no se pudo quitar, el binario se queda y puedes correrlo otra vez. **No borra la memoria ni los modelos si no lo pides.** `--data` borra para siempre `memory.db` (con sus `-wal`, `-shm` y candados) y la carpeta `sleep/` de al lado, y nada más de esa carpeta, porque ahí guarda sus archivos Clio. Sin terminal exige `--yes`.
+Quita de cada agente el servidor MCP `clio-memory`, la skill y la línea de instrucciones, pero **solo lo que es nuestro**: un servidor o una skill ajenos con ese nombre no se tocan. Sin `--agents` quita también el timer del sueño y, al final, el binario si está en `~/.local/bin` (o en `$CLIO_MEMORY_BIN_DIR`); si algo no se pudo quitar, el binario se queda y puedes correrlo otra vez. **No borra la memoria ni los modelos si no lo pides.** `--data` borra para siempre `memory.db` (con sus `-wal`, `-shm` y candados) y la carpeta `sleep/` de al lado, y nada más de la carpeta de datos, porque ahí guarda sus archivos Clio. Sin terminal exige `--yes`.
+
+### Compilar tú mismo
+
+```sh
+cargo install --git https://github.com/i-montes/clio-memory --features model2vec,granite
+clio-memory setup
+```
+
+Compila la rama principal; sin `--features` el binario no puede cargar los modelos. `setup` conecta los agentes con la ruta de ese binario (en `~/.cargo/bin`); `uninstall` lo deja ahí, porque solo borra el que está en `~/.local/bin`.
 
 ### El modelo de vectores
 
-`setup model` descarga **Granite Embedding 311M multilingual R2** (IBM, Apache-2.0; 1,25 GB), fijado por revisión y sha256. Busca por significado, no por palabra: en la prueba de `bench/embeddings` acierta el recuerdo correcto en primer lugar el 90 % de las veces, contra el 40 % del modelo estático anterior. Usa los primeros 384 de sus 768 componentes, que ordenan igual de bien y ocupan la mitad.
+`clio-memory setup` instala **Granite Embedding 311M multilingual R2** (IBM, Apache-2.0; 1,28 GB) donde corre, y `setup model` lo hace por separado, fijado por revisión y sha256. Busca por significado, no por palabra: en la prueba de `bench/embeddings` acierta el recuerdo correcto en primer lugar el 90 % de las veces, contra el 40 % del modelo estático anterior. Usa los primeros 384 de sus 768 componentes, que ordenan igual de bien y ocupan la mitad.
 
 No hay que instalar nada más: `setup model` baja también lo que el modelo necesita para correr, fijado por sha256, en `~/.cache/clio-models/onnxruntime/`. Si hay una tarjeta NVIDIA, baja ONNX Runtime con CUDA, cuDNN y las bibliotecas de CUDA que el sistema no tenga. Si no hay tarjeta, solo ONNX Runtime para el procesador (10 MB). Si la GPU no responde, por el motivo que sea, usa el procesador y lo dice una vez. Con una RTX 4060 tarda unos 4 ms por recuerdo; en el procesador, unos 27 ms.
 
-`setup model potion` instala el modelo estático anterior (`potion-multilingual-128M`, liviano y sin ONNX Runtime). Se usa el mejor que esté instalado: Granite, si no potion, si no texto. Cada vector se guarda con el nombre de su modelo, así que al cambiar de modelo la cola calcula los que faltan y nunca se comparan vectores de dos modelos.
+`setup model potion` (o `--model potion` en `setup`) instala el modelo estático anterior (`potion-multilingual-128M`, 531 MB, liviano y sin ONNX Runtime). Se usa el mejor que esté instalado: Granite, si no potion, si no texto. Cada vector se guarda con el nombre de su modelo, así que al cambiar de modelo la cola calcula los que faltan y nunca se comparan vectores de dos modelos.
 
 Sin el modelo, la búsqueda es por texto (y al guardar te lo dice). Con el modelo, los vectores se calculan en cuanto se guarda algo: toda la cola pendiente, también lo que guardó otro programa sin modelo; y otra vez al cerrar la sesión, antes de soltar el modelo. `clio-memory run-jobs` queda para lo que haya quedado pendiente (por ejemplo, recuerdos de antes de esta versión). A mano, sin `setup`: `claude mcp add clio-memory -- clio-memory mcp`.
 
@@ -137,7 +152,7 @@ clio-memory purge 12          # borra su contenido para siempre (pregunta antes)
 clio-memory export copia.jsonl
 clio-memory sleep --dry-run --now   # qué haría el sueño ahora, sin cambiar nada
 clio-memory sleep --report    # el informe de la última noche
-clio-memory doctor           # la salud de la memoria y de cada agente conectado
+clio-memory doctor           # la salud de la memoria y de cada agente que encuentra
 clio-memory uninstall        # la quita de los agentes (ver «Desinstalar»)
 clio-memory --help            # todo lo demás
 ```
@@ -145,6 +160,8 @@ clio-memory --help            # todo lo demás
 Sin `--db` usa el archivo compartido. La referencia completa del motor está en [docs/motor.md](docs/motor.md): reglas, búsqueda, trabajos en segundo plano, exportar, telemetría y escala.
 
 ## Versiones y Clio
+
+Cómo se publica una versión, qué comprueba el instalador y hasta dónde llega la confianza en el binario: [docs/releases.md](docs/releases.md).
 
 El esquema del archivo solo cambia de forma compatible hacia atrás. Un binario más viejo se niega a abrir un archivo más nuevo y no lo toca. Clio depende de clio-memory fijado por etiqueta.
 

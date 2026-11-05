@@ -74,9 +74,33 @@ Aquí no se guarda ninguna relación. Cada recuerdo que el lector abre trae sus 
 
 La contradicción más baja está a 0,8801, justo en el borde de 0,88. Por eso clio-memory avisa desde **0,87**. Lo que queda entre 0,87 y 0,88 también vale la pena verlo al guardar, y un aviso de más solo cuesta una línea en la respuesta.
 
+## 6. Jev (TypeSafe System One) como juez, en Clio
+
+Los mismos 217 pares candidatos (los 5 vecinos de cada recuerdo con Granite en Rust). El recuerdo con el número mayor es el que se guarda. Lo corre la prueba ignorada `jev_relations_on_the_bench` de Clio, con el baúl abierto.
+
+| Jev dice | Veces | Aciertos (precisión) |
+|---|---|---|
+| contradice | 4 | 3 (75 %) |
+| relacionada | 10 | 1 (10 %) |
+| caso concreto | 3 | 0 |
+| compatible | 2 | 0 |
+| ninguna | 198 | – |
+
+| Marcado a mano | Entre los candidatos | Jev lo dice (cobertura) |
+|---|---|---|
+| contradice | 3 | 3 (100 %) |
+| relacionada | 30 | 1 (3 %) |
+| compatible | 3 | 0 |
+| caso concreto | 2 | 0 |
+
+- Las 3 contradicciones las da con 0,95 a 0,99 de confianza. La falsa (m58 «tabla corta» frente a m62 «respuestas largas») la da con 0,77.
+- Con un piso de 0,9 quedan las 3 contradicciones y ninguna falsa.
+- Para los otros tipos Jev casi siempre dice «ninguna», y cuando dice otra cosa casi nunca coincide con lo marcado.
+- Por eso Clio deja que Jev anote solo «contradice», con 0,9 o más, entre lo nuevo y sus 3 vecinos más cercanos. Lo demás lo resuelven los vecinos que ve el modelo.
+
 ## Conclusión
 
 - Guardar relaciones automáticas sin un juez que entienda da poco.
 - Lo que sí funciona es mostrar, con cada recuerdo, sus vecinos más cercanos y dejar que el modelo que lee elija cuál seguir. Ese modelo ya entiende la pregunta, así que no hace falta otro juez.
 - Ningún recuerdo queda suelto: todo recuerdo con vector tiene vecinos.
-- Las relaciones con tipo («contradice», «caso concreto») siguen necesitando un juez que entienda: Jev en Clio. Falta medir a Jev en estos mismos pares (necesita el baúl abierto).
+- Las relaciones con tipo necesitan un juez que entienda. Jev reconoce bien las contradicciones (las 3, sin falsas por encima de 0,9) pero no los otros tipos, así que en Clio solo anota contradicciones.

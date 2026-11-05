@@ -13,6 +13,7 @@ use std::process::Command;
 use sha2::{Digest, Sha256};
 
 pub mod agents;
+pub mod config_file;
 pub mod skill;
 
 /// The skill installed for Claude Code.

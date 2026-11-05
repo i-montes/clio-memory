@@ -7,9 +7,11 @@
 //!
 //! What comes back is text somebody wrote, maybe long ago, maybe hostile: it is cleaned, kept to
 //! one line per memory (a memory cannot forge another's line), cut after cleaning and wrapped as
-//! data. A session (one MCP process) has caps, counted before the memory is asked, refused calls
-//! included: 20 reads and 24 KiB of returned text, 30 saves, 10 changes. A text or title that
-//! looks like a secret is not saved. The writer is taken for one call and let go, so Clio and
+//! data. A session (one MCP process) has caps: 20 reads and 24 KiB of returned text, 30 saves, 10
+//! changes. A call that is malformed (an argument of the wrong kind, a text or title too long once
+//! clean) is refused before it is counted: it tells nothing. Then it is counted, refused calls
+//! included, and a text or title that looks like a secret is not saved: what the secret check says
+//! must cost a try. The writer is taken for one call and let go, so Clio and
 //! other clients can write between calls.
 
 use std::path::PathBuf;
@@ -47,7 +49,7 @@ pub const TOOLS: [(&str, &str); 12] = [
     ),
     (
         "memory_session_summary",
-        "Save the summary of this session for the next one (goal and accomplished required; instructions, discoveries, next_steps, files optional).",
+        "Save the summary of this session for the next one (goal and accomplished required; instructions, discoveries, next_steps, files optional). Each part has at most 600 characters, and the six together, with their labels, at most 1200 (about 1115 of content).",
     ),
     (
         "memory_update",
@@ -106,6 +108,8 @@ const MIN_ROOM: usize = 1024;
 const MAX_SAVES: u32 = 30;
 const MAX_CHANGES: u32 = 10;
 const MAX_TEXT_CHARS: usize = 1200;
+/// One part of a session summary (the parts together are still `MAX_TEXT_CHARS`).
+const MAX_PART_CHARS: usize = 600;
 const MAX_TITLE_CHARS: usize = 120;
 const MAX_QUERY_CHARS: usize = 200;
 const DEFAULT_LIMIT: usize = 5;
@@ -129,7 +133,11 @@ pub fn schema(name: &str) -> Option<Value> {
     let mut props = Map::new();
     let mut required = Vec::new();
     for (arg, ty, req) in args {
-        props.insert((*arg).into(), json!({ "type": ty }));
+        let prop = match max_chars(name, arg) {
+            Some(n) => json!({ "type": ty, "maxLength": n }),
+            None => json!({ "type": ty }),
+        };
+        props.insert((*arg).into(), prop);
         if *req {
             required.push(*arg);
         }
@@ -137,6 +145,18 @@ pub fn schema(name: &str) -> Option<Value> {
     Some(
         json!({"type": "object", "properties": props, "required": required, "additionalProperties": false}),
     )
+}
+
+/// The longest an argument may be, in characters once clean, when the schema says it.
+fn max_chars(tool: &str, arg: &str) -> Option<usize> {
+    if tool == "memory_session_summary" {
+        return Some(MAX_PART_CHARS);
+    }
+    match arg {
+        "text" => Some(MAX_TEXT_CHARS),
+        "title" => Some(MAX_TITLE_CHARS),
+        _ => None,
+    }
 }
 
 type Args = &'static [(&'static str, &'static str, bool)];
@@ -234,18 +254,44 @@ impl Session {
                 .project
                 .clone()
                 .unwrap_or_else(|| "(ninguno: lo personal)".into())),
+            // Malformed calls are refused before they are counted; a secret is checked after.
             "memory_forget" | "memory_pin" | "memory_revert" => {
+                positive(
+                    &args,
+                    if name == "memory_revert" {
+                        "change"
+                    } else {
+                        "id"
+                    },
+                )?;
                 self.spend_change()?;
                 self.change(name, &args)
             }
             "memory_consolidate" => {
+                let ids = merge_ids(args.get("ids").and_then(Value::as_str).unwrap_or_default())
+                    .ok_or_else(|| {
+                        format!(
+                            "ids must be 2 to {MAX_MERGE} different memory numbers, like \"12, 15\""
+                        )
+                    })?;
+                let draft = draft_of(&args, true)?;
                 self.spend_change()?;
                 self.spend_save()?;
-                self.consolidate(&args)
+                no_secret(&args)?;
+                self.consolidate(&ids, draft)
             }
             _ => {
+                let draft = if name == "memory_session_summary" {
+                    summary_of(&args)?
+                } else {
+                    if name == "memory_update" {
+                        positive(&args, "id")?;
+                    }
+                    draft_of(&args, name == "memory_update")?
+                };
                 self.spend_save()?;
-                self.save(name, &args)
+                no_secret(&args)?;
+                self.save(name, &args, draft)
             }
         }
     }
@@ -383,26 +429,13 @@ impl Session {
         Ok(answer)
     }
 
-    fn save(&mut self, name: &str, args: &Map<String, Value>) -> Result<String, String> {
+    fn save(
+        &mut self,
+        name: &str,
+        args: &Map<String, Value>,
+        draft: Draft,
+    ) -> Result<String, String> {
         let summary = name == "memory_session_summary";
-        let draft = if summary {
-            let mut parts = Vec::new();
-            for (k, label) in SUMMARY_PARTS {
-                if let Some(v) = args.get(k).and_then(Value::as_str).map(str::trim)
-                    && !v.is_empty()
-                {
-                    parts.push(format!("{label}: {v}"));
-                }
-            }
-            Draft {
-                text: checked_text(&parts.join(" · "))?,
-                title: Some(format!("Sesión {}", civil_date(now_secs()))),
-                category: None,
-                kind: MemoryType::Episodic,
-            }
-        } else {
-            draft_of(args, name == "memory_update")?
-        };
         let m = self.writer()?;
         let has_project = self.project.is_some();
         let o = if name == "memory_update" {
@@ -437,17 +470,12 @@ impl Session {
         Ok(said)
     }
 
-    fn consolidate(&mut self, args: &Map<String, Value>) -> Result<String, String> {
-        let ids = merge_ids(args.get("ids").and_then(Value::as_str).unwrap_or_default())
-            .ok_or_else(|| {
-                format!("ids must be 2 to {MAX_MERGE} different memory numbers, like \"12, 15\"")
-            })?;
-        let mut draft = draft_of(args, true)?;
+    fn consolidate(&mut self, ids: &[i64], mut draft: Draft) -> Result<String, String> {
         draft.kind = MemoryType::Semantic;
         let m = self.writer()?;
         // All of one scope (one project, not just «a project»), and the merge is saved there.
         let mut first: Option<MemoryRow> = None;
-        for id in &ids {
+        for id in ids {
             let r = m
                 .get(MemoryId(*id))
                 .ok()
@@ -463,7 +491,7 @@ impl Session {
         if o.kind != OpKind::Add || ids.contains(&o.memory.0) {
             return Err("la unión no dio una memoria nueva: no se olvidó nada".into());
         }
-        for id in &ids {
+        for id in ids {
             // Best effort: the merge is made; a relation that does not follow is a note lost.
             let _ = m.copy_relations(MemoryId(*id), o.memory);
         }
@@ -546,23 +574,66 @@ fn positive(args: &Map<String, Value>, key: &str) -> Result<i64, String> {
         .ok_or_else(|| format!("{key} must be a positive number"))
 }
 
-/// One line, 1 to 1200 characters, nothing that looks like a secret.
-fn checked_text(typed: &str) -> Result<String, String> {
-    if find_secret(typed) {
-        return Err("the text had a secret in it: nothing was saved".into());
+/// Nothing that looks like a secret, in any argument as it was typed (cleaning could split a key
+/// and hide it). Checked after the call is counted.
+fn no_secret(args: &Map<String, Value>) -> Result<(), String> {
+    for (k, v) in args {
+        if v.as_str().is_some_and(find_secret) {
+            let what = if k == "title" { "title" } else { "text" };
+            return Err(format!("the {what} had a secret in it: nothing was saved"));
+        }
     }
+    Ok(())
+}
+
+/// One clean line of 1 to 1200 characters, measured as it will be saved.
+fn fitted_text(typed: &str) -> Result<String, String> {
     let text = clean_text(typed);
     let n = text.chars().count();
-    if n == 0 || n > MAX_TEXT_CHARS {
+    if n == 0 {
+        return Err("the text is empty".into());
+    }
+    if n > MAX_TEXT_CHARS {
         return Err(format!(
-            "the text must have 1 to {MAX_TEXT_CHARS} characters"
+            "the text has {n} characters; the limit is {MAX_TEXT_CHARS}"
         ));
     }
     Ok(text)
 }
 
+/// A session summary: each part at most 600 characters, the parts joined with their labels at
+/// most 1200.
+fn summary_of(args: &Map<String, Value>) -> Result<Draft, String> {
+    let mut parts = Vec::new();
+    for (k, label) in SUMMARY_PARTS {
+        let part = clean_text(args.get(k).and_then(Value::as_str).unwrap_or_default());
+        let n = part.chars().count();
+        if n > MAX_PART_CHARS {
+            return Err(format!(
+                "`{k}` has {n} characters; each part has at most {MAX_PART_CHARS}"
+            ));
+        }
+        if n > 0 {
+            parts.push(format!("{label}: {part}"));
+        }
+    }
+    let joined = parts.join(" · ");
+    let n = joined.chars().count();
+    if n > MAX_TEXT_CHARS {
+        return Err(format!(
+            "the summary has {n} characters with its labels; the limit is {MAX_TEXT_CHARS} for the six parts together"
+        ));
+    }
+    Ok(Draft {
+        text: fitted_text(&joined)?,
+        title: Some(format!("Sesión {}", civil_date(now_secs()))),
+        category: None,
+        kind: MemoryType::Episodic,
+    })
+}
+
 fn draft_of(args: &Map<String, Value>, no_kind: bool) -> Result<Draft, String> {
-    let text = checked_text(args.get("text").and_then(Value::as_str).unwrap_or_default())?;
+    let text = fitted_text(args.get("text").and_then(Value::as_str).unwrap_or_default())?;
     let kind = if no_kind {
         MemoryType::Semantic
     } else {
@@ -575,13 +646,11 @@ fn draft_of(args: &Map<String, Value>, no_kind: bool) -> Result<Draft, String> {
     let title = match args.get("title").and_then(Value::as_str) {
         None => None,
         Some(t) => {
-            if find_secret(t) {
-                return Err("the title had a secret in it: nothing was saved".into());
-            }
             let t = clean_text(t);
-            if t.chars().count() > MAX_TITLE_CHARS || t.len() > 256 {
+            let n = t.chars().count();
+            if n > MAX_TITLE_CHARS || t.len() > 256 {
                 return Err(format!(
-                    "the title must have at most {MAX_TITLE_CHARS} characters"
+                    "the title has {n} characters; the limit is {MAX_TITLE_CHARS}"
                 ));
             }
             Some(t).filter(|t| !t.is_empty())

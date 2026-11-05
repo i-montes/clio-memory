@@ -154,7 +154,8 @@ fn gemini_md_is_shared() {
         remove_instructions(&env, AgentId::Antigravity, &[]).unwrap(),
         Some(md.clone())
     );
-    assert_eq!(count_line(&md), 0);
+    // It had nothing else: it goes.
+    assert!(!md.exists());
 
     // And the other way round.
     add_instructions(&env, AgentId::Gemini).unwrap();
@@ -169,7 +170,7 @@ fn gemini_md_is_shared() {
             .unwrap()
             .is_some()
     );
-    assert_eq!(count_line(&md), 0);
+    assert!(!md.exists());
 }
 
 #[test]
@@ -486,5 +487,38 @@ fn codex_removal_takes_the_line_from_both_files() {
         remove_instructions(&env, AgentId::Codex, &[]).unwrap(),
         Some(dir.join("AGENTS.md"))
     );
-    assert_eq!(std::fs::read_to_string(dir.join("AGENTS.md")).unwrap(), "");
+    // Nothing else was in it: it goes.
+    assert!(!dir.join("AGENTS.md").exists());
+}
+
+// A file that had only our line (setup created it) does not stay behind empty; one with more
+// keeps the rest, and one that is a link (a dotfiles repository) is emptied, not unlinked.
+#[test]
+fn a_file_left_empty_is_deleted() {
+    let r = rig();
+    let env = r.env();
+    let md = r.home.join(".claude/CLAUDE.md");
+    add_instructions(&env, AgentId::ClaudeCode).unwrap();
+    assert!(md.is_file());
+    assert_eq!(
+        remove_instructions(&env, AgentId::ClaudeCode, &[]).unwrap(),
+        Some(md.clone())
+    );
+    assert!(!md.exists());
+    // Only blank lines besides ours: empty too.
+    put(&md, &format!("\n  \n{INSTRUCTIONS_LINE}\n\n"));
+    remove_instructions(&env, AgentId::ClaudeCode, &[]).unwrap();
+    assert!(!md.exists());
+    // Something else in it: kept.
+    put(&md, &format!("# mío\n{INSTRUCTIONS_LINE}\n"));
+    remove_instructions(&env, AgentId::ClaudeCode, &[]).unwrap();
+    assert_eq!(std::fs::read_to_string(&md).unwrap(), "# mío\n");
+    // A link: it stays, and its target is emptied.
+    std::fs::remove_file(&md).unwrap();
+    let target = r.home.join("dotfiles/CLAUDE.md");
+    put(&target, &format!("{INSTRUCTIONS_LINE}\n"));
+    std::os::unix::fs::symlink(&target, &md).unwrap();
+    remove_instructions(&env, AgentId::ClaudeCode, &[]).unwrap();
+    assert!(md.symlink_metadata().unwrap().file_type().is_symlink());
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "");
 }

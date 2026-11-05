@@ -5,7 +5,8 @@
 //! the two share it. OpenCode has no such file of ours to append to (its `AGENTS.md` is the
 //! person's), so it gets `clio-memory.md` beside its config and that file's absolute path in the
 //! `instructions` array of `opencode.json`. Only lines equal to ours are ever removed; every
-//! other byte of a file, and every other key and entry of the config, stays where it was.
+//! other byte of a file, and every other key and entry of the config, stays where it was. A file
+//! left with nothing but blank lines is deleted (unless it is a link).
 
 use std::path::{Path, PathBuf};
 
@@ -136,7 +137,14 @@ pub fn remove_instructions(
     for file in files {
         let text = read_text(&file)?;
         if let Some(rest) = without_line(&text) {
-            write_through(&file, &rest)?;
+            // Only blank lines left (setup most likely created it): the file goes, unless it is
+            // a link, which stays and is emptied.
+            let link = std::fs::symlink_metadata(&file).is_ok_and(|m| m.file_type().is_symlink());
+            if rest.trim().is_empty() && !link {
+                std::fs::remove_file(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+            } else {
+                write_through(&file, &rest)?;
+            }
             removed.get_or_insert(file);
         }
     }

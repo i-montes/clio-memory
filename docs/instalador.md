@@ -85,7 +85,7 @@ Los JSON que se editan (`opencode.json`, `mcp_config.json`) se tratan con cuidad
 - Un archivo con comentarios o con comas de más no es JSON: se rechaza antes de escribir nada y te dice que lo edites a mano. Un archivo cuya raíz, o cuya tabla `mcp`/`mcpServers`, no es un objeto, también se rechaza («no se tocó»).
 - Al desconectar se quita solo nuestra clave, y la tabla (`mcp`, `mcpServers`) si queda vacía.
 
-Los archivos de instrucciones (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`) solo reciben una línea al final, y al quitarla solo salen las líneas iguales a la nuestra, sin contar los espacios de los bordes. Cada otro byte queda como estaba, y el archivo conserva sus permisos.
+Los archivos de instrucciones (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`) solo reciben una línea al final, y al quitarla solo salen las líneas iguales a la nuestra, sin contar los espacios de los bordes. Cada otro byte queda como estaba, y el archivo conserva sus permisos. Si al quitarla el archivo queda vacío (o solo con líneas en blanco), se borra: lo más probable es que lo haya creado `setup`. Si es un enlace simbólico, el enlace se queda y lo que apunta queda vacío.
 
 La línea, igual para todos los agentes:
 

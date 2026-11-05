@@ -145,7 +145,7 @@ fn ask(question: &str) -> bool {
 }
 
 /// This machine, as setup sees it: the home, this binary, the `PATH`, and the overrides of
-/// where Codex and Claude Code are.
+/// where Codex and Claude Code are and of where the installer puts the binary.
 fn machine() -> Result<Env<'static>, String> {
     let var = |name: &str| {
         std::env::var_os(name)
@@ -160,6 +160,7 @@ fn machine() -> Result<Env<'static>, String> {
             .unwrap_or_default(),
         codex_home: var("CODEX_HOME"),
         claude: var("CLIO_MEMORY_CLAUDE"),
+        bin_dir: var("CLIO_MEMORY_BIN_DIR"),
         service: &clio_memory::setup::service_command,
     })
 }

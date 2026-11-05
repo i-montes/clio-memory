@@ -221,6 +221,7 @@ fn detect_finds_by_program_and_by_folder() {
         path: vec![t.path().join("nowhere"), bin.clone()],
         codex_home: None,
         claude: None,
+        bin_dir: None,
         service: &svc,
     };
     assert_eq!(
@@ -259,6 +260,7 @@ fn detect_prefers_the_override_and_the_program_over_the_folder() {
         path: vec![bin],
         codex_home: None,
         claude: Some(claude.clone()),
+        bin_dir: None,
         service: &svc,
     };
     assert_eq!(
@@ -290,6 +292,7 @@ fn detect_finds_nothing_in_an_empty_machine() {
         path: vec![],
         codex_home: None,
         claude: None,
+        bin_dir: None,
         service: &svc,
     };
     assert_eq!(detect(&env), vec![]);
@@ -331,6 +334,7 @@ fn env_with<'a>(
         path,
         codex_home: None,
         claude,
+        bin_dir: None,
         service: svc,
     }
 }

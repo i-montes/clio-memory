@@ -142,6 +142,7 @@ impl ClaudeCode<'_> {
             path: Vec::new(),
             codex_home: None,
             claude: Some(self.claude.clone()),
+            bin_dir: None,
             service: self.service,
         };
         let md = self.home.join(".claude/CLAUDE.md");

@@ -63,6 +63,9 @@ pub struct Env<'a> {
     pub codex_home: Option<PathBuf>,
     /// `CLIO_MEMORY_CLAUDE`: the `claude` to drive instead of the one on the `PATH`.
     pub claude: Option<PathBuf>,
+    /// `CLIO_MEMORY_BIN_DIR`: where `install.sh` was told to put the binary (else
+    /// `~/.local/bin`).
+    pub bin_dir: Option<PathBuf>,
     /// Runs the service manager (`systemctl`/`launchctl`) for the sleep timer.
     pub service: &'a dyn Fn(&[&str]) -> Result<(), String>,
 }

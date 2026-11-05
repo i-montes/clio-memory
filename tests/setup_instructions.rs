@@ -40,6 +40,7 @@ impl Rig {
             path: vec![],
             codex_home: self.codex_home.clone(),
             claude: None,
+            bin_dir: None,
             service: &no_service,
         }
     }

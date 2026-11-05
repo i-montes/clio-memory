@@ -134,6 +134,14 @@ pub fn apply(env: &Env, sel: &Selection, ask: &dyn Fn(&str) -> bool) -> Vec<Step
         .collect();
     let planned_dirs = placement(&planned);
     let mut approved: Vec<PathBuf> = Vec::new();
+    // Who sees our skill now: outside `exclusive` nobody loses it (flags only add, and a no
+    // leaves that agent as it was).
+    let saw: Vec<AgentId> = AgentId::ALL
+        .into_iter()
+        .filter(|a| sees_our_skill(&env.home, *a))
+        .collect();
+    // Whether anything was connected or disconnected: if not, there is nothing to place.
+    let mut touched = false;
 
     for agent in chosen.iter().copied() {
         let label = agent.label();
@@ -195,6 +203,7 @@ pub fn apply(env: &Env, sel: &Selection, ask: &dyn Fn(&str) -> bool) -> Vec<Step
         // A failed connect may have removed what was there before adding: read it again.
         conn.insert(agent, if ok { Some(true) } else { reread(env, agent) });
         steps.push(Step::new(Some(agent), "MCP", done));
+        touched |= ok;
         if ok && sel.instructions {
             steps.push(Step::new(
                 Some(agent),
@@ -215,11 +224,22 @@ pub fn apply(env: &Env, sel: &Selection, ask: &dyn Fn(&str) -> bool) -> Vec<Step
             .filter(|a| conn[a] == Some(true))
             .collect();
         for agent in extra {
+            touched = true;
             steps.extend(disconnect(env, agent, &still, &mut conn));
         }
     }
+    if !touched {
+        return steps;
+    }
 
-    let agents = skill_agents(env, &conn);
+    // The connected agents, and those that saw the skill unless `exclusive` took them out.
+    let mut agents = skill_agents(env, &conn);
+    for a in saw {
+        if !agents.contains(&a) && (!sel.exclusive || chosen.contains(&a)) {
+            agents.push(a);
+        }
+    }
+    agents.sort();
     let blocked = placement(&agents)
         .iter()
         .map(|d| d.path(&env.home))
@@ -288,8 +308,8 @@ fn skill_step(env: &Env, agents: &[AgentId], replace: bool) -> Option<Step> {
 
 /// Takes clio-memory out of `agents` (and the skill out of the folders only they needed), or
 /// with `None` out of every agent, with the nightly sleep, and last this binary when it is where
-/// the installer put it. A server or skill called `clio-memory` that is not ours is never
-/// touched; the memory and the models stay.
+/// the installer put it and nothing failed before. A server or skill called `clio-memory` that
+/// is not ours is never touched; the memory and the models stay.
 pub fn uninstall(env: &Env, agents: Option<&[AgentId]>) -> Vec<Step> {
     let mut steps = Vec::new();
     let found: Vec<AgentId> = detect(env).into_iter().map(|f| f.agent).collect();
@@ -351,29 +371,32 @@ pub fn uninstall(env: &Env, agents: Option<&[AgentId]>) -> Vec<Step> {
         ));
     }
     if placed_by_installer(env) {
-        steps.push(Step::new(
-            None,
-            BINARY,
+        let exe = env.exe.display();
+        // With something left undone, the binary stays, so `uninstall` can run again.
+        let done = if steps.iter().any(|s| s.outcome.is_err()) {
+            Err(format!(
+                "se dejó {exe}: algo no se pudo quitar; corre `clio-memory uninstall` otra vez"
+            ))
+        } else {
             std::fs::remove_file(&env.exe)
-                .map(|()| format!("binario borrado: {}", env.exe.display()))
-                .map_err(|e| format!("{}: {e}", env.exe.display())),
-        ));
+                .map(|()| format!("binario borrado: {exe}"))
+                .map_err(|e| format!("{exe}: {e}"))
+        };
+        steps.push(Step::new(None, BINARY, done));
     }
     steps
 }
 
-/// Whether this binary is in the folder `install.sh` puts it in: `$CLIO_MEMORY_BIN_DIR`, else
-/// `~/.local/bin`.
+/// Whether this binary is in the folder `install.sh` puts it in: `env.bin_dir`
+/// (`$CLIO_MEMORY_BIN_DIR`), else `~/.local/bin`.
 fn placed_by_installer(env: &Env) -> bool {
     let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     let Some(dir) = env.exe.parent().map(canon) else {
         return false;
     };
-    let named = std::env::var_os("CLIO_MEMORY_BIN_DIR")
-        .filter(|d| !d.is_empty())
-        .map(PathBuf::from);
-    named
-        .into_iter()
+    env.bin_dir
+        .iter()
+        .cloned()
         .chain([env.home.join(".local/bin")])
         .any(|d| canon(&d) == dir)
 }

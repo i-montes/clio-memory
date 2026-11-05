@@ -20,6 +20,8 @@ use serde_json::{Value, json};
 use AgentId::{Antigravity, ClaudeCode, Codex, Gemini, OpenCode};
 
 struct Rig {
+    /// `CLIO_MEMORY_BIN_DIR`.
+    bin_dir: Option<PathBuf>,
     t: tempfile::TempDir,
     home: PathBuf,
     bin: PathBuf,
@@ -40,6 +42,7 @@ fn rig_with(codex_fails: bool) -> Rig {
     fake_gemini(&bin, &home);
     let exe = t.path().join("opt bin/clio-memory");
     Rig {
+        bin_dir: None,
         home,
         bin,
         codex_home,
@@ -68,6 +71,7 @@ impl Rig {
             path: vec![self.bin.clone()],
             codex_home: Some(self.codex_home.clone()),
             claude: None,
+            bin_dir: self.bin_dir.clone(),
             service: &no_service,
         }
     }
@@ -527,4 +531,130 @@ fn an_old_clio_memory_sleep_is_repointed_and_clios_is_left_alone() {
     let steps = uninstall(&r.env(), None);
     all_ok(&steps);
     assert_eq!(std::fs::read_to_string(&service).unwrap(), before);
+}
+
+/// A foreign `clio-memory` server in Claude Code, as `claude mcp get` prints it.
+fn foreign_claude_server(r: &Rig) {
+    use common::fakes::{CLAUDE_USER_SCOPE, claude_get_output, claude_registry};
+    std::fs::write(
+        claude_registry(&r.bin),
+        claude_get_output(CLAUDE_USER_SCOPE, "user", "clio", "memory mcp"),
+    )
+    .unwrap();
+}
+
+/// Our current skill where Claude Code (and OpenCode) read it.
+fn our_claude_skill(r: &Rig) -> PathBuf {
+    let skill = r.skill(".claude/skills");
+    std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
+    std::fs::write(&skill, clio_memory::setup::SKILL).unwrap();
+    skill
+}
+
+#[test]
+fn a_declined_agent_keeps_our_skill() {
+    let r = rig();
+    foreign_claude_server(&r);
+    let skill = our_claude_skill(&r);
+    let steps = apply(
+        &r.env(),
+        &Selection {
+            agents: vec![ClaudeCode],
+            instructions: true,
+            replace: false,
+            exclusive: false,
+        },
+        &|_| false,
+    );
+    assert!(skill.is_file(), "{steps:#?}");
+    assert_eq!(
+        std::fs::read_to_string(&skill).unwrap(),
+        clio_memory::setup::SKILL
+    );
+    assert_eq!(steps.len(), 1, "only the declined step: {steps:#?}");
+    assert!(steps[0].outcome.is_err());
+    assert!(!r.sleep_timer().exists(), "nothing half-installed");
+}
+
+#[test]
+fn a_declined_setup_claude_code_keeps_our_skill() {
+    let r = rig();
+    foreign_claude_server(&r);
+    let skill = our_claude_skill(&r);
+    let e = clio_memory::setup::ClaudeCode {
+        home: r.home.clone(),
+        claude: r.bin.join("claude"),
+        exe: r.exe.clone(),
+        replace: false,
+        claude_md: Some(false),
+        ask: &|_| false,
+        service: &no_service,
+    }
+    .run()
+    .unwrap_err();
+    assert!(e.contains("--replace"), "{e}");
+    assert_eq!(
+        std::fs::read_to_string(&skill).unwrap(),
+        clio_memory::setup::SKILL
+    );
+}
+
+#[test]
+fn flags_only_add_and_never_take_a_skill_away() {
+    let r = rig();
+    // Claude Code is not connected, but our skill is in its folder (an earlier install).
+    let skill = our_claude_skill(&r);
+    let steps = r.apply(&[Codex], false);
+    all_ok(&steps);
+    assert!(skill.is_file(), "{steps:#?}");
+    assert!(r.skill(".agents/skills").is_file());
+    assert!(
+        steps
+            .iter()
+            .all(|s| !s.outcome.as_ref().unwrap().contains("retirada")),
+        "{steps:#?}"
+    );
+}
+
+#[test]
+fn uninstall_keeps_the_binary_when_something_could_not_be_undone() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut r = rig();
+    r.exe = r.home.join(".local/bin/clio-memory");
+    std::fs::create_dir_all(r.exe.parent().unwrap()).unwrap();
+    std::fs::write(&r.exe, "binario").unwrap();
+    all_ok(&r.apply(&[ClaudeCode, Codex], false));
+    // Codex answers, but cannot remove.
+    let registry = common::fakes::codex_registry(&r.codex_home);
+    std::fs::write(
+        r.bin.join("codex"),
+        format!(
+            "#!/bin/sh\ncase \"$1 $2\" in\n  \"mcp get\") cat '{}';;\n  *) echo 'cannot write config.toml' >&2; exit 1;;\nesac\n",
+            registry.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(r.bin.join("codex"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let steps = uninstall(&r.env(), None);
+    assert!(r.exe.is_file(), "the binary stays: {steps:#?}");
+    let last = steps.last().unwrap();
+    assert_eq!(last.what, clio_memory::setup::plan::BINARY);
+    let why = last.outcome.as_ref().unwrap_err();
+    assert!(why.contains(&r.exe.display().to_string()), "{why}");
+    // The rest was still done.
+    assert_eq!(connected(&r.env()), vec![Codex]);
+}
+
+#[test]
+fn uninstall_deletes_the_binary_from_clio_memory_bin_dir() {
+    let mut r = rig();
+    let dir = r.t.path().join("mis binarios");
+    r.exe = dir.join("clio-memory");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(&r.exe, "binario").unwrap();
+    all_ok(&uninstall(&r.env(), None));
+    assert!(r.exe.is_file(), "not where the installer put it");
+    r.bin_dir = Some(dir);
+    all_ok(&uninstall(&r.env(), None));
+    assert!(!r.exe.exists());
 }

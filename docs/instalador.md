@@ -183,7 +183,7 @@ Los nombres de `--agents`: `claude-code`, `opencode`, `codex`, `gemini`, `antigr
 - No toca otros servidores MCP, otras skills ni otras líneas de tus archivos.
 - No quita nada ajeno que se llame `clio-memory`.
 
-**`--models`** borra la carpeta `~/.cache/clio-models` entera: Granite, potion y ONNX Runtime con sus bibliotecas. No pregunta.
+**`--models`** borra la carpeta `~/.cache/clio-models` entera: Granite, potion y ONNX Runtime con sus bibliotecas. No pregunta. Esos modelos también los usa Clio: si los necesita después, se vuelven a bajar (`clio-memory setup model`, o el instalador de Clio).
 
 **`--data`** borra para siempre estos archivos y nada más:
 
@@ -209,10 +209,10 @@ Mientras tanto, corre `~/.local/bin/clio-memory doctor` con la ruta completa. Qu
 
 El instalador no guarda ninguna preferencia de modelo. El binario usa el mejor que haya en disco: Granite, si no potion, si no búsqueda por texto. `clio-memory setup` te deja elegir (en una terminal) o usa `--model`; `clio-memory setup model` instala Granite y `setup model potion` el estático. Los detalles están en el [README](../README.md#el-modelo-de-vectores).
 
-- Tamaños de la descarga completa: Granite 1,28 GB (el modelo y su tokenizador; ONNX Runtime se baja aparte) y potion 531 MB.
+- Tamaños: Granite 1,28 GB es el modelo solo (con su tokenizador); encima se baja ONNX Runtime y, con una tarjeta NVIDIA, las bibliotecas de CUDA que el sistema no tenga. potion, 531 MB, no necesita nada más.
 - Granite necesita ONNX Runtime, que `setup model` baja solo. Hay runtime publicado para Linux x86_64, Linux aarch64 y macOS arm64. En **macOS x86_64** no lo hay, así que ahí sirve potion, o texto.
 - No hay forma de quitar un solo modelo: `uninstall --models` borra todos (ver arriba).
-- En una terminal, elegir un modelo peor que el instalado ofrece borrar el mejor (y ONNX Runtime) y pregunta antes, con su tamaño; un no lo deja. Con banderas o sin terminal nunca se borra un modelo.
+- En una terminal, elegir un modelo peor que el instalado ofrece borrar el mejor (y ONNX Runtime) y pregunta antes, con su tamaño y avisando que los modelos de `~/.cache/clio-models` también los usa Clio (si los necesita, se vuelven a bajar); un no lo deja. Con banderas o sin terminal nunca se borra un modelo.
 
 ## La firma de cada agente
 

@@ -263,8 +263,12 @@ fn uninstall(
             gone.push(Step {
                 agent: None,
                 what: "modelos".into(),
-                outcome: remove_folder(&dir)
-                    .map(|()| format!("modelos borrados: {}", dir.display())),
+                outcome: remove_folder(&dir).map(|()| {
+                    format!(
+                        "modelos borrados: {} (también eran de Clio; `clio-memory setup model` los vuelve a bajar)",
+                        dir.display()
+                    )
+                }),
             });
         }
         if let Some(memory) = &memory {

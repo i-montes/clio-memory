@@ -49,7 +49,7 @@ curl -fsSL https://raw.githubusercontent.com/i-montes/clio-memory/main/install.s
 Hay binario para Linux (x86_64 y aarch64) y macOS (arm64 e Intel). El instalador hace cuatro cosas:
 - baja el binario de tu plataforma del último release, comprueba su sha256 contra `SHA256SUMS` (y su atestación de GitHub, si tienes `gh` 2.49 o más nuevo con sesión) y solo entonces lo deja en `~/.local/bin` (o `$CLIO_MEMORY_BIN_DIR`). No edita ningún archivo de tu shell: si esa carpeta no está en tu `PATH`, te dice la línea que la agrega;
 - busca los agentes que tienes (Claude Code, OpenCode, Codex, Gemini CLI y Antigravity), te deja elegir y conecta la memoria en cada uno: el servidor MCP, la skill y, si quieres, una línea en su archivo de instrucciones;
-- instala el modelo de vectores: Granite (1,28 GB) donde corre, potion (531 MB) donde no, o ninguno si lo prefieres (ver [el modelo](#el-modelo-de-vectores));
+- instala el modelo de vectores: Granite (1,28 GB el modelo solo; encima, ONNX Runtime y, con NVIDIA, las bibliotecas de CUDA) donde corre, potion (531 MB) donde no, o ninguno si lo prefieres (ver [el modelo](#el-modelo-de-vectores));
 - instala el timer del [sueño](#el-sueño).
 
 No toca otros servidores MCP ni otras skills. Si un agente ya tiene algo llamado `clio-memory` que no es esto, te pregunta antes de reemplazarlo. Correrlo otra vez actualiza el binario y conserva lo elegido.
@@ -81,11 +81,11 @@ La skill va en la menor cantidad de carpetas que cubra a los agentes conectados,
 ```sh
 clio-memory uninstall                         # todos los agentes, el sueño y el binario
 clio-memory uninstall --agents codex,gemini   # solo esos agentes
-clio-memory uninstall --models                # además borra ~/.cache/clio-models
+clio-memory uninstall --models                # además borra ~/.cache/clio-models (también los de Clio)
 clio-memory uninstall --data                  # además borra la memoria (pregunta antes)
 ```
 
-Quita de cada agente el servidor MCP `clio-memory`, la skill y la línea de instrucciones, pero **solo lo que es nuestro**: un servidor o una skill ajenos con ese nombre no se tocan. Sin `--agents` quita también el timer del sueño y, al final, el binario si está en `~/.local/bin` (o en `$CLIO_MEMORY_BIN_DIR`); si algo no se pudo quitar, el binario se queda y puedes correrlo otra vez. **No borra la memoria ni los modelos si no lo pides.** `--data` borra para siempre `memory.db` (con sus `-wal`, `-shm` y candados) y la carpeta `sleep/` de al lado, y nada más de la carpeta de datos, porque ahí guarda sus archivos Clio. Sin terminal exige `--yes`.
+Quita de cada agente el servidor MCP `clio-memory`, la skill y la línea de instrucciones, pero **solo lo que es nuestro**: un servidor o una skill ajenos con ese nombre no se tocan. Sin `--agents` quita también el timer del sueño y, al final, el binario si está en `~/.local/bin` (o en `$CLIO_MEMORY_BIN_DIR`); si algo no se pudo quitar, el binario se queda y puedes correrlo otra vez. **No borra la memoria ni los modelos si no lo pides.** `--models` borra `~/.cache/clio-models` entera, que también usa Clio: si los necesita, se vuelven a bajar. `--data` borra para siempre `memory.db` (con sus `-wal`, `-shm` y candados) y la carpeta `sleep/` de al lado, y nada más de la carpeta de datos, porque ahí guarda sus archivos Clio. Sin terminal exige `--yes`.
 
 ### Compilar tú mismo
 
@@ -98,7 +98,7 @@ Compila la rama principal; sin `--features` el binario no puede cargar los model
 
 ### El modelo de vectores
 
-`clio-memory setup` instala **Granite Embedding 311M multilingual R2** (IBM, Apache-2.0; 1,28 GB) donde corre, y `setup model` lo hace por separado, fijado por revisión y sha256. Busca por significado, no por palabra: en la prueba de `bench/embeddings` acierta el recuerdo correcto en primer lugar el 90 % de las veces, contra el 40 % del modelo estático anterior. Usa los primeros 384 de sus 768 componentes, que ordenan igual de bien y ocupan la mitad.
+`clio-memory setup` instala **Granite Embedding 311M multilingual R2** (IBM, Apache-2.0; 1,28 GB el modelo solo) donde corre, y `setup model` lo hace por separado, fijado por revisión y sha256. Busca por significado, no por palabra: en la prueba de `bench/embeddings` acierta el recuerdo correcto en primer lugar el 90 % de las veces, contra el 40 % del modelo estático anterior. Usa los primeros 384 de sus 768 componentes, que ordenan igual de bien y ocupan la mitad.
 
 No hay que instalar nada más: `setup model` baja también lo que el modelo necesita para correr, fijado por sha256, en `~/.cache/clio-models/onnxruntime/`. Si hay una tarjeta NVIDIA, baja ONNX Runtime con CUDA, cuDNN y las bibliotecas de CUDA que el sistema no tenga. Si no hay tarjeta, solo ONNX Runtime para el procesador (10 MB). Si la GPU no responde, por el motivo que sea, usa el procesador y lo dice una vez. Con una RTX 4060 tarda unos 4 ms por recuerdo; en el procesador, unos 27 ms.
 

@@ -341,7 +341,11 @@ pub fn run(screen: &mut dyn Screen, env: &Env, args: SetupArgs) -> ExitCode {
         if !gone.is_empty() {
             let size: u64 = gone.iter().map(|(_, n)| n).sum();
             let list: Vec<String> = gone.iter().map(|(p, _)| p.display().to_string()).collect();
-            let question = format!("¿Borro {} ({})?", list.join(", "), human(size));
+            let question = format!(
+                "¿Borro {} ({})? Los modelos de ~/.cache/clio-models también los usa Clio; si los necesita, se vuelven a bajar.",
+                list.join(", "),
+                human(size)
+            );
             match screen.confirm(&question, false) {
                 Some(true) => removal = gone,
                 Some(false) => screen.note(&format!(
@@ -799,6 +803,7 @@ mod tests {
         ask(&mut s, &env, &curl);
         assert_eq!(s.asked.len(), 1);
         assert!(s.asked[0].starts_with("¿Borro "), "{:?}", s.asked);
+        assert!(s.asked[0].contains("también los usa Clio"), "{:?}", s.asked);
         assert!(granite.join("model.onnx").is_file());
         assert!(!t.path().join("curl.log").exists(), "{:?}", s.steps);
         assert!(s.steps.iter().all(|st| st.outcome.is_ok()), "{:?}", s.steps);

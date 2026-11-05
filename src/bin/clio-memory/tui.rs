@@ -411,6 +411,22 @@ fn size(spec: &ModelSpec) -> String {
     }
 }
 
+/// Granite's hint: its size is the model alone, and what it runs on (ONNX Runtime and, with an
+/// NVIDIA card, the CUDA libraries the system lacks) is downloaded on top.
+fn granite_hint(gpu: bool) -> String {
+    if gpu {
+        format!(
+            "{} el modelo, más ONNX Runtime y las bibliotecas de CUDA · recomendado (GPU)",
+            size(&GRANITE)
+        )
+    } else {
+        format!(
+            "{} el modelo, más ONNX Runtime · recomendado (procesador)",
+            size(&GRANITE)
+        )
+    }
+}
+
 /// `12,3 MB`; under a megabyte, `271 B` or `18,6 KB`.
 fn mb(bytes: u64) -> String {
     match bytes {
@@ -590,14 +606,7 @@ impl Screen for Tui {
             cliclack::select("¿Qué modelo instalo para la búsqueda?").initial_value(current);
         for option in options {
             let (label, hint) = match option {
-                ModelChoice::Granite => (
-                    "Granite 311M",
-                    format!(
-                        "{} · recomendado ({})",
-                        size(&GRANITE),
-                        if self.gpu { "GPU" } else { "procesador" }
-                    ),
-                ),
+                ModelChoice::Granite => ("Granite 311M", granite_hint(self.gpu)),
                 ModelChoice::Potion => ("potion", format!("{} · liviano", size(&POTION))),
                 ModelChoice::None => ("ninguno", "búsqueda por texto".to_owned()),
             };
@@ -735,5 +744,21 @@ mod tests {
         assert_eq!(mb(271), "271 B");
         assert_eq!(mb(18_616), "18,6 KB");
         assert_eq!(mb(512_361_560), "512,4 MB");
+    }
+
+    // Granite's size is the model alone: what it runs on comes on top, and says so.
+    #[test]
+    fn granite_says_what_comes_on_top() {
+        let cpu = granite_hint(false);
+        assert!(cpu.starts_with("1,28 GB el modelo"), "{cpu}");
+        assert!(cpu.contains("ONNX Runtime"), "{cpu}");
+        assert!(!cpu.contains("CUDA"), "{cpu}");
+        assert!(cpu.ends_with("recomendado (procesador)"), "{cpu}");
+        let gpu = granite_hint(true);
+        assert!(
+            gpu.contains("ONNX Runtime") && gpu.contains("CUDA"),
+            "{gpu}"
+        );
+        assert!(gpu.ends_with("recomendado (GPU)"), "{gpu}");
     }
 }

@@ -1004,6 +1004,14 @@ fn uninstall_with_data_and_yes_takes_everything_out() {
     assert!(left.get("mcp").is_none(), "{left}");
     assert!(!m.home.join(".config/opencode/skills/clio-memory").exists());
     assert!(out(&o).contains("✔ OpenCode"), "{}", out(&o));
+    // The models were Clio's too: the line says so.
+    assert!(
+        out(&o)
+            .lines()
+            .any(|l| l.contains("modelos borrados") && l.contains("también eran de Clio")),
+        "{}",
+        out(&o)
+    );
 }
 
 #[test]

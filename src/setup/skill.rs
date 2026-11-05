@@ -185,3 +185,29 @@ pub fn place_skill(home: &Path, agents: &[AgentId], replace: bool) -> Result<Vec
     }
     Ok(said)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The sha256 of `skill/SKILL.md` as this version ships it.
+    const CURRENT_SKILL_SHA: &str =
+        "f82d55db3b943c3d0e1898431010cf27cb4fd8914b27f7c89226352c2e43f452";
+
+    // An edited skill without its predecessor in `KNOWN_SKILLS` would make every installed copy
+    // of the previous one «foreign»: never updated, and a ✖ on every agent.
+    #[test]
+    fn the_skill_is_the_pinned_one() {
+        let sha = sha256_hex(SKILL.as_bytes());
+        assert!(
+            sha == CURRENT_SKILL_SHA,
+            "skill/SKILL.md changed (sha256 {sha}). Add the previous hash, {CURRENT_SKILL_SHA}, \
+             to KNOWN_SKILLS (with the version that published it) if a release shipped it, and \
+             set CURRENT_SKILL_SHA to {sha}."
+        );
+        assert!(
+            !KNOWN_SKILLS.contains(&CURRENT_SKILL_SHA),
+            "the current skill is not an old one"
+        );
+    }
+}

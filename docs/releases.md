@@ -5,7 +5,8 @@ Publicar una versión es empujar una etiqueta. No hay PR de sumas que fusionar, 
 ## Publicar
 
 1. Subir `version` en `Cargo.toml` (y `Cargo.lock`) en un PR normal y fusionarlo en `main`.
-2. Desde `main`, ya actualizado:
+2. Si `skill/SKILL.md` cambió desde la versión anterior, que en ese PR (o antes) el sha256 de la skill anterior esté en `KNOWN_SKILLS` (`src/setup/skill.rs`), con un comentario de la versión que la publicó, y que `CURRENT_SKILL_SHA` (en las pruebas de ese archivo) sea el de la nueva. La prueba `the_skill_is_the_pinned_one` falla en cuanto la skill cambia y dice los dos hashes. Sin esto, la skill que ya está instalada en las máquinas se leería como ajena: no se actualizaría y cada agente quedaría en ✖.
+3. Desde `main`, ya actualizado:
 
    ```sh
    git tag vX.Y.Z

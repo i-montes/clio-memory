@@ -8,7 +8,7 @@
 //! match replaces nothing.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use sha2::{Digest, Sha256};
 
@@ -16,6 +16,7 @@ pub mod agents;
 pub mod config_file;
 pub mod instructions;
 pub mod mcp;
+pub mod model_choice;
 pub mod plan;
 pub mod skill;
 
@@ -31,11 +32,13 @@ pub const INSTRUCTIONS_LINE: &str =
 /// The name Claude Code's flow knew it by.
 pub const CLAUDE_MD_LINE: &str = INSTRUCTIONS_LINE;
 
-/// One file of a model: where it is in the repository, its name on disk, its sha256.
+/// One file of a model: where it is in the repository, its name on disk, its sha256 and its size in
+/// bytes (the `content-length` of its pinned URL, for the progress of the download).
 pub struct ModelFile {
     pub remote: &'static str,
     pub local: &'static str,
     pub sha256: &'static str,
+    pub size: u64,
 }
 
 /// A vector model as `setup model` installs it: Hugging Face repository, pinned revision, files,
@@ -74,11 +77,13 @@ pub const GRANITE: ModelSpec = ModelSpec {
             remote: "tokenizer.json",
             local: "tokenizer.json",
             sha256: "0087c868b33bad550a78a08d19798cfd7f713cde4f020803b8f51f405503e15f",
+            size: 33384821,
         },
         ModelFile {
             remote: "onnx/model.onnx",
             local: "model.onnx",
             sha256: "75f9f258bf5013f5fe8a4dad61dd0fd16ac0cbaa7a106e3d3f41c2d04a42d541",
+            size: 1247170481,
         },
     ],
 };
@@ -93,16 +98,19 @@ pub const POTION: ModelSpec = ModelSpec {
             remote: "config.json",
             local: "config.json",
             sha256: "595e4cab2093732efd5dbe084fd5c1826b5eea693b73b4c1fd971672867d2e54",
+            size: 271,
         },
         ModelFile {
             remote: "tokenizer.json",
             local: "tokenizer.json",
             sha256: "19f1909063da3cfe3bd83a782381f040dccea475f4816de11116444a73e1b6a1",
+            size: 18616131,
         },
         ModelFile {
             remote: "model.safetensors",
             local: "model.safetensors",
             sha256: "14b5eb39cb4ce5666da8ad1f3dc6be4346e9b2d601c073302fa0a31bf7943397",
+            size: 512361560,
         },
     ],
 };
@@ -720,6 +728,50 @@ pub fn curl_get(curl: &Path, url: &str, to: &Path) -> Result<(), String> {
     } else {
         Err(format!("no se pudo descargar {url}"))
     }
+}
+
+/// Downloads `url` to `to` like `curl_get`, but silent (the caller draws the progress): while `curl`
+/// runs, every 200 ms the size of `to` goes to `on_bytes`, and once more, with the final size, when
+/// it ends well. Nothing is left running when it returns.
+pub fn curl_get_watching(
+    curl: &Path,
+    url: &str,
+    to: &Path,
+    on_bytes: &dyn Fn(u64),
+) -> Result<(), String> {
+    let mut child = Command::new(curl)
+        .args(["-fsSL", "--retry", "3", "-o"])
+        .arg(to)
+        .arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("curl: {e}"))?;
+    let size = || std::fs::metadata(to).map(|m| m.len()).unwrap_or(0);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                on_bytes(size());
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("curl: {e}"));
+            }
+        }
+    };
+    if status.success() {
+        on_bytes(size());
+        return Ok(());
+    }
+    let mut why = String::new();
+    if let Some(mut e) = child.stderr.take() {
+        let _ = std::io::Read::read_to_string(&mut e, &mut why);
+    }
+    Err(format!("no se pudo descargar {url}: {}", why.trim()))
 }
 
 /// Unpacks a `.tgz` or `.tar.xz` into `into`, without its top folder, with the system's `tar`.

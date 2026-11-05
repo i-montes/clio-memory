@@ -29,6 +29,10 @@ tracing = { version = "0.1", default-features = false, features = ["std"], optio
 sha2 = "0.11.1"
 thiserror = "2.0.21"
 unicode-normalization = "0.1.26"
+# The `setup` screen of the binary (prompts on stderr) and its colors; console is the one cliclack
+# draws with, so the theme's styles are its type.
+cliclack = "0.5.7"
+console = "0.16.6"
 
 [lints.rust]
 unsafe_code = "forbid"

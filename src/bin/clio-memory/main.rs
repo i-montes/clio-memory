@@ -6,7 +6,9 @@
 mod args;
 mod commands;
 mod output;
+mod palette;
 mod setup_flow;
+mod tui;
 mod write;
 
 use std::process::ExitCode;
@@ -43,10 +45,23 @@ fn main() -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
-            // Without a terminal (or with `--yes`) the plain lines; the TUI is not here yet.
-            let mut screen = setup_flow::Plain;
+            let terminal = std::io::IsTerminal::is_terminal(&std::io::stderr());
+            // In a terminal (and no `--yes`) the TUI; else the plain lines.
+            let mut tui;
+            let mut plain = setup_flow::Plain;
+            let screen: &mut dyn setup_flow::Screen = if setup_flow::interactive(yes, terminal) {
+                let mode = palette::color_mode(
+                    std::env::var("COLORTERM").ok().as_deref(),
+                    std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()),
+                    terminal,
+                );
+                tui = tui::Tui::new(mode, env.home.clone());
+                &mut tui
+            } else {
+                &mut plain
+            };
             setup_flow::run(
-                &mut screen,
+                screen,
                 &env,
                 setup_flow::SetupArgs {
                     yes,
@@ -56,7 +71,7 @@ fn main() -> ExitCode {
                     model,
                     instructions,
                     replace,
-                    terminal: std::io::IsTerminal::is_terminal(&std::io::stderr()),
+                    terminal,
                     curl: "curl".into(),
                 },
             )

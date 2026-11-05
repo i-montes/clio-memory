@@ -995,7 +995,8 @@ fn uninstall_with_data_and_yes_takes_everything_out() {
     std::fs::write(models.join("model.safetensors"), "pesos").unwrap();
     let o = m.run(&["uninstall", "--data", "--models", "--yes"]);
     assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
-    assert!(!m.data.exists(), "{}", out(&o));
+    assert!(!m.data.join("memory.db").exists(), "{}", out(&o));
+    assert!(m.data.is_dir(), "the folder itself stays");
     assert!(!m.home.join(".cache/clio-models").exists());
     assert!(m.home.is_dir());
     let left: serde_json::Value =
@@ -1077,4 +1078,42 @@ fn doctor_lists_agents() {
     assert_eq!(v["ok"], true);
     assert_eq!(v["agents"][0]["agent"], "opencode");
     assert_eq!(v["agents"][0]["ok"], true);
+}
+
+#[test]
+fn uninstall_data_deletes_only_the_memorys_files() {
+    let m = machine();
+    // The memory's own files, and its sleep's folder...
+    let ours = [
+        "memory.db-wal",
+        "memory.db-shm",
+        "memory.db.lock",
+        "memory.db.sleep.lock",
+    ];
+    for name in ours {
+        std::fs::write(m.data.join(name), "de la memoria").unwrap();
+    }
+    std::fs::create_dir_all(m.data.join("sleep")).unwrap();
+    std::fs::write(m.data.join("sleep/state.json"), "{}").unwrap();
+    // ...beside what Clio keeps in the same folder.
+    let foreign = [
+        ("vault.bin", &b"\x00secreto\xff"[..]),
+        ("runs/x", b"una corrida"),
+        ("projects.json", b"{\"p\": 1}"),
+    ];
+    for (name, bytes) in foreign {
+        let p = m.data.join(name);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, bytes).unwrap();
+    }
+    let o = m.run(&["uninstall", "--data", "--yes"]);
+    assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+    assert!(!m.data.join("memory.db").exists(), "{}", out(&o));
+    for name in ours {
+        assert!(!m.data.join(name).exists(), "{name}");
+    }
+    assert!(!m.data.join("sleep").exists());
+    for (name, bytes) in foreign {
+        assert_eq!(std::fs::read(m.data.join(name)).unwrap(), bytes, "{name}");
+    }
 }

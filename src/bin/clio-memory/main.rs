@@ -182,24 +182,21 @@ fn uninstall(
         Err(e) => return fail(e, 1),
     };
     // The memory goes only with a yes, asked before anything else: a no changes nothing.
-    let folder = match data.then(|| data_folder(db, &env.home)).transpose() {
-        Ok(folder) => folder,
+    let memory = match data.then(|| memory_files(db)).transpose() {
+        Ok(memory) => memory,
         Err(e) => return fail(e, 2),
     };
-    if let Some(folder) = folder.as_ref().filter(|_| !yes) {
+    if let Some(memory) = memory.as_ref().filter(|_| !yes) {
         if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
             return fail(
                 format!(
-                    "--data borra {} para siempre: sin terminal, confírmalo con --yes",
-                    folder.display()
+                    "--data borra para siempre {}: sin terminal, confírmalo con --yes",
+                    memory.what()
                 ),
                 2,
             );
         }
-        if !ask(&format!(
-            "¿Borro {} con toda la memoria? No se puede deshacer.",
-            folder.display()
-        )) {
+        if !ask(&format!("¿Borro {}? No se puede deshacer.", memory.what())) {
             return fail("no se cambió nada".into(), 1);
         }
     }
@@ -213,12 +210,13 @@ fn uninstall(
             outcome: remove_folder(&dir).map(|()| format!("modelos borrados: {}", dir.display())),
         });
     }
-    if let Some(folder) = folder {
+    if let Some(memory) = memory {
         gone.push(Step {
             agent: None,
             what: "datos".into(),
-            outcome: remove_folder(&folder)
-                .map(|()| format!("memoria borrada: {}", folder.display())),
+            outcome: memory
+                .remove()
+                .map(|()| format!("memoria borrada: {}", memory.what())),
         });
     }
     // Before the binary, which goes last.
@@ -240,25 +238,66 @@ fn uninstall(
     }
 }
 
-/// The folder of the memory file, checked to be one `--data` may delete: the file is called
-/// `memory.db`, and the folder is neither the home nor a root.
-fn data_folder(db: &std::path::Path, home: &std::path::Path) -> Result<std::path::PathBuf, String> {
-    use clio_memory::agent::memory::DB_FILE;
-    let canon = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-    let folder = db.parent().map(canon);
-    match folder {
-        Some(folder)
-            if db.file_name().is_some_and(|n| n == DB_FILE)
-                && folder.parent().is_some()
-                && folder != canon(home) =>
-        {
-            Ok(folder)
-        }
-        _ => Err(format!(
-            "--data borra la carpeta de {DB_FILE}, y {} no es una que se pueda borrar entera",
-            db.display()
-        )),
+/// What `--data` deletes: the memory file with what SQLite and the locks keep beside it, and
+/// the sleep's folder (its state, reports and nightly copies of the file). Nothing else of the
+/// folder they are in: Clio keeps its own data there (its vault among it).
+struct MemoryFiles {
+    db: std::path::PathBuf,
+    files: Vec<std::path::PathBuf>,
+    sleep: std::path::PathBuf,
+}
+
+impl MemoryFiles {
+    /// For the person: the file and the sleep's copies.
+    fn what(&self) -> String {
+        format!(
+            "la memoria: {} y las copias del sueño en {}",
+            self.db.display(),
+            self.sleep.display()
+        )
     }
+
+    /// Deletes them; one that is not there is already gone.
+    fn remove(&self) -> Result<(), String> {
+        for file in &self.files {
+            match std::fs::remove_file(file) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(format!("{}: {e}", file.display()));
+                }
+                _ => {}
+            }
+        }
+        remove_folder(&self.sleep)
+    }
+}
+
+/// The memory's files for `--db`, which must be a file called `memory.db` (the sleep's folder is
+/// only that file's beside it).
+fn memory_files(db: &std::path::Path) -> Result<MemoryFiles, String> {
+    use clio_memory::agent::memory::DB_FILE;
+    let data = db
+        .parent()
+        .filter(|_| db.file_name().is_some_and(|n| n == DB_FILE))
+        .ok_or_else(|| {
+            format!(
+                "--data borra {DB_FILE} y lo que lo acompaña, y {} no es un {DB_FILE}",
+                db.display()
+            )
+        })?;
+    // SQLite's `-wal` and `-shm`, the writer's lock and the sleep's lock.
+    let files = ["", "-wal", "-shm", ".lock", ".sleep.lock"]
+        .into_iter()
+        .map(|suffix| {
+            let mut name = db.as_os_str().to_owned();
+            name.push(suffix);
+            std::path::PathBuf::from(name)
+        })
+        .collect();
+    Ok(MemoryFiles {
+        db: db.to_path_buf(),
+        files,
+        sleep: clio_memory::sleep::sleep_dir(data),
+    })
 }
 
 /// Deletes a folder and everything in it; one that is not there is already gone.

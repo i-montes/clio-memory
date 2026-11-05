@@ -26,8 +26,9 @@ agents:
                               them, with the nightly sleep and, last, this binary when it is in
                               ~/.local/bin (or $CLIO_MEMORY_BIN_DIR). LIST: claude-code,opencode,
                               codex,gemini,antigravity. --models deletes ~/.cache/clio-models;
-                              --data deletes the memory's folder (the one of memory.db): it asks
-                              first in a terminal, and without one needs --yes
+                              --data deletes the memory: memory.db (with its -wal, -shm and lock
+                              files) and the sleep's folder beside it, and nothing else of that
+                              folder; it asks first in a terminal, and without one needs --yes
   sleep [--now] [--dry-run] [--report]
                               one night of sleep: check and copy the file, quarantine secrets
                               and likely attacks, fold repeats, purge what was discarded long

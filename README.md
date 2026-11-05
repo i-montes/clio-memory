@@ -54,6 +54,8 @@ Hay binario para Linux (x86_64 y aarch64) y macOS (arm64 e Intel). El instalador
 
 No toca otros servidores MCP ni otras skills. Si un agente ya tiene algo llamado `clio-memory` que no es esto, te pregunta antes de reemplazarlo. Correrlo otra vez actualiza el binario y conserva lo elegido.
 
+**Actualizar.** `clio-memory update` (o `clio memory update`, desde Clio) corre este mismo instalador y luego `setup --yes`: baja la última versión con las mismas comprobaciones, se queda lo conectado y pone al día la skill.
+
 **Sin terminal, o con `--yes`.** En los dos casos no pregunta nada y cada paso sale como una línea: usa las banderas y, donde faltan, todos los agentes que encuentra, el modelo recomendado y la línea de instrucciones. Si ya había algo conectado (otra corrida), donde faltan las banderas se queda lo que había: los mismos agentes, el mismo modelo (no se baja ninguno) y las líneas como estaban. Las banderas pasan a `setup` tal cual:
 
 ```sh

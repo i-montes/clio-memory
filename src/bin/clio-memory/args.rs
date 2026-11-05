@@ -51,6 +51,9 @@ agents:
                               ago; only when nobody used the memory for 30 minutes and it did not
                               sleep in the last 20 hours (--now skips both waits, --dry-run looks
                               and changes nothing, --report prints the last night's report)
+  update                      install the latest release with the installer of the first install
+                              (binary sha256-checked) and run `setup --yes` again: what is
+                              connected stays, the skill is brought up to date
   setup model [potion]        download the vector model (pinned, sha256-checked): Granite
                               Embedding 311M (GPU or CPU, needs ONNX Runtime installed) to
                               ~/.cache/clio-models/granite-embedding-311m-multilingual-r2, or with
@@ -134,6 +137,8 @@ pub enum Command {
     SetupSleep {
         remove: bool,
     },
+    /// `update`: the installer again, then `setup --yes`.
+    Update,
     /// `uninstall`: from `agents` (None: everything), and the models and the data on request.
     Uninstall {
         agents: Option<Vec<AgentId>>,
@@ -566,6 +571,10 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, UsageErro
                 dry_run,
                 report,
             }
+        }
+        "update" => {
+            rest.none()?;
+            Command::Update
         }
         "stats" => {
             rest.none()?;

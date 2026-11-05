@@ -279,9 +279,15 @@ pub fn run(screen: &mut dyn Screen, env: &Env, args: SetupArgs) -> ExitCode {
             if !left.is_empty() {
                 let keys: Vec<&str> = left.iter().map(|a| a.key()).collect();
                 screen.note(&format!(
-                    "Se queda lo conectado. También está {}: `clio-memory setup --agents {}` lo conecta.",
+                    "Se queda lo conectado. También {} {}: `clio-memory setup --agents {}` {}.",
+                    if left.len() > 1 { "están" } else { "está" },
                     join_labels(&left),
-                    keys.join(",")
+                    keys.join(","),
+                    if left.len() > 1 {
+                        "los conecta"
+                    } else {
+                        "lo conecta"
+                    }
                 ));
             }
             before.clone()

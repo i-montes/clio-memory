@@ -31,6 +31,33 @@ pub const INSTRUCTIONS_LINE: &str =
     "- Mi memoria principal es clio-memory (MCP): úsala según la skill clio-memory.";
 /// The name Claude Code's flow knew it by.
 pub const CLAUDE_MD_LINE: &str = INSTRUCTIONS_LINE;
+/// The installer of the first install, which `update` runs again.
+pub const INSTALLER_URL: &str =
+    "https://raw.githubusercontent.com/i-montes/clio-memory/main/install.sh";
+
+/// `update`: runs the installer at `url`, which brings the latest release (its sha256 checked,
+/// and its attestation when `gh` can) and hands over to `setup --yes`: what is connected stays,
+/// and the skill is brought up to date. The script is fetched whole before it runs, so a cut
+/// download runs nothing.
+pub fn update(url: &str) -> Result<(), String> {
+    let status = Command::new("sh")
+        .args([
+            "-c",
+            r#"s=$(curl -fsSL --proto-redir =https --retry 3 "$1") || exit 90; shift; sh -c "$s" sh "$@""#,
+            "sh",
+            url,
+            "--yes",
+        ])
+        .status()
+        .map_err(|e| format!("no se pudo correr el instalador: {e}"))?;
+    match status.code() {
+        Some(0) => Ok(()),
+        Some(90) => Err(format!(
+            "no se pudo bajar el instalador de {url}: no se cambió nada"
+        )),
+        _ => Err(format!("el instalador falló ({status})")),
+    }
+}
 
 /// One file of a model: where it is in the repository, its name on disk, its sha256 and its size in
 /// bytes (the `content-length` of its pinned URL, for the progress of the download).

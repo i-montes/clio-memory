@@ -14,14 +14,18 @@ use sha2::{Digest, Sha256};
 
 pub mod agents;
 pub mod config_file;
+pub mod instructions;
 pub mod mcp;
 pub mod skill;
 
 /// The skill installed for Claude Code.
 pub const SKILL: &str = include_str!("../../skill/SKILL.md");
-/// The line added to `~/.claude/CLAUDE.md` when the person says yes.
-pub const CLAUDE_MD_LINE: &str =
+/// The line added to each agent's instructions file (`~/.claude/CLAUDE.md` and the like) when the
+/// person says yes.
+pub const INSTRUCTIONS_LINE: &str =
     "- Mi memoria principal es clio-memory (MCP): úsala según la skill clio-memory.";
+/// The name Claude Code's flow knew it by.
+pub const CLAUDE_MD_LINE: &str = INSTRUCTIONS_LINE;
 const NAME: &str = "clio-memory";
 
 /// One file of a model: where it is in the repository, its name on disk, its sha256.

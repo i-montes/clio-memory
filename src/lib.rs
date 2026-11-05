@@ -44,11 +44,11 @@ pub mod tools;
 
 pub use clock::{Clock, FixedClock, SystemClock};
 pub use decider::{Decider, NearDuplicateDecider};
-pub use embed::Embedder;
+pub use embed::{Embedder, GRANITE_ID};
 pub use engine::{Engine, Judge, Judged, Sureness};
 pub use error::{Error, Result};
 #[cfg(feature = "granite")]
-pub use granite::{GRANITE_ID, Granite};
+pub use granite::Granite;
 pub use model::*;
 #[cfg(feature = "model2vec")]
 pub use model2vec::Model2VecEmbedder;

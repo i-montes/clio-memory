@@ -1,5 +1,9 @@
 use crate::error::{Error, Result};
 
+/// What a Granite vector is called in the file: the model and the cut. Known without the
+/// `granite` feature too: a file may hold Granite vectors written by another build.
+pub const GRANITE_ID: &str = "granite-embedding-311m-multilingual-r2@384";
+
 /// Turns text into vectors. The model id names the vector space: vectors from different
 /// models are never compared.
 pub trait Embedder: Send + Sync {

@@ -19,9 +19,9 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::agent::memory::{clean_text, kind_label, origin_label};
-use crate::agent::{Draft, EmbedModel, Memory, Place};
+use crate::agent::{Draft, EmbedModel, Memory, Place, preview};
 use crate::secrets::find_secret;
-use crate::{Category, MemoryId, MemoryRow, MemoryType, OpId, OpKind, Outcome};
+use crate::{Category, MemoryId, MemoryRow, MemoryType, OpId, OpKind, Origin, Outcome};
 
 /// Each tool and what it is for, as the client is told.
 pub const TOOLS: [(&str, &str); 12] = [
@@ -119,6 +119,9 @@ const MAX_FULL_LINE_CHARS: usize = 1600;
 const MAX_ANSWER_BYTES: usize = 4096;
 /// Room kept for the line that says how many memories did not fit.
 const OMITTED_ROOM: usize = 96;
+/// Neighbors shown under a memory read in full, and ids of neighbors after each search result.
+const NEAR_GET: usize = 5;
+const NEAR_SEARCH: usize = 3;
 
 /// The JSON schema of a tool's arguments (no other argument is accepted).
 pub fn schema(name: &str) -> Option<Value> {
@@ -351,6 +354,12 @@ impl Session {
             }
         };
         let full = name == "memory_get";
+        // What the model can walk to: the neighbors of what it opened, a few ids per result.
+        let near = match name {
+            "memory_get" => NEAR_GET,
+            "memory_search" => NEAR_SEARCH,
+            _ => 0,
+        };
         let answer = render(
             &m,
             &rows,
@@ -358,6 +367,7 @@ impl Session {
             note.as_deref(),
             left.min(MAX_ANSWER_BYTES),
             full,
+            near,
         );
         self.bytes += answer.len();
         Ok(answer)
@@ -403,7 +413,18 @@ impl Session {
             };
             m.save(&draft, &self.actor, place, false)?
         };
-        Ok(with_vectors(told(&o), &m))
+        let mut said = with_vectors(told(&o), &m);
+        if !summary
+            && o.kind != OpKind::Noop
+            && let Some(twin) = m.near_duplicate(o.memory)
+        {
+            // Only its number: this answer is not framed as data, so no memory text goes in it.
+            said.push_str(&format!(
+                " · muy parecida a m{0}: si la corrige o la contradice, usa memory_update o memory_consolidate (memory_get m{0} la muestra)",
+                twin.id.0
+            ));
+        }
+        Ok(said)
     }
 
     fn consolidate(&mut self, args: &Map<String, Value>) -> Result<String, String> {
@@ -431,6 +452,10 @@ impl Session {
         let o = m.save_beside(&draft, &self.actor, &first, false)?;
         if o.kind != OpKind::Add || ids.contains(&o.memory.0) {
             return Err("la unión no dio una memoria nueva: no se olvidó nada".into());
+        }
+        for id in &ids {
+            // Best effort: the merge is made; a relation that does not follow is a note lost.
+            let _ = m.copy_relations(MemoryId(*id), o.memory);
         }
         for (done, id) in ids.iter().enumerate() {
             if let Err(why) = m.forget(MemoryId(*id)) {
@@ -623,6 +648,7 @@ fn render(
     note: Option<&str>,
     cap: usize,
     full: bool,
+    near: usize,
 ) -> String {
     if rows.is_empty() {
         return match note.map(clean_text).filter(|n| !n.is_empty()) {
@@ -652,7 +678,8 @@ fn render(
     } else {
         MAX_LINE_CHARS
     };
-    let (mut lines, mut used) = (Vec::new(), 0);
+    let (mut lines, mut used, mut shown) = (Vec::new(), 0, 0);
+    let mut ids_after: Vec<(usize, String)> = Vec::new();
     for r in rows {
         let mut head = format!(
             "[m{}] {} · {} · {}",
@@ -687,10 +714,50 @@ fn render(
         if used + line.len() + 1 > room {
             break;
         }
+        // Only for what is shown.
+        let neighbors = if near > 0 {
+            m.neighbors(r, near)
+        } else {
+            Vec::new()
+        };
+        if !full && !neighbors.is_empty() {
+            let ids: Vec<String> = neighbors.iter().map(|n| format!("m{}", n.id.0)).collect();
+            ids_after.push((lines.len(), format!(" · cerca: {}", ids.join(", "))));
+        }
         used += line.len() + 1;
         lines.push(line);
+        shown += 1;
+        if full {
+            // After the memory, in what room is left: fewer neighbors, never less of the memory.
+            let named: Vec<String> = neighbors
+                .iter()
+                .map(|n| {
+                    let outside = if n.origin == Origin::External {
+                        " (externo)"
+                    } else {
+                        ""
+                    };
+                    format!("m{}{outside} «{}»", n.id.0, preview(n))
+                })
+                .collect();
+            for k in (1..=named.len()).rev() {
+                let near_line = format!("Cerca: {}", named[..k].join(" · "));
+                if used + near_line.len() < room {
+                    used += near_line.len() + 1;
+                    lines.push(near_line);
+                    break;
+                }
+            }
+        }
     }
-    let left = rows.len() - lines.len();
+    // Neighbor ids go in the room the results left: they never cost a result.
+    for (at, ids) in ids_after {
+        if used + ids.len() <= room {
+            used += ids.len();
+            lines[at].push_str(&ids);
+        }
+    }
+    let left = rows.len() - shown;
     if left > 0 {
         lines.push(format!(
             "[+{left} more memories left out: the answer is limited to {cap} bytes]"
@@ -758,6 +825,37 @@ mod tests {
         assert_eq!(merge_ids("12, m15"), Some(vec![12, 15]));
         for bad in ["12", "12, 12", "1,2,3,4,5,6", "doce, trece", "0, 3", ""] {
             assert_eq!(merge_ids(bad), None, "{bad}");
+        }
+    }
+
+    // Neighbor ids never cost a search a result: a line that does not fit with them goes without.
+    #[test]
+    fn neighbor_ids_never_push_a_result_out() {
+        use crate::agent::{Draft, EmbedModel, Memory, Place};
+        for len in (200..600).step_by(7) {
+            let t = tempfile::tempdir().unwrap();
+            let m = Memory::open_write(t.path(), &EmbedModel::none(), None, "agente").unwrap();
+            let rows: Vec<MemoryRow> = (0..6)
+                .map(|i| {
+                    let text = format!("{i} {}", "é".repeat(len));
+                    let id = m
+                        .save(
+                            &Draft::plain(&text, MemoryType::Semantic),
+                            "s",
+                            Place::Personal,
+                            false,
+                        )
+                        .unwrap()
+                        .memory;
+                    m.get(id).unwrap()
+                })
+                .collect();
+            let shown = |near: usize| {
+                let a = render(&m, &rows, false, None, MAX_ANSWER_BYTES, false, near);
+                assert!(a.len() <= MAX_ANSWER_BYTES);
+                a.lines().filter(|l| l.starts_with("[m")).count()
+            };
+            assert_eq!(shown(NEAR_SEARCH), shown(0), "memories of {len} characters");
         }
     }
 }

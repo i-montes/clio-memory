@@ -40,6 +40,27 @@ pub(crate) fn content_tokens(lang: &str, text: &str) -> Vec<String> {
     tokens_where(lang, text, true)
 }
 
+/// What `text` is about, as a short query: its words without the function words of the
+/// languages we know, each once, at most `max` (a memory used as a query stays cheap).
+pub(crate) fn about(text: &str, max: usize) -> String {
+    let mut seen: Vec<String> = Vec::new();
+    for w in text.split(|c: char| !c.is_alphanumeric()) {
+        let lower = w.to_lowercase();
+        if lower.is_empty()
+            || is_stop("es", &lower)
+            || is_stop("en", &lower)
+            || seen.contains(&lower)
+        {
+            continue;
+        }
+        seen.push(lower);
+        if seen.len() == max {
+            break;
+        }
+    }
+    seen.join(" ")
+}
+
 /// Lowercased tokens of `text`, each reduced to its stem for `lang`.
 pub(crate) fn tokens(lang: &str, text: &str) -> Vec<String> {
     tokens_where(lang, text, false)

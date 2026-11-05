@@ -21,8 +21,7 @@ use crate::embed::{Embedder, catch_panic};
 use crate::error::{Error, Result};
 use crate::idle::{DEFAULT_IDLE, IdleCache};
 
-/// What a vector is called in the file: the model and the cut.
-pub const GRANITE_ID: &str = "granite-embedding-311m-multilingual-r2@384";
+pub use crate::embed::GRANITE_ID;
 const DIM: usize = 384;
 /// Tokens per text: a memory is at most 1,200 characters, well under this.
 const MAX_TOKENS: usize = 1024;

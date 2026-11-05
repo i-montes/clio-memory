@@ -239,6 +239,8 @@ pub trait Store: VectorIndex + Send + Sync {
 
     /// Memories that are not archived and have no vector for `model`, oldest first, with their text.
     fn pending_embeddings(&self, model: &str, limit: usize) -> Result<Vec<(MemoryId, String)>>;
+    /// The stored vector of `id` for `model`, if it has a usable one.
+    fn vector_of(&self, id: MemoryId, model: &str) -> Result<Option<Vec<f32>>>;
     /// Stores already-validated, normalized vectors in one transaction; replaces existing ones.
     /// A memory that does not exist fails the whole batch.
     fn put_vectors(&self, model: &str, dim: usize, vectors: &[(MemoryId, Vec<f32>)]) -> Result<()>;

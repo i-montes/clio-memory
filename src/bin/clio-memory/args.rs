@@ -16,8 +16,8 @@ agents:
   setup [--yes] [--agents LIST|all] [--model granite|potion|none]
         [--instructions|--no-instructions] [--replace] [--from-installer]
                               connect clio-memory to the agents on this machine and install the
-                              vector model and the nightly sleep; in a terminal it asks, and
-                              with --yes or without one it uses the flags and, where missing:
+                              vector model and the nightly sleep; in a terminal it asks, and with
+                              --yes or without a terminal it uses the flags and, where missing:
                               every agent found, granite where it runs (else potion; nothing is
                               downloaded when one as good is installed), the instructions line.
                               Flags only add: nothing is disconnected or deleted (that is
@@ -679,6 +679,21 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, UsageErro
         }
         other => return usage(format!("unknown command {other:?}")),
     };
+    // `setup` uses none of the options before the command: one given there is a mistake, not
+    // something to ignore.
+    if matches!(command, Command::Setup { .. }) {
+        let given = [
+            ("--db", db.is_some()),
+            ("--actor", actor.is_some()),
+            ("--model", model.is_some()),
+            ("--json", json),
+        ];
+        if let Some((name, _)) = given.into_iter().find(|(_, given)| *given) {
+            return usage(format!(
+                "{name} does not go with setup (its own --model goes after it: setup --model none)"
+            ));
+        }
+    }
     let db = match db {
         Some(db) => db,
         None => match clio_memory::agent::default_data() {

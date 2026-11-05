@@ -1394,3 +1394,18 @@ fn setup_a_failing_step_is_one_line_and_the_others_go_on() {
         "{text}"
     );
 }
+
+#[test]
+fn setup_refuses_options_given_before_it() {
+    let m = machine();
+    for (args, name) in [
+        (&["--model", "/tmp/x", "setup", "--yes"][..], "--model"),
+        (&["--db", "/tmp/memory.db", "setup", "--yes"], "--db"),
+        (&["--actor", "ana", "setup", "--yes"], "--actor"),
+        (&["--json", "setup", "--yes"], "--json"),
+    ] {
+        let o = setup_on(&m, None, args);
+        assert_eq!(code(&o), 2, "{args:?}: {}{}", out(&o), err(&o));
+        assert!(err(&o).contains(name), "{args:?}: {}", err(&o));
+    }
+}

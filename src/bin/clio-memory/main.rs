@@ -56,6 +56,8 @@ fn main() -> ExitCode {
                     model,
                     instructions,
                     replace,
+                    terminal: std::io::IsTerminal::is_terminal(&std::io::stderr()),
+                    curl: "curl".into(),
                 },
             )
         }

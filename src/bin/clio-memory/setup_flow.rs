@@ -31,6 +31,10 @@ pub struct SetupArgs {
     pub model: Option<ModelChoice>,
     pub instructions: Option<bool>,
     pub replace: bool,
+    /// Whether stderr is a terminal (with `yes`, it decides whether the flow asks: `interactive`).
+    pub terminal: bool,
+    /// The `curl` that downloads the model (`curl` on the `PATH`; a fake in tests).
+    pub curl: PathBuf,
 }
 
 /// How the flow shows itself and asks. Every `choose_*` and `confirm` returns `None` when the
@@ -157,12 +161,24 @@ pub fn path_hint(bin_dir: &Path, home: &Path, path_env: &str, shell: &str) -> Op
     if std::env::split_paths(path_env).any(|p| p == bin_dir) {
         return None;
     }
+    // `~` only expands outside quotes, so fish gets `~/` and the rest quoted when it has to be.
+    let quoted = |p: &Path| {
+        let text = p.display().to_string();
+        if text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._-".contains(c))
+        {
+            text
+        } else {
+            format!("\"{text}\"")
+        }
+    };
     let (sh, fish) = match bin_dir.strip_prefix(home) {
         Ok(rel) => (
             format!("$HOME/{}", rel.display()),
-            format!("~/{}", rel.display()),
+            format!("~/{}", quoted(rel)),
         ),
-        Err(_) => (bin_dir.display().to_string(), bin_dir.display().to_string()),
+        Err(_) => (bin_dir.display().to_string(), quoted(bin_dir)),
     };
     let export = |rc: &str| format!(r#"echo 'export PATH="{sh}:$PATH"' >> {rc}"#);
     Some(match shell.rsplit('/').next().unwrap_or(shell) {
@@ -227,8 +243,7 @@ fn gpu() -> Option<String> {
 /// The whole of `setup`: what was chosen is done step by step, and one step that fails (an agent,
 /// the model) leaves the others done and makes the exit code 1.
 pub fn run(screen: &mut dyn Screen, env: &Env, args: SetupArgs) -> ExitCode {
-    use std::io::IsTerminal;
-    let asks = interactive(args.yes, std::io::stderr().is_terminal());
+    let asks = interactive(args.yes, args.terminal);
     let (os, arch) = (std::env::consts::OS, std::env::consts::ARCH);
     screen.header(env!("CARGO_PKG_VERSION"));
     let os_label = match os {
@@ -338,7 +353,8 @@ pub fn run(screen: &mut dyn Screen, env: &Env, args: SetupArgs) -> ExitCode {
 
     // Everything is decided: now it is done.
     let mut failed = false;
-    if !agents.is_empty() {
+    // With every agent unchecked and a yes, the selection is empty and still disconnects.
+    if !agents.is_empty() || exclusive {
         let sel = Selection {
             agents,
             instructions,
@@ -355,6 +371,21 @@ pub fn run(screen: &mut dyn Screen, env: &Env, args: SetupArgs) -> ExitCode {
             screen.step(s);
         }
     }
+    // The chosen model first, even under a better one that is going: the better one is deleted
+    // only once the chosen one is in place, so a failed download never leaves the memory without.
+    let mut installed = true;
+    for s in model_steps(screen, &env.home, model, &args.curl, !removal.is_empty()) {
+        installed &= s.outcome.is_ok();
+        screen.step(&s);
+    }
+    failed |= !installed;
+    if !installed && !removal.is_empty() {
+        screen.note(&format!(
+            "No se borró {}: el modelo elegido no quedó instalado.",
+            model_label(best)
+        ));
+        removal.clear();
+    }
     for (dir, size) in &removal {
         let s = step(
             "modelo",
@@ -362,10 +393,6 @@ pub fn run(screen: &mut dyn Screen, env: &Env, args: SetupArgs) -> ExitCode {
                 .map(|()| format!("borrado {} ({})", dir.display(), human(*size)))
                 .map_err(|e| format!("{}: {e}", dir.display())),
         );
-        failed |= s.outcome.is_err();
-        screen.step(&s);
-    }
-    for s in model_steps(screen, &env.home, model) {
         failed |= s.outcome.is_err();
         screen.step(&s);
     }
@@ -396,13 +423,20 @@ pub fn run(screen: &mut dyn Screen, env: &Env, args: SetupArgs) -> ExitCode {
 }
 
 /// Installs `model` unless one as good is already there (the loader takes the best one, so
-/// nothing lesser is ever downloaded, and nothing is deleted here).
-fn model_steps(screen: &mut dyn Screen, home: &Path, model: ModelChoice) -> Vec<Step> {
+/// nothing lesser is downloaded) or, with `force`, because the better one is about to be deleted.
+/// Nothing is deleted here.
+fn model_steps(
+    screen: &mut dyn Screen,
+    home: &Path,
+    model: ModelChoice,
+    curl: &Path,
+    force: bool,
+) -> Vec<Step> {
     let best = installed_best(home);
     let spec: &ModelSpec = match model {
         ModelChoice::Granite => &GRANITE,
         ModelChoice::Potion => &POTION,
-        ModelChoice::None if best == ModelChoice::None => {
+        ModelChoice::None if best == ModelChoice::None || force => {
             return vec![step(
                 "modelo",
                 Ok("ninguno: la búsqueda será por texto".to_owned()),
@@ -418,20 +452,19 @@ fn model_steps(screen: &mut dyn Screen, home: &Path, model: ModelChoice) -> Vec<
             )];
         }
     };
-    if rank(best) >= rank(model) {
+    if rank(best) >= rank(model) && !force {
         return vec![step(
             "modelo",
             Ok(format!("{} ya está instalado", model_label(best))),
         )];
     }
-    let curl = PathBuf::from("curl");
     let cell = RefCell::new(screen);
     // A download through `curl_get_watching`, its bytes on the screen. A failed one leaves its
     // partial file: `install_model` and `install_runtime` remove it.
     let watched = |label: &str, url: &str, total: Option<u64>, to: &Path| {
         let mut s = cell.borrow_mut();
         let tick = s.download(label, total);
-        curl_get_watching(&curl, url, to, &*tick)
+        curl_get_watching(curl, url, to, &*tick)
     };
     let label = model_label(model);
     let dest = home.join(spec.dir);
@@ -521,10 +554,22 @@ mod tests {
             path_hint(bin, home, "/home/ana/.local/bin/", "/bin/zsh"),
             None
         );
-        // `$CLIO_MEMORY_BIN_DIR` outside the home: the whole path.
+        // `$CLIO_MEMORY_BIN_DIR` outside the home: the whole path, quoted when it has to be.
         assert_eq!(
             path_hint(Path::new("/opt/clio/bin"), home, path, "/usr/bin/fish"),
             Some("fish_add_path /opt/clio/bin".to_owned())
+        );
+        assert_eq!(
+            path_hint(Path::new("/opt/my dir"), home, path, "/usr/bin/fish"),
+            Some(r#"fish_add_path "/opt/my dir""#.to_owned())
+        );
+        assert_eq!(
+            path_hint(Path::new("/home/ana/my bin"), home, path, "fish"),
+            Some(r#"fish_add_path ~/"my bin""#.to_owned())
+        );
+        assert_eq!(
+            path_hint(Path::new("/opt/my dir"), home, path, "/bin/zsh"),
+            Some(r#"echo 'export PATH="/opt/my dir:$PATH"' >> ~/.zshrc"#.to_owned())
         );
     }
 
@@ -556,5 +601,217 @@ mod tests {
             p.choose_model(&[ModelChoice::Potion], ModelChoice::Potion),
             Some(ModelChoice::Potion)
         );
+    }
+
+    // ---- the interactive flow, driven by a scripted screen ----
+
+    use clio_memory::setup::agents::Env;
+    use clio_memory::setup::plan::connected;
+
+    /// Answers from a script and keeps what it was shown.
+    #[derive(Default)]
+    struct Script {
+        agents: Vec<AgentId>,
+        model: Option<ModelChoice>,
+        /// The answers to `confirm`, in order; a question past them fails the test.
+        answers: Vec<bool>,
+        asked: Vec<String>,
+        steps: Vec<Step>,
+        done: Option<Vec<AgentId>>,
+    }
+
+    impl Screen for Script {
+        fn header(&mut self, _: &str) {}
+        fn machine(&mut self, _: &str, _: &str, _: Option<&str>) {}
+        fn installed(&mut self, _: &Path) {}
+        fn choose_agents(&mut self, _: &[Found], _: &[AgentId]) -> Option<Vec<AgentId>> {
+            Some(self.agents.clone())
+        }
+        fn choose_model(&mut self, _: &[ModelChoice], current: ModelChoice) -> Option<ModelChoice> {
+            Some(self.model.unwrap_or(current))
+        }
+        fn confirm(&mut self, question: &str, _: bool) -> Option<bool> {
+            assert!(
+                self.asked.len() < self.answers.len(),
+                "unexpected question: {question}"
+            );
+            self.asked.push(question.to_owned());
+            Some(self.answers[self.asked.len() - 1])
+        }
+        fn step(&mut self, step: &Step) {
+            self.steps.push(step.clone());
+        }
+        fn download(&mut self, _: &str, _: Option<u64>) -> Box<dyn Fn(u64) + '_> {
+            Box::new(|_| {})
+        }
+        fn note(&mut self, _: &str) {}
+        fn done(&mut self, agents: &[AgentId], _: bool) {
+            self.done = Some(agents.to_vec());
+        }
+    }
+
+    fn no_service(_: &[&str]) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// A home where OpenCode and Antigravity are found (by their folders), and nothing runs: no
+    /// program on the `PATH`, the service manager a no-op.
+    fn home() -> (tempfile::TempDir, Env<'static>) {
+        let t = tempfile::tempdir().expect("temp dir");
+        let home = t.path().join("home");
+        for d in [".config/opencode", ".gemini/config"] {
+            std::fs::create_dir_all(home.join(d)).expect("folder");
+        }
+        let env = Env {
+            home,
+            exe: t.path().join("bin/clio-memory"),
+            path: Vec::new(),
+            codex_home: None,
+            claude: None,
+            bin_dir: None,
+            service: &no_service,
+        };
+        (t, env)
+    }
+
+    /// `run` in a terminal (no `--yes`), downloading with `curl`.
+    fn ask(script: &mut Script, env: &Env, curl: &Path) {
+        let args = SetupArgs {
+            terminal: true,
+            curl: curl.to_path_buf(),
+            ..SetupArgs::default()
+        };
+        run(script, env, args);
+    }
+
+    /// OpenCode and Antigravity connected through the flow itself, with no model.
+    fn both_connected(env: &Env) {
+        let mut first = Script {
+            agents: vec![AgentId::OpenCode, AgentId::Antigravity],
+            model: Some(ModelChoice::None),
+            answers: vec![true],
+            ..Script::default()
+        };
+        ask(&mut first, env, Path::new("/nonexistent/curl"));
+        assert_eq!(
+            connected(env),
+            [AgentId::OpenCode, AgentId::Antigravity],
+            "{:?}",
+            first.steps
+        );
+    }
+
+    #[test]
+    fn unchecking_every_agent_and_saying_yes_disconnects_them() {
+        let (_t, env) = home();
+        both_connected(&env);
+        let mut s = Script {
+            model: Some(ModelChoice::None),
+            answers: vec![true],
+            ..Script::default()
+        };
+        ask(&mut s, &env, Path::new("/nonexistent/curl"));
+        assert_eq!(s.asked, ["¿Desconecto OpenCode y Antigravity?"]);
+        assert_eq!(connected(&env), [], "{:?}", s.steps);
+        assert_eq!(s.done, Some(vec![]));
+        assert!(s.steps.iter().all(|st| st.outcome.is_ok()), "{:?}", s.steps);
+    }
+
+    #[test]
+    fn unchecking_every_agent_and_saying_no_disconnects_nothing() {
+        let (_t, env) = home();
+        both_connected(&env);
+        let mut s = Script {
+            model: Some(ModelChoice::None),
+            answers: vec![false],
+            ..Script::default()
+        };
+        ask(&mut s, &env, Path::new("/nonexistent/curl"));
+        assert_eq!(s.asked, ["¿Desconecto OpenCode y Antigravity?"]);
+        let both = vec![AgentId::OpenCode, AgentId::Antigravity];
+        assert_eq!(connected(&env), both);
+        assert_eq!(s.done, Some(both));
+    }
+
+    /// Granite's files, as `installed_best` sees them.
+    fn granite_installed(env: &Env) -> PathBuf {
+        let dir = env.home.join(GRANITE.dir);
+        std::fs::create_dir_all(&dir).expect("folder");
+        for f in GRANITE.files {
+            std::fs::write(dir.join(f.local), "pesos").expect("file");
+        }
+        dir
+    }
+
+    /// A `curl` that writes part of the file and fails, logging each call to `<dir>/curl.log`.
+    fn failing_curl(dir: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let curl = dir.join("curl");
+        std::fs::write(
+            &curl,
+            format!(
+                "#!/bin/sh\necho \"$@\" >> '{}'\nwhile [ $# -gt 0 ]; do [ \"$1\" = -o ] && printf partial > \"$2\"; shift; done\nexit 56\n",
+                dir.join("curl.log").display()
+            ),
+        )
+        .expect("curl");
+        std::fs::set_permissions(&curl, std::fs::Permissions::from_mode(0o755)).expect("mode");
+        curl
+    }
+
+    #[test]
+    fn a_lesser_model_and_a_no_deletes_nothing_and_downloads_nothing() {
+        let (t, env) = home();
+        let granite = granite_installed(&env);
+        let curl = failing_curl(t.path());
+        let mut s = Script {
+            model: Some(ModelChoice::Potion),
+            answers: vec![false],
+            ..Script::default()
+        };
+        ask(&mut s, &env, &curl);
+        assert_eq!(s.asked.len(), 1);
+        assert!(s.asked[0].starts_with("¿Borro "), "{:?}", s.asked);
+        assert!(granite.join("model.onnx").is_file());
+        assert!(!t.path().join("curl.log").exists(), "{:?}", s.steps);
+        assert!(s.steps.iter().all(|st| st.outcome.is_ok()), "{:?}", s.steps);
+    }
+
+    // The chosen model is installed before the better one goes: a failed download keeps Granite.
+    #[test]
+    fn a_lesser_model_that_fails_to_download_keeps_the_better_one() {
+        let (t, env) = home();
+        let granite = granite_installed(&env);
+        let curl = failing_curl(t.path());
+        let mut s = Script {
+            model: Some(ModelChoice::Potion),
+            answers: vec![true],
+            ..Script::default()
+        };
+        ask(&mut s, &env, &curl);
+        assert!(t.path().join("curl.log").is_file(), "{:?}", s.steps);
+        assert!(granite.join("model.onnx").is_file(), "{:?}", s.steps);
+        assert!(
+            s.steps
+                .iter()
+                .any(|st| st.what == "modelo" && st.outcome.is_err()),
+            "{:?}",
+            s.steps
+        );
+    }
+
+    #[test]
+    fn no_model_and_a_yes_deletes_the_installed_one() {
+        let (t, env) = home();
+        let granite = granite_installed(&env);
+        let mut s = Script {
+            model: Some(ModelChoice::None),
+            answers: vec![true],
+            ..Script::default()
+        };
+        ask(&mut s, &env, &failing_curl(t.path()));
+        assert!(!granite.exists(), "{:?}", s.steps);
+        assert!(!t.path().join("curl.log").exists());
+        assert!(s.steps.iter().all(|st| st.outcome.is_ok()), "{:?}", s.steps);
     }
 }

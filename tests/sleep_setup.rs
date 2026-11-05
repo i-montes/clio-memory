@@ -228,7 +228,26 @@ fn doctor_says_when_it_last_slept() {
     )
     .unwrap();
     let o = cli(t.path(), &["doctor"]);
-    assert!(String::from_utf8_lossy(&o.stdout).contains("sueño: todavía no durmió"));
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("sueño: todavía no durmió"), "{out}");
+    assert!(out.contains("setup sleep instala"), "{out}");
+    // Some sleep is installed (Clio's, say): it only has not run yet, nothing to install.
+    let unit = if cfg!(target_os = "macos") {
+        t.path()
+            .join("Library/LaunchAgents/com.clio-memory.sleep.plist")
+    } else {
+        t.path()
+            .join(".config/systemd/user/clio-memory-sleep.service")
+    };
+    std::fs::create_dir_all(unit.parent().unwrap()).unwrap();
+    std::fs::write(&unit, "ExecStart=\"/x/clio\" \"memory\" \"sleep\"\n").unwrap();
+    let o = cli(t.path(), &["doctor"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        out.contains("sueño: todavía no durmió (el timer ya está instalado)"),
+        "{out}"
+    );
+    assert!(!out.contains("setup sleep"), "{out}");
     last_night(t.path());
     let o = cli(t.path(), &["doctor"]);
     let out = String::from_utf8_lossy(&o.stdout);

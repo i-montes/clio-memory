@@ -211,6 +211,26 @@ fn it_skips_when_the_memory_was_used_in_the_last_30_minutes() {
 }
 
 #[test]
+fn a_memory_in_use_is_left_before_the_model_loads() {
+    let n = night();
+    n.write(NOW - 600, |e, n| {
+        n.save(e, n.agent, "un dato reciente");
+    });
+    // A model folder that is there: loading it would be the slow part (Granite, seconds).
+    let model = EmbedModel::new(Some(n.data.clone()));
+    let opts = Options {
+        now: false,
+        dry_run: false,
+        clock: Arc::new(FixedClock::new(NOW)),
+    };
+    assert!(matches!(
+        run(&n.data, &model, None, &opts),
+        Ok(Slept::Skipped(_))
+    ));
+    assert!(!model.is_loaded());
+}
+
+#[test]
 fn two_sleepers_never_overlap() {
     let n = night();
     let mut name = db(&n.data).into_os_string();

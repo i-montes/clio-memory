@@ -212,7 +212,7 @@ El instalador no guarda ninguna preferencia de modelo. El binario usa el mejor q
 - Tamaños: Granite 1,28 GB es el modelo solo (con su tokenizador); encima se baja ONNX Runtime y, con una tarjeta NVIDIA, las bibliotecas de CUDA que el sistema no tenga. potion, 531 MB, no necesita nada más.
 - Granite necesita ONNX Runtime, que `setup model` baja solo. Hay runtime publicado para Linux x86_64, Linux aarch64 y macOS arm64. En **macOS x86_64** no lo hay, así que ahí sirve potion, o texto.
 - No hay forma de quitar un solo modelo: `uninstall --models` borra todos (ver arriba).
-- En una terminal, elegir un modelo peor que el instalado ofrece borrar el mejor (y ONNX Runtime) y pregunta antes, con su tamaño y avisando que los modelos de `~/.cache/clio-models` también los usa Clio (si los necesita, se vuelven a bajar); un no lo deja. Con banderas o sin terminal nunca se borra un modelo.
+- En una terminal, elegir un modelo peor que el instalado ofrece borrar el mejor (y ONNX Runtime) y pregunta antes, con su tamaño y avisando que los modelos de `~/.cache/clio-models` también los usa Clio (si los necesita, se vuelven a bajar); un no lo deja. Sin preguntas (con `--yes` o sin terminal) nunca se borra un modelo, tampoco con `--model`.
 
 ## La firma de cada agente
 
@@ -232,7 +232,7 @@ Los otros cuatro quedan «sin verificar»: no hay ningún recuerdo guardado desd
 
 ## Modo sin terminal
 
-`clio-memory setup` pregunta solo en una terminal (stderr es una terminal) y sin `--yes`. Sin terminal, o con `--yes`, no pregunta nada: cada pregunta se contesta con la bandera que la responde y, si falta, con el valor por defecto. En una terminal, una bandera también contesta su pregunta. Sin terminal, cada paso sale como una línea (`✓` o `✖`) y no se dibuja nada.
+`clio-memory setup` pregunta solo en una terminal (stderr es una terminal) y sin `--yes`. Sin terminal, o con `--yes`, no pregunta nada: cada pregunta se contesta con la bandera que la responde y, si falta, con el valor por defecto. En una terminal, una bandera también contesta su pregunta. Sin terminal, o con `--yes`, cada paso sale como una línea (`✓` o `✖`) y no se dibuja nada.
 
 | Bandera | Qué hace | Si falta (sin preguntas) |
 |---|---|---|
@@ -246,7 +246,7 @@ Los otros cuatro quedan «sin verificar»: no hay ningún recuerdo guardado desd
 
 Qué quieren decir:
 
-- **Las banderas solo agregan.** Nada se desconecta, ni se quita una línea de instrucciones, ni se borra un modelo. Para eso está `uninstall`.
+- **Sin preguntas, las banderas solo agregan.** Con `--yes` o sin terminal, nada se desconecta, ni se quita una línea de instrucciones, ni se borra un modelo. Para eso está `uninstall` (o, en una terminal, la TUI, que pregunta antes de desconectar o borrar).
 - **`--agents` no desconecta a los demás.** Un agente de la lista que no está en la máquina queda en ✖ (`no se encontró …`) y la salida es distinta de cero; los demás se conectan igual. Un nombre que no es una clave es un error de uso (código 2) y no se hace nada. Sin ningún agente en la máquina y sin `--agents`, `setup` lo dice e instala igual el modelo.
 - **`--model` nunca borra.** Con `--model potion` y Granite ya instalado, no hace nada y lo dice (Granite es el que se usa); con `--model none` tampoco borra lo instalado, y dice cuál sigue en uso. Con `--model granite` en macOS Intel, donde no hay ONNX Runtime publicado, el modelo se baja y el paso del runtime queda en ✖.
 - **`--yes` junto a `--yes`** (la de `install.sh` más la tuya) vale una vez.
@@ -268,5 +268,12 @@ curl -fsSL https://raw.githubusercontent.com/i-montes/clio-memory/main/install.s
 | `HOME` | dónde están las configuraciones de los agentes (debe ser una ruta absoluta) |
 | `CODEX_HOME` | la carpeta de Codex en vez de `~/.codex`; se le pasa a `codex` tal cual |
 | `CLIO_MEMORY_CLAUDE` | el programa `claude` que se usa en vez del del `PATH` |
-| `CLIO_MEMORY_BIN_DIR` | la carpeta donde `install.sh` dejó el binario (y de la que `uninstall` lo borra) |
+| `CLIO_MEMORY_BIN_DIR` | `install.sh`: dónde deja el binario (por defecto `~/.local/bin`); `setup` la lee para decir si está en el `PATH`, y `uninstall` para borrarlo de ahí |
 | `CLIO_MEMORY_DATA` | la carpeta de `memory.db` |
+| `CLIO_MEMORY_VERSION` | `install.sh`: la versión que se baja (`vX.Y.Z`); por defecto, el último release |
+| `CLIO_MEMORY_DOWNLOAD_URL` | `install.sh`: la base de los releases, por defecto `https://github.com/i-montes/clio-memory/releases` (la prueba de humo del release usa `file://`) |
+| `CLIO_MEMORY_SKIP_ATTESTATION` | `install.sh`: con cualquier valor no vacío, no intenta `gh attestation verify` |
+| `CLIO_MEMORY_HAND_OVER` | `install.sh`, gancho de prueba: con `0` instala el binario sin correr `setup` (la prueba de humo del release) |
+| `CLIO_MEMORY_TTY` | `install.sh`, gancho de prueba: el archivo que se lee como terminal, por defecto `/dev/tty` |
+| `NO_COLOR` | sin colores, en `install.sh` y en la TUI |
+| `SHELL` | `setup --from-installer`: para qué shell es la línea que agrega la carpeta del binario al `PATH` |

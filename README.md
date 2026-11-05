@@ -50,17 +50,21 @@ Hay binario para Linux (x86_64 y aarch64) y macOS (arm64 e Intel). El instalador
 - baja el binario de tu plataforma del último release, comprueba su sha256 contra `SHA256SUMS` (y su atestación de GitHub, si tienes `gh` 2.49 o más nuevo con sesión) y solo entonces lo deja en `~/.local/bin` (o `$CLIO_MEMORY_BIN_DIR`). No edita ningún archivo de tu shell: si esa carpeta no está en tu `PATH`, te dice la línea que la agrega;
 - busca los agentes que tienes (Claude Code, OpenCode, Codex, Gemini CLI y Antigravity), te deja elegir y conecta la memoria en cada uno: el servidor MCP, la skill y, si quieres, una línea en su archivo de instrucciones;
 - instala el modelo de vectores: Granite (1,28 GB el modelo solo; encima, ONNX Runtime y, con NVIDIA, las bibliotecas de CUDA) donde corre, potion (531 MB) donde no, o ninguno si lo prefieres (ver [el modelo](#el-modelo-de-vectores));
-- instala el timer del [sueño](#el-sueño).
+- instala el timer del [sueño](#el-sueño), en cuanto hay al menos un agente conectado.
 
 No toca otros servidores MCP ni otras skills. Si un agente ya tiene algo llamado `clio-memory` que no es esto, te pregunta antes de reemplazarlo. Correrlo otra vez actualiza el binario y conserva lo elegido.
 
-**Sin terminal, o sin preguntas.** Con `--yes`, o cuando no hay terminal, no pregunta nada: usa las banderas y, donde faltan, todos los agentes que encuentra, el modelo recomendado y la línea de instrucciones. Las banderas pasan a `setup` tal cual:
+**Sin terminal, o con `--yes`.** En los dos casos no pregunta nada y cada paso sale como una línea: usa las banderas y, donde faltan, todos los agentes que encuentra, el modelo recomendado y la línea de instrucciones. Si ya había algo conectado (otra corrida), donde faltan las banderas se queda lo que había: los mismos agentes, el mismo modelo (no se baja ninguno) y las líneas como estaban. Las banderas pasan a `setup` tal cual:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/i-montes/clio-memory/main/install.sh | sh -s -- --yes --agents codex,gemini --model potion
 ```
 
-Las banderas solo agregan: nunca desconectan un agente ni borran un modelo (para eso, `uninstall`). Todas están en [docs/instalador.md](docs/instalador.md#modo-sin-terminal). `CLIO_MEMORY_VERSION=vX.Y.Z` fija la versión que se baja.
+Sin preguntas (con `--yes` o sin terminal), las banderas solo agregan: nunca desconectan un agente, ni quitan una línea, ni borran un modelo (para eso, `uninstall`; en una terminal, `setup` lo hace si se lo pides, y pregunta antes). Todas están en [docs/instalador.md](docs/instalador.md#modo-sin-terminal), con las variables de entorno del instalador. Para fijar la versión que se baja:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/i-montes/clio-memory/main/install.sh | CLIO_MEMORY_VERSION=vX.Y.Z sh
+```
 
 ### Los agentes
 

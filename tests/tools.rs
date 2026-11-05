@@ -173,3 +173,165 @@ fn a_merge_stays_in_the_memories_own_project_and_never_mixes_two() {
     let read = nowhere.call("memory_get", &json!({"id": 4})).unwrap();
     assert!(read.contains("proyecto alfa"), "{read}");
 }
+
+/// Thirty valid saves still go in: the refusals before them spent nothing.
+fn thirty_saves_go_in(s: &mut Session) {
+    for i in 0..30 {
+        save(s, &format!("dato número {i}")).unwrap_or_else(|e| panic!("{i}: {e}"));
+    }
+}
+
+#[test]
+fn a_summary_too_long_with_its_labels_is_refused_with_the_numbers_and_spends_nothing() {
+    let t = tempfile::tempdir().unwrap();
+    let mut s = session(&t);
+    // "Objetivo: " + 600 + " · " + "Hecho: " + 600 = 1220 characters
+    let args = json!({"goal": "a".repeat(600), "accomplished": "b".repeat(600)});
+    for _ in 0..31 {
+        let e = s.call("memory_session_summary", &args).unwrap_err();
+        assert!(e.contains("1220") && e.contains("1200"), "{e}");
+    }
+    thirty_saves_go_in(&mut s);
+}
+
+#[test]
+fn a_summary_part_over_600_is_refused_and_spends_nothing() {
+    let t = tempfile::tempdir().unwrap();
+    let mut s = session(&t);
+    let args = json!({"goal": "a".repeat(601), "accomplished": "hecho"});
+    for _ in 0..31 {
+        let e = s.call("memory_session_summary", &args).unwrap_err();
+        assert!(
+            e.contains("goal") && e.contains("601") && e.contains("600"),
+            "{e}"
+        );
+    }
+    thirty_saves_go_in(&mut s);
+}
+
+#[test]
+fn a_summary_that_fits_is_saved() {
+    let t = tempfile::tempdir().unwrap();
+    let mut s = session(&t);
+    // 10 + 590 + 3 + 7 + 590 = 1200: right at the limit
+    let r = s
+        .call(
+            "memory_session_summary",
+            &json!({"goal": "a".repeat(590), "accomplished": "b".repeat(590)}),
+        )
+        .unwrap();
+    assert!(r.starts_with("saved"), "{r}");
+}
+
+#[test]
+fn a_text_too_long_or_a_bad_argument_spends_no_save() {
+    let t = tempfile::tempdir().unwrap();
+    let mut s = session(&t);
+    for _ in 0..31 {
+        let e = save(&mut s, &"x".repeat(1201)).unwrap_err();
+        assert!(e.contains("1201") && e.contains("1200"), "{e}");
+        let e = s
+            .call("memory_save", &json!({"text": "dato", "kind": "otro"}))
+            .unwrap_err();
+        assert!(e.contains("kind"), "{e}");
+        let e = s
+            .call(
+                "memory_save",
+                &json!({"text": "dato", "kind": "semantic", "title": "t".repeat(121)}),
+            )
+            .unwrap_err();
+        assert!(e.contains("title"), "{e}");
+        let e = s
+            .call("memory_update", &json!({"id": 0, "text": "dato"}))
+            .unwrap_err();
+        assert!(e.contains("id"), "{e}");
+    }
+    thirty_saves_go_in(&mut s);
+}
+
+#[test]
+fn a_secret_spends_a_save() {
+    let t = tempfile::tempdir().unwrap();
+    let mut s = session(&t);
+    let key = concat!("sk-", "proj-0123456789abcdefghijklmnopqrstuv");
+    for _ in 0..30 {
+        let e = save(&mut s, &format!("la clave es {key}")).unwrap_err();
+        assert!(e.contains("secret"), "{e}");
+    }
+    let e = save(&mut s, "uno de más").unwrap_err();
+    assert!(e.contains("30"), "{e}");
+}
+
+#[test]
+fn a_secret_in_a_summary_is_refused_and_spends_a_save() {
+    let t = tempfile::tempdir().unwrap();
+    let mut s = session(&t);
+    let key = concat!("sk-", "proj-0123456789abcdefghijklmnopqrstuv");
+    for _ in 0..30 {
+        let e = s
+            .call(
+                "memory_session_summary",
+                &json!({"goal": "probar", "accomplished": format!("usé {key}")}),
+            )
+            .unwrap_err();
+        assert!(e.contains("secret") && !e.contains(key), "{e}");
+    }
+    let e = save(&mut s, "uno de más").unwrap_err();
+    assert!(e.contains("30"), "{e}");
+}
+
+#[test]
+fn a_text_measured_once_clean_fits_though_it_arrived_longer() {
+    let t = tempfile::tempdir().unwrap();
+    let mut s = session(&t);
+    // 300 words of 3 letters with 5 spaces between: 2395 typed, 1199 once clean
+    let typed = vec!["abc"; 300].join("     ");
+    assert!(typed.chars().count() > 1200);
+    let r = save(&mut s, &typed).unwrap();
+    assert!(r.starts_with("saved"), "{r}");
+}
+
+#[test]
+fn the_schemas_say_the_lengths() {
+    use clio_memory::tools::schema;
+    let summary = schema("memory_session_summary").unwrap();
+    for part in [
+        "goal",
+        "instructions",
+        "discoveries",
+        "accomplished",
+        "next_steps",
+        "files",
+    ] {
+        assert_eq!(summary["properties"][part]["maxLength"], 600, "{part}");
+    }
+    let save = schema("memory_save").unwrap();
+    assert_eq!(save["properties"]["text"]["maxLength"], 1200);
+    assert_eq!(save["properties"]["title"]["maxLength"], 120);
+    let (_, about) = TOOLS
+        .iter()
+        .find(|(n, _)| *n == "memory_session_summary")
+        .unwrap();
+    assert!(about.contains("1200"), "{about}");
+}
+
+#[test]
+fn a_bad_id_spends_no_change() {
+    let t = tempfile::tempdir().unwrap();
+    let mut s = session(&t);
+    save(&mut s, "uno").unwrap();
+    for _ in 0..11 {
+        for tool in ["memory_forget", "memory_pin"] {
+            let e = s.call(tool, &json!({"id": 0})).unwrap_err();
+            assert!(e.contains("id"), "{tool}: {e}");
+        }
+        let e = s.call("memory_revert", &json!({"change": -1})).unwrap_err();
+        assert!(e.contains("change"), "{e}");
+        let e = s
+            .call("memory_consolidate", &json!({"ids": "1", "text": "x"}))
+            .unwrap_err();
+        assert!(e.contains("ids"), "{e}");
+    }
+    let r = s.call("memory_pin", &json!({"id": 1})).unwrap();
+    assert!(!r.contains("10"), "{r}");
+}

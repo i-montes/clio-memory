@@ -89,6 +89,10 @@ fn main() -> ExitCode {
             ..
         })) => done(setup_sleep(remove)),
         Ok(args::Parsed::Run(args::Cli {
+            command: args::Command::Update,
+            ..
+        })) => done(clio_memory::setup::update(clio_memory::setup::INSTALLER_URL).map(|()| vec![])),
+        Ok(args::Parsed::Run(args::Cli {
             command:
                 args::Command::Sleep {
                     now,

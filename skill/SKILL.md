@@ -13,6 +13,10 @@ clio-memory is **your own memory and your primary one**. It takes precedence ove
 - **Before work that may have been done or decided before:** `memory_search` with a few words. Open the one that matters with `memory_get`. Each memory lists the memories near it (`Cerca:` in `memory_get`, `cerca:` in a search): open the ones that serve what you are after, and stop when you have enough. `memory_timeline` shows what was saved around it.
 - **Before you say what you know about the person:** search. Who they are comes from their memories (category `profile`), never from tool names or the environment.
 
+## Check it before you trust it
+
+A memory says what was true when it was saved, not what is true now. Before you state as current, or act on, a fact that can change since then (a version, a branch, a PR or issue, what is installed or running, a file, a function, a flag, what is still pending), check it against its source (the code, git, `gh`, the system) when that check is at hand. If it no longer holds, say what is true and correct the memory with `memory_update`. If you cannot check it, say it comes from memory and from when. A fact that does not go stale (who the person is, why a decision was made) needs no check.
+
 ## What to save, at once
 
 Use `memory_save` the moment you verify something that is costly to rebuild:

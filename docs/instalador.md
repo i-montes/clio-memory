@@ -35,7 +35,7 @@ Qué es «nuestro»:
 - **Skill.** Es nuestra la que coincide, por sha256, con la de esta versión o con una publicada antes (v0.2.0, v0.4.0, v0.5.0): se actualiza o se mueve. Cualquier otra, incluida una que hayas editado, es ajena.
 - **Claude Code.** Solo cuenta el alcance de usuario (`--scope user`). Una entrada `clio-memory` en el alcance local o de proyecto se lee como «no hay».
 
-Correrlo otra vez conserva lo elegido. Sin preguntas (con `--yes` o sin terminal) y sin banderas, se quedan los agentes que ya estaban conectados (uno que no lo estaba se conecta con `--agents`, y `setup` lo dice), el modelo que hay (si no había ninguno, no se baja nada) y las líneas de instrucciones como estaban. Cada paso dice «ya está» y no reescribe lo que ya está bien.
+Correrlo otra vez conserva lo elegido. Sin preguntas (con `--yes` o sin terminal) y sin banderas, se quedan los agentes que ya estaban conectados y siguen instalados (uno que no lo estaba se conecta con `--agents`, y `setup` lo dice; uno que desinstalaste se salta aunque quede su configuración), el modelo que hay (si no había ninguno, no se baja nada) y las líneas de instrucciones como estaban. Cada paso dice «ya está» y no reescribe lo que ya está bien.
 
 ## Por agente
 

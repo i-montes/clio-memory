@@ -1471,6 +1471,43 @@ fn setup_rerun_without_flags_keeps_what_was_chosen() {
     );
 }
 
+#[test]
+fn setup_rerun_skips_an_agent_that_is_no_longer_installed() {
+    let m = machine();
+    fake_failing_curl(&m.bin);
+    let fakes_dir = m.home.parent().unwrap().join("claude-bin");
+    let claude = fakes::fake_claude_mcp(&fakes_dir);
+    let o = setup_on(
+        &m,
+        Some(&claude),
+        &[
+            "setup",
+            "--yes",
+            "--agents",
+            "claude-code",
+            "--model",
+            "none",
+        ],
+    );
+    assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+    // Gemini CLI was connected once and then uninstalled: its settings remain, `gemini` does not.
+    let settings = m.home.join(".gemini/settings.json");
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    std::fs::write(
+        &settings,
+        r#"{"mcpServers":{"clio-memory":{"command":"/old/bin/clio-memory","args":["mcp"]}}}"#,
+    )
+    .unwrap();
+    let o = setup_on(&m, Some(&claude), &["setup", "--yes"]);
+    let text = out(&o);
+    assert_eq!(code(&o), 0, "{text}{}", err(&o));
+    assert!(!text.contains("no se encontró"), "{text}");
+    assert!(
+        text.contains("Listo. Abre Claude Code: la memoria ya está ahí."),
+        "{text}"
+    );
+}
+
 /// A `clio-memory` in `m.bin`, first on the `PATH`: an old `cargo install`.
 fn old_clio_memory_on_the_path(m: &Machine) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;

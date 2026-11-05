@@ -258,9 +258,13 @@ pub fn run(screen: &mut dyn Screen, env: &Env, args: SetupArgs) -> ExitCode {
     }
 
     // The agents: the flag's, else (asked, or) every one found; without asking, a re-run (some
-    // agent connected already) keeps the ones connected.
+    // agent connected already) keeps the ones connected. An agent whose config is left but that
+    // is no longer installed is not kept: there is nothing to connect.
     let found = detect(env);
-    let before = connected(env);
+    let before: Vec<AgentId> = connected(env)
+        .into_iter()
+        .filter(|a| found.iter().any(|f| f.agent == *a))
+        .collect();
     let rerun = !before.is_empty();
     let mut exclusive = false;
     let agents: Vec<AgentId> = match &args.agents {
@@ -445,7 +449,12 @@ pub fn run(screen: &mut dyn Screen, env: &Env, args: SetupArgs) -> ExitCode {
     if let Some(other) = shadowing(env) {
         screen.note(&format!("Ojo: {}.", shadowing_note(env, &other)));
     }
-    screen.done(&connected(env), failed);
+    // Only the agents that are here: a config left by an uninstalled one opens nothing.
+    let here: Vec<AgentId> = connected(env)
+        .into_iter()
+        .filter(|a| found.iter().any(|f| f.agent == *a))
+        .collect();
+    screen.done(&here, failed);
     if failed {
         ExitCode::from(1)
     } else {

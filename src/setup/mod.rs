@@ -12,6 +12,8 @@ use std::process::Command;
 
 use sha2::{Digest, Sha256};
 
+pub mod agents;
+pub mod skill;
 
 /// The skill installed for Claude Code.
 pub const SKILL: &str = include_str!("../../skill/SKILL.md");
@@ -390,7 +392,7 @@ pub fn remove_sleep(
 }
 
 /// Writes `text` whole (a temporary file, then rename), making the folders it needs.
-fn write_private(path: &Path, text: &str) -> Result<(), String> {
+pub(crate) fn write_private(path: &Path, text: &str) -> Result<(), String> {
     let dir = path.parent().ok_or("ruta sin carpeta")?;
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let tmp = path.with_extension("tmp-clio-memory");

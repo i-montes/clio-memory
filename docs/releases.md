@@ -19,7 +19,7 @@ La etiqueta, sin la `v`, debe ser igual a `version` en `Cargo.toml`. Si no lo es
 El workflow corre al empujar una etiqueta `v*`. Cada trabajo espera al anterior, así que si uno falla, los siguientes no corren.
 
 1. **`version`**: compara la etiqueta con la versión de `Cargo.toml`.
-2. **`check`**: llama a `ci.yml` (`workflow_call`) sobre el commit etiquetado. Son las mismas verificaciones de cualquier PR: `fmt`, `clippy -D warnings`, `test --all-features` en Ubuntu y macOS, `cargo deny`, `cargo audit`, `gitleaks` y `shellcheck install.sh`.
+2. **`check`**: llama a `ci.yml` (`workflow_call`) sobre el commit etiquetado. Son las mismas verificaciones de cualquier PR: `fmt`, `clippy -D warnings`, `test --all-features` en Ubuntu y macOS, `cargo deny`, `cargo audit`, `gitleaks` y `shellcheck install.sh`. En las etiquetas, `gitleaks` corre el binario de la CLI (v8.30.1, fijado por sha256) sobre todo el historial y respeta `.gitleaksignore`, porque `gitleaks-action` no escanea nada en un push de etiqueta sin commits nuevos.
 3. **`build`**: compila con las features `model2vec,granite`. Cada binario sube como artefacto con el nombre de su asset.
 
    | Target | Runner | Cómo |
@@ -47,6 +47,7 @@ Cada release lleva los 4 binarios (`clio-memory-x86_64-unknown-linux-gnu`, `clio
   ```
 
   Si la corrección es un commit nuevo, se vuelve a etiquetar ese commit con el mismo número.
+- **En `publish`, antes de que exista el release** (falla la atestación o `gh`; `gh` borra su propio borrador si algo se corta): no queda nada publicado. Se borra la etiqueta y se vuelve a empujar la misma, como en el caso anterior.
 - **En `publish`, después de crear el release:** el release es inmutable, así que no se corrige ni se borra. Se arregla con la siguiente versión (`vX.Y.Z+1`).
 
 ## Confianza en el binario, y su límite
@@ -98,4 +99,4 @@ sha256sum -c SHA256SUMS --ignore-missing
 gh attestation verify clio-memory-x86_64-unknown-linux-gnu --repo i-montes/clio-memory
 ```
 
-`--ignore-missing` evita que falle por los binarios de otras plataformas que no se bajaron. En macOS, `shasum -a 256 -c SHA256SUMS` hace lo mismo que `sha256sum -c`.
+`--ignore-missing` evita que falle por los binarios de otras plataformas que no se bajaron. En macOS, `shasum -a 256 -c --ignore-missing SHA256SUMS` hace lo mismo que `sha256sum -c --ignore-missing`.

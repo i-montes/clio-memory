@@ -1760,7 +1760,7 @@ impl Engine {
     }
 
     /// Is it the person's (see `held_by_person`) or pinned by them? The sleep never touches it.
-    fn kept_by_person(&self, row: &MemoryRow) -> Result<bool> {
+    pub fn kept_by_person(&self, row: &MemoryRow) -> Result<bool> {
         Ok(self.held_by_person(row)?
             || self.store.pinned(row.scope)?.iter().any(|p| p.id == row.id))
     }
@@ -1809,6 +1809,26 @@ impl Engine {
             return Err(Error::NotAllowed);
         }
         self.check_name(reason)?;
+        let row = self.sleep_purgeable(id)?;
+        let system = self.store.system_actor()?;
+        let (op, wal_truncated) = self.store.purge(NewOperation {
+            scope: row.scope,
+            kind: OpKind::Purge,
+            memory: Some(id),
+            changes: Vec::new(),
+            actor: system,
+            reason: reason.into(),
+            at: self.clock.now(),
+            reverts: None,
+            trace_id: self.trace_id(),
+        })?;
+        event!(INFO, "purged", op = op.0);
+        Ok(PurgeOutcome { op, wal_truncated })
+    }
+
+    /// Whether `sleep_purge` would purge it now (`NotAllowed` or `InvalidState` if not); reads
+    /// only, so a dry run can tell.
+    pub fn sleep_purgeable(&self, id: MemoryId) -> Result<MemoryRow> {
         let row = self.store.get(id)?;
         if row.state != State::Quarantine {
             return Err(Error::InvalidState);
@@ -1844,20 +1864,12 @@ impl Engine {
         if by != ActorKind::Person && self.held_by_person(&row)? {
             return Err(Error::NotAllowed);
         }
-        let system = self.store.system_actor()?;
-        let (op, wal_truncated) = self.store.purge(NewOperation {
-            scope: row.scope,
-            kind: OpKind::Purge,
-            memory: Some(id),
-            changes: Vec::new(),
-            actor: system,
-            reason: reason.into(),
-            at: now,
-            reverts: None,
-            trace_id: self.trace_id(),
-        })?;
-        event!(INFO, "purged", op = op.0);
-        Ok(PurgeOutcome { op, wal_truncated })
+        Ok(row)
+    }
+
+    /// How many times each memory came out of a recall (absent = never).
+    pub fn uses(&self, ids: &[MemoryId]) -> Result<std::collections::HashMap<MemoryId, u32>> {
+        self.store.usage_counts(ids)
     }
 
     /// The sleep merges 2 to 4 active memories into a new one with `text`: one `Update` signed by

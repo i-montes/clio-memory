@@ -795,7 +795,7 @@ fn now_secs() -> i64 {
 }
 
 /// `YYYY-MM-DD` (UTC) of seconds since the epoch (H. Hinnant's `civil_from_days`).
-fn civil_date(secs: i64) -> String {
+pub(crate) fn civil_date(secs: i64) -> String {
     let z = secs.div_euclid(86_400) + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);

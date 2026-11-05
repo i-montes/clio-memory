@@ -86,8 +86,35 @@ fn replace(old: &MemoryRow, new: &MemoryRow) -> Result<Vec<Change>> {
     }])
 }
 
+/// Vectors computed by `Engine::compute_vectors`, waiting for `Engine::store_vectors`. Only the
+/// engine makes them: they are checked and normalized already.
+#[derive(Debug)]
+pub struct Vectors {
+    model: String,
+    dim: usize,
+    good: Vec<(MemoryId, Vec<f32>)>,
+    skipped: Vec<MemoryId>,
+    examined: usize,
+}
+
+impl Vectors {
+    /// How many pending memories were looked at; 0 means nothing was waiting.
+    pub fn examined(&self) -> usize {
+        self.examined
+    }
+}
+
 /// The name of the judge's actor: nobody else can be called that.
 const JUDGE: &str = "jev";
+
+/// Every reason the sleep signs starts with this; the engine refuses its operations otherwise.
+pub const SLEEP_REASON: &str = "sueño:";
+/// The reason the sleep gives a memory it quarantines for holding a secret.
+pub const SLEEP_SECRET: &str = "sueño: secreto";
+/// Days a discarded memory waits in quarantine before the sleep may purge it.
+pub const SLEEP_PURGE_DAYS: i64 = 30;
+/// The same for one the sleep quarantined for a secret: it should not linger.
+pub const SLEEP_SECRET_DAYS: i64 = 7;
 
 /// The pen of the judge. Only [`Engine::judge`] makes one, and it does not carry any power by
 /// itself: it names who signs a judged operation.
@@ -438,11 +465,25 @@ impl Engine {
         if self.mode == OpenMode::ReadOnly {
             return Err(Error::ReadOnly); // before spending CPU on vectors that cannot be stored
         }
+        let computed = self.compute_vectors(limit)?;
+        let examined = computed.examined;
+        Ok((self.store_vectors(computed)?, examined))
+    }
+
+    /// The vectors `embed_pending` would store, computed by an engine that may be read-only: the
+    /// model runs while nobody holds the file's writer lock (the sleep). `store_vectors` on a
+    /// read-write engine with the same model keeps them.
+    pub fn compute_vectors(&self, limit: usize) -> Result<Vectors> {
         let embedder = self.embedder.as_ref().ok_or(Error::NoEmbedder)?;
         let (model, dim) = (embedder.model_id(), embedder.dim());
         let pending = self.store.pending_embeddings(model, limit)?;
-        let examined = pending.len();
-        let mut stored = 0;
+        let mut out = Vectors {
+            model: model.to_owned(),
+            dim,
+            good: Vec::new(),
+            skipped: Vec::new(),
+            examined: pending.len(),
+        };
         for batch in pending.chunks(EMBED_BATCH) {
             let texts: Vec<&str> = batch.iter().map(|(_, t)| t.as_str()).collect();
             // `None`: this text makes the model fail by itself, so it is skipped like one that
@@ -469,21 +510,32 @@ impl Engine {
             if good.is_empty() && !skipped.is_empty() && !self.embedder_works(embedder.as_ref())? {
                 return Err(Error::BadVector);
             }
-            let _g = self.write_guard();
-            self.store.put_vectors(model, dim, &good)?;
-            self.store.mark_unembeddable(model, &skipped)?;
-            stored += good.len();
+            out.good.extend(good);
+            out.skipped.extend(skipped);
         }
-        if examined > 0 {
+        Ok(out)
+    }
+
+    /// Keeps what `compute_vectors` computed; how many vectors were stored. The model must be
+    /// this engine's.
+    pub fn store_vectors(&self, v: Vectors) -> Result<usize> {
+        let embedder = self.embedder.as_ref().ok_or(Error::NoEmbedder)?;
+        if embedder.model_id() != v.model || embedder.dim() != v.dim {
+            return Err(Error::BadVector);
+        }
+        let _g = self.write_guard();
+        self.store.put_vectors(&v.model, v.dim, &v.good)?;
+        self.store.mark_unembeddable(&v.model, &v.skipped)?;
+        if v.examined > 0 {
             event!(
                 INFO,
                 "embedded",
-                model = model,
-                stored = stored,
-                examined = examined
+                model = v.model.as_str(),
+                stored = v.good.len(),
+                examined = v.examined
             );
         }
-        Ok((stored, examined))
+        Ok(v.good.len())
     }
 
     /// The `Embed` job to enqueue with an operation: any operation that leaves a memory that is
@@ -1731,6 +1783,265 @@ impl Engine {
         Ok(PurgeOutcome { op, wal_truncated })
     }
 
+    /// The internal actor that signs background operations and the sleep's.
+    pub fn system_actor(&self) -> Result<ActorId> {
+        self.store.system_actor()
+    }
+
+    /// Up to `limit` operations after `after`, oldest first.
+    pub fn operations_after(&self, after: OpId, limit: usize) -> Result<Vec<Operation>> {
+        // shortcut: loads every operation since `after` and cuts; a LIMIT query if a night's
+        // backlog ever gets large.
+        let mut ops = self.store.operations_from(OpId(after.0 + 1))?;
+        ops.truncate(limit);
+        Ok(ops)
+    }
+
+    /// When the memory was last written by someone other than `except`, or last used.
+    pub fn last_activity(&self, except: ActorId) -> Result<i64> {
+        self.store.last_activity(except)
+    }
+
+    /// Is it the person's (see `held_by_person`) or pinned by them? The sleep never touches it.
+    pub fn kept_by_person(&self, row: &MemoryRow) -> Result<bool> {
+        Ok(self.held_by_person(row)?
+            || self.store.pinned(row.scope)?.iter().any(|p| p.id == row.id))
+    }
+
+    /// The sleep sends an active memory to quarantine (a secret, a likely attack, a repeat),
+    /// signed by the system with a reason that starts `sueño:`. Never the person's or a pinned
+    /// one. A person undoes it with `revert` or `promote`.
+    pub fn sleep_quarantine(&self, id: MemoryId, reason: &str) -> Result<OpId> {
+        let _g = self.write_guard();
+        if !reason.starts_with(SLEEP_REASON) {
+            return Err(Error::NotAllowed);
+        }
+        let row = self.store.get(id)?;
+        if self.kept_by_person(&row)? {
+            return Err(Error::NotAllowed);
+        }
+        if row.state != State::Active {
+            return Err(Error::InvalidState);
+        }
+        let mut after = row.clone();
+        after.state = State::Quarantine;
+        let changes = vec![Change {
+            memory: id,
+            before: Some(row.clone()),
+            after,
+        }];
+        let system = self.store.system_actor()?;
+        self.log(
+            row.scope,
+            OpKind::Forget,
+            id,
+            changes,
+            system,
+            &self.bounded(reason),
+        )
+    }
+
+    /// The sleep purges a memory that was discarded long ago: it is in quarantine because a
+    /// `forget`, a flag or the sleep put it there (never one only waiting for review), for at
+    /// least [`SLEEP_PURGE_DAYS`] ([`SLEEP_SECRET_DAYS`] when the sleep sent it for a secret), and
+    /// it is not the person's unless the person discarded it. Signed by the system; like `purge`,
+    /// it cannot be undone.
+    pub fn sleep_purge(&self, id: MemoryId, reason: &str) -> Result<PurgeOutcome> {
+        let (ops, wal_truncated) = self.sleep_purge_inner(&[id], reason)?;
+        Ok(PurgeOutcome {
+            op: ops[0],
+            wal_truncated,
+        })
+    }
+
+    /// `sleep_purge` for several memories with one rewrite of the file, so the writer is held
+    /// once a night and not once per memory. Every one is checked before anything is erased.
+    pub fn sleep_purge_many(&self, ids: &[MemoryId], reason: &str) -> Result<Vec<OpId>> {
+        self.sleep_purge_inner(ids, reason).map(|(ops, _)| ops)
+    }
+
+    fn sleep_purge_inner(&self, ids: &[MemoryId], reason: &str) -> Result<(Vec<OpId>, bool)> {
+        let _g = self.write_guard();
+        if !reason.starts_with(SLEEP_REASON) {
+            return Err(Error::NotAllowed);
+        }
+        self.check_name(reason)?;
+        let system = self.store.system_actor()?;
+        let now = self.clock.now();
+        let mut ops = Vec::with_capacity(ids.len());
+        for &id in ids {
+            let row = self.sleep_purgeable(id)?;
+            ops.push(NewOperation {
+                scope: row.scope,
+                kind: OpKind::Purge,
+                memory: Some(id),
+                changes: Vec::new(),
+                actor: system,
+                reason: reason.into(),
+                at: now,
+                reverts: None,
+                trace_id: self.trace_id(),
+            });
+        }
+        if ops.is_empty() {
+            return Ok((Vec::new(), true));
+        }
+        let done = self.store.purge_many(ops)?;
+        event!(INFO, "purged", count = done.0.len());
+        Ok(done)
+    }
+
+    /// Whether `sleep_purge` would purge it now (`NotAllowed` or `InvalidState` if not); reads
+    /// only, so a dry run can tell.
+    pub fn sleep_purgeable(&self, id: MemoryId) -> Result<MemoryRow> {
+        let row = self.store.get(id)?;
+        // A pin outlives a forget: what the person fixed is theirs, whatever happened after.
+        if self.store.is_pinned(id)? {
+            return Err(Error::NotAllowed);
+        }
+        if row.state != State::Quarantine {
+            return Err(Error::InvalidState);
+        }
+        let sent = self
+            .store
+            .history(id)?
+            .into_iter()
+            .rev()
+            .find(|op| {
+                op.changes.iter().any(|c| {
+                    c.memory == id
+                        && c.after.state == State::Quarantine
+                        && c.before
+                            .as_ref()
+                            .is_none_or(|b| b.state != State::Quarantine)
+                })
+            })
+            .ok_or(Error::NotAllowed)?;
+        if !matches!(sent.kind, OpKind::Forget | OpKind::Flag) {
+            return Err(Error::NotAllowed);
+        }
+        let by = self.store.actor_kind(sent.actor)?;
+        let days = if by == ActorKind::System && sent.reason.starts_with(SLEEP_SECRET) {
+            SLEEP_SECRET_DAYS
+        } else {
+            SLEEP_PURGE_DAYS
+        };
+        let now = self.clock.now();
+        if now - sent.at < days * 86_400 {
+            return Err(Error::NotAllowed);
+        }
+        if by != ActorKind::Person && self.held_by_person(&row)? {
+            return Err(Error::NotAllowed);
+        }
+        Ok(row)
+    }
+
+    /// How many times each memory came out of a recall (absent = never).
+    pub fn uses(&self, ids: &[MemoryId]) -> Result<std::collections::HashMap<MemoryId, u32>> {
+        self.store.usage_counts(ids)
+    }
+
+    /// The sleep merges 2 to 4 active memories into a new one with `text`: one `Update` signed by
+    /// the system that adds it and leaves the sources `Replaced` by it, so one `revert` undoes it
+    /// whole. The sources must share scope, kind and trust (outside text with outside text), and
+    /// none may be the person's or pinned. The new memory keeps their relations, except
+    /// contradictions and those among them.
+    pub fn sleep_merge(
+        &self,
+        sources: &[MemoryId],
+        text: &str,
+        title: Option<&str>,
+    ) -> Result<(MemoryId, OpId)> {
+        let _g = self.write_guard();
+        let mut unique = sources.to_vec();
+        unique.sort();
+        unique.dedup();
+        if !(2..=4).contains(&unique.len()) || unique.len() != sources.len() {
+            return Err(Error::InvalidState);
+        }
+        let rows = sources
+            .iter()
+            .map(|&id| self.store.get(id))
+            .collect::<Result<Vec<_>>>()?;
+        let first = &rows[0];
+        let external = |r: &MemoryRow| r.origin == Origin::External;
+        for r in &rows {
+            if r.state != State::Active
+                || r.scope != first.scope
+                || r.kind != first.kind
+                || external(r) != external(first)
+            {
+                return Err(Error::InvalidState);
+            }
+            if self.kept_by_person(r)? {
+                return Err(Error::NotAllowed);
+            }
+        }
+        if text.trim().is_empty() {
+            return Err(Error::EmptyContent);
+        }
+        if text.len() > self.limits.max_content_bytes
+            || title.is_some_and(|t| t.len() > self.limits.max_field_bytes)
+        {
+            return Err(Error::TooLong);
+        }
+        if find_secret(text) || title.is_some_and(find_secret) {
+            return Err(Error::SecretDetected);
+        }
+        let content = normalize(text);
+        if content.len() > self.limits.max_content_bytes {
+            return Err(Error::TooLong);
+        }
+        let now = self.clock.now();
+        let system = self.store.system_actor()?;
+        let id = self.store.next_memory_id()?;
+        let row = MemoryRow {
+            id,
+            scope: first.scope,
+            kind: first.kind,
+            content_hash: content_hash(&content),
+            content,
+            topic_key: None,
+            origin: first.origin,
+            actor: system,
+            session: None,
+            episode: None,
+            source: None,
+            state: State::Active,
+            valid_from: now,
+            valid_to: None,
+            known_since: now,
+            replaced_by: None,
+            supersedes: None,
+            title: title
+                .map(|t| normalize(&t.split_whitespace().collect::<Vec<_>>().join(" ")))
+                .filter(|t| !t.is_empty()),
+            category: None,
+        };
+        let mut changes = Vec::with_capacity(rows.len() + 1);
+        for r in &rows {
+            changes.extend(replace(r, &row)?);
+        }
+        changes.push(Change {
+            memory: id,
+            before: None,
+            after: row,
+        });
+        let names: Vec<String> = sources.iter().map(|s| format!("m{}", s.0)).collect();
+        let op = self.log(
+            first.scope,
+            OpKind::Update,
+            id,
+            changes,
+            system,
+            &format!("{SLEEP_REASON} unión de {}", names.join(", ")),
+        )?;
+        for &s in sources {
+            self.copy_relations_locked(s, id, sources)?;
+        }
+        Ok((id, op))
+    }
+
     /// What is left of a purged memory; `None` when it was never purged.
     pub fn tombstone(&self, id: MemoryId) -> Result<Option<Tombstone>> {
         self.store.tombstone(id)
@@ -2046,6 +2357,16 @@ impl Engine {
     /// moved: undoing the correction brings `from` back with its relations. Returns how many.
     pub fn copy_relations(&self, from: MemoryId, to: MemoryId) -> Result<usize> {
         let _g = self.write_guard();
+        self.copy_relations_locked(from, to, &[])
+    }
+
+    /// `copy_relations` with the writer held; relations to a memory in `skip` are not copied.
+    fn copy_relations_locked(
+        &self,
+        from: MemoryId,
+        to: MemoryId,
+        skip: &[MemoryId],
+    ) -> Result<usize> {
         let had: Vec<MemoryId> = self
             .store
             .relations_of(to)?
@@ -2055,7 +2376,11 @@ impl Engine {
         let mut copied = 0;
         for r in self.store.relations_of(from)? {
             let other = if r.source == from { r.target } else { r.source };
-            if r.relation == Relation::ConflictsWith || other == to || had.contains(&other) {
+            if r.relation == Relation::ConflictsWith
+                || other == to
+                || had.contains(&other)
+                || skip.contains(&other)
+            {
                 continue;
             }
             let (source, target) = if r.source == from {

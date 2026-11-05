@@ -24,6 +24,22 @@ fn main() -> ExitCode {
             command: args::Command::SetupModel { potion },
             ..
         })) => done(setup_model(potion)),
+        Ok(args::Parsed::Run(args::Cli {
+            command: args::Command::SetupSleep { remove },
+            ..
+        })) => done(setup_sleep(remove)),
+        Ok(args::Parsed::Run(args::Cli {
+            command:
+                args::Command::Sleep {
+                    now,
+                    dry_run,
+                    report,
+                },
+            db,
+            model,
+            json,
+            ..
+        })) => done(sleep(&db, model, now, dry_run, report, json)),
         Ok(args::Parsed::Run(cli)) if matches!(cli.command, args::Command::Mcp) => {
             match mcp(&cli.db) {
                 Ok(()) => ExitCode::SUCCESS,
@@ -123,8 +139,81 @@ fn setup_claude_code(replace: bool, claude_md: Option<bool>) -> Result<Vec<Strin
         replace,
         claude_md,
         ask: &ask,
+        service: &clio_memory::setup::service_command,
     }
     .run()
+}
+
+fn setup_sleep(remove: bool) -> Result<Vec<String>, String> {
+    use clio_memory::setup::{install_sleep, remove_sleep, service_command};
+    let home = home()?;
+    if remove {
+        remove_sleep(&home, &service_command)?;
+        return Ok(vec!["sueño nocturno quitado".into()]);
+    }
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let at = install_sleep(&home, &exe, &["sleep"], &service_command)?;
+    Ok(vec![format!("sueño nocturno instalado: {}", at.display())])
+}
+
+/// `clio-memory sleep`: one night, or with `--report` the last night's report.
+fn sleep(
+    db: &std::path::Path,
+    model: Option<std::path::PathBuf>,
+    now: bool,
+    dry_run: bool,
+    report: bool,
+    json: bool,
+) -> Result<Vec<String>, String> {
+    use clio_memory::agent::memory::{DB_FILE, EmbedModel};
+    use clio_memory::sleep::{Options, Slept, last_report, morning_line, run};
+    if db.file_name().is_none_or(|n| n != DB_FILE) {
+        return Err(format!(
+            "sleep uses <folder>/{DB_FILE}: give --db a file called {DB_FILE}"
+        ));
+    }
+    let data = db.parent().unwrap_or(std::path::Path::new("."));
+    if report {
+        return Ok(vec![match last_report(data) {
+            Some(r) => serde_json::to_string_pretty(&r).map_err(|e| e.to_string())?,
+            None => "sueño: todavía no durmió".into(),
+        }]);
+    }
+    let model = match model {
+        Some(dir) => EmbedModel::new(Some(dir)),
+        None => EmbedModel::of_home(&home()?),
+    };
+    let clock: std::sync::Arc<dyn clio_memory::Clock> =
+        std::sync::Arc::new(clio_memory::SystemClock);
+    let out = run(
+        data,
+        &model,
+        None,
+        &Options {
+            now,
+            dry_run,
+            clock: clock.clone(),
+        },
+    )?;
+    let r = match out {
+        Slept::Skipped(why) => return Ok(vec![format!("no durmió: {why}")]),
+        Slept::Done(r) => r,
+    };
+    if json {
+        return Ok(vec![serde_json::to_string(&r).map_err(|e| e.to_string())?]);
+    }
+    let mut said = Vec::new();
+    if dry_run {
+        said.push("solo mirar: no se cambió nada".to_owned());
+    }
+    said.push(morning_line(&r, clock.now()).map_or_else(
+        || "nada que hacer".to_owned(),
+        |l| l.replacen("Anoche (sueño)", "sueño", 1),
+    ));
+    if !r.complete {
+        said.push("la noche quedó incompleta: el próximo turno la sigue".into());
+    }
+    Ok(said)
 }
 
 fn setup_model(potion: bool) -> Result<Vec<String>, String> {

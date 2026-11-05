@@ -76,6 +76,7 @@ pub fn run(cli: &Cli) -> Result<ExitCode, String> {
                     let mark = if c.ok { "ok  " } else { "FAIL" };
                     line(&format!("{mark} {}: {}", c.name, clean(&c.detail)));
                 }
+                line(&slept(&cli.db));
             }
             return Ok(if report.all_ok() {
                 ExitCode::SUCCESS
@@ -248,6 +249,25 @@ pub fn run(cli: &Cli) -> Result<ExitCode, String> {
         _ => return Err("not a read command".into()),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// When the memory last slept, whether the night was complete, and its alarms.
+fn slept(db: &std::path::Path) -> String {
+    let data = db.parent().unwrap_or(std::path::Path::new("."));
+    match clio_memory::sleep::last_report(data) {
+        None => "info sueño: todavía no durmió (clio-memory setup sleep instala el timer)".into(),
+        Some(r) => {
+            let mut s = format!(
+                "info sueño: última noche {} ({})",
+                clio_memory::sleep::night_of(r.started),
+                if r.complete { "completa" } else { "incompleta" }
+            );
+            if !r.alarms.is_empty() {
+                s.push_str(&format!(" · alarmas: {}", clean(&r.alarms.join("; "))));
+            }
+            s
+        }
+    }
 }
 
 fn open_read(cli: &Cli) -> Result<Engine, String> {

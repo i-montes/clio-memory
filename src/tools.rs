@@ -369,6 +369,16 @@ impl Session {
             full,
             near,
         );
+        // Last night's sleep goes first, outside the frame: it is the sleep's own words (ids and
+        // reasons), never memory text.
+        let morning = (name == "memory_context")
+            .then(|| crate::sleep::last_report(&self.data))
+            .flatten()
+            .and_then(|r| crate::sleep::morning_line(&r, now_secs()));
+        let answer = match morning {
+            Some(line) => format!("{}\n{answer}", cut(&line, 600)),
+            None => answer,
+        };
         self.bytes += answer.len();
         Ok(answer)
     }
@@ -795,7 +805,7 @@ fn now_secs() -> i64 {
 }
 
 /// `YYYY-MM-DD` (UTC) of seconds since the epoch (H. Hinnant's `civil_from_days`).
-fn civil_date(secs: i64) -> String {
+pub(crate) fn civil_date(secs: i64) -> String {
     let z = secs.div_euclid(86_400) + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);

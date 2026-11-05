@@ -1122,6 +1122,56 @@ fn scrub(row: &mut MemoryRow) {
     row.source = None;
 }
 
+/// One memory's purge, in its own transaction (see `Store::purge`); the caller rewrites the file.
+fn purge_one(conn: &mut Connection, op: NewOperation) -> Result<OpId> {
+    let memory = op.memory.ok_or(Error::NotFound)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let exists: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM memories WHERE id = ?1)",
+        [memory.0],
+        |r| r.get(0),
+    )?;
+    if !exists {
+        return Err(Error::NotFound);
+    }
+    redact_operations(&tx, memory)?;
+    tx.execute(
+        "UPDATE decisions SET reason = NULL
+             WHERE op IN (SELECT op FROM operation_memories WHERE memory = ?1)",
+        [memory.0],
+    )?;
+    for table in [
+        "vectors",
+        "usage",
+        "feedback",
+        "block_memories",
+        "pins",
+        "reviews",
+    ] {
+        tx.execute(
+            &format!("DELETE FROM {table} WHERE memory = ?1"),
+            [memory.0],
+        )?;
+    }
+    // A relation names both memories: it goes when either does.
+    tx.execute(
+        "DELETE FROM relations WHERE source = ?1 OR target = ?1",
+        [memory.0],
+    )?;
+    // A failed job keeps the error it got, and an embedder's error can quote the texts it
+    // was given. The queue does not say which memory an error is about, so they all go;
+    // what a job did and when stays.
+    tx.execute("UPDATE jobs SET error = NULL WHERE error IS NOT NULL", [])?;
+    let id = append_in(&tx, op, &[], &[])?;
+    // the text index keeps deleted entries in old segments until they are merged
+    tx.execute(
+        "INSERT INTO memories_fts(memories_fts) VALUES('optimize')",
+        [],
+    )?;
+    tx.commit()?;
+    Ok(id)
+}
+
 /// Rewrites every past operation that touched `memory` so its snapshots carry no content.
 fn redact_operations(tx: &Connection, memory: MemoryId) -> Result<()> {
     let mut stmt = tx.prepare(
@@ -1256,7 +1306,12 @@ impl Store for SqliteStore {
 
     fn count_quarantined_by(&self, scope: ScopeId, actor: ActorId) -> Result<usize> {
         let n: i64 = self.reader()?.query_row(
-            "SELECT COUNT(*) FROM memories WHERE scope = ?1 AND actor = ?2 AND state = 'Quarantine'",
+            // What the sleep put in quarantine is not the author's to review: it does not fill
+            // the author's limit, so a writer cannot fill it on purpose through the sleep.
+            "SELECT COUNT(*) FROM memories m WHERE scope = ?1 AND actor = ?2 AND state = 'Quarantine'
+             AND NOT EXISTS (SELECT 1 FROM operations o JOIN actors a ON a.id = o.actor
+                 WHERE o.id = (SELECT MAX(op) FROM operation_memories WHERE memory = m.id)
+                 AND a.kind = 'System' AND o.kind = 'Forget')",
             params![scope.0, actor.0],
             |r| r.get(0),
         )?;
@@ -1608,6 +1663,16 @@ impl Store for SqliteStore {
         Ok(ActorId(conn.last_insert_rowid()))
     }
 
+    fn last_activity(&self, except: ActorId) -> Result<i64> {
+        Ok(self.reader()?.query_row(
+            "SELECT MAX(COALESCE((SELECT MAX(at) FROM operations WHERE actor != ?1), 0),
+                        COALESCE((SELECT MAX(last_used) FROM usage), 0),
+                        COALESCE((SELECT MAX(created_at) FROM jobs WHERE kind = ?2), 0))",
+            params![except.0, enc(&JobKind::Touch)],
+            |r| r.get(0),
+        )?)
+    }
+
     fn backup_to(&self, path: &Path) -> Result<()> {
         let mut tmp = path.as_os_str().to_owned();
         tmp.push(".tmp");
@@ -1630,62 +1695,39 @@ impl Store for SqliteStore {
         published
     }
 
-    fn purge(&self, op: NewOperation) -> Result<(OpId, bool)> {
-        let memory = op.memory.ok_or(Error::NotFound)?;
+    fn purge_many(&self, ops: Vec<NewOperation>) -> Result<(Vec<OpId>, bool)> {
         let mut conn = self.writer()?;
-        let id = {
-            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let exists: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM memories WHERE id = ?1)",
-                [memory.0],
-                |r| r.get(0),
-            )?;
-            if !exists {
-                return Err(Error::NotFound);
+        let mut done = Vec::with_capacity(ops.len());
+        let mut failed = None;
+        for op in ops {
+            match purge_one(&mut conn, op) {
+                Ok(id) => done.push(id),
+                Err(e) => {
+                    failed = Some(e);
+                    break;
+                }
             }
-            redact_operations(&tx, memory)?;
-            tx.execute(
-                "UPDATE decisions SET reason = NULL
-                 WHERE op IN (SELECT op FROM operation_memories WHERE memory = ?1)",
-                [memory.0],
-            )?;
-            for table in [
-                "vectors",
-                "usage",
-                "feedback",
-                "block_memories",
-                "pins",
-                "reviews",
-            ] {
-                tx.execute(
-                    &format!("DELETE FROM {table} WHERE memory = ?1"),
-                    [memory.0],
-                )?;
-            }
-            // A relation names both memories: it goes when either does.
-            tx.execute(
-                "DELETE FROM relations WHERE source = ?1 OR target = ?1",
-                [memory.0],
-            )?;
-            // A failed job keeps the error it got, and an embedder's error can quote the texts it
-            // was given. The queue does not say which memory an error is about, so they all go;
-            // what a job did and when stays.
-            tx.execute("UPDATE jobs SET error = NULL WHERE error IS NOT NULL", [])?;
-            let id = append_in(&tx, op, &[], &[])?;
-            // the text index keeps deleted entries in old segments until they are merged
-            tx.execute(
-                "INSERT INTO memories_fts(memories_fts) VALUES('optimize')",
-                [],
-            )?;
-            tx.commit()?;
-            id
-        };
+        }
+        if done.is_empty() {
+            return Err(failed.unwrap_or(Error::NotFound));
+        }
         // the copy of the vectors in memory must not outlive the rows it was read from
         self.vector_epoch.fetch_add(1, Ordering::SeqCst);
         // freed pages and old versions of rows still hold bytes: rewrite the file, then empty the log
         conn.execute_batch("VACUUM")?;
         let busy: i64 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))?;
-        Ok((id, busy == 0))
+        match failed {
+            Some(e) => Err(e),
+            None => Ok((done, busy == 0)),
+        }
+    }
+
+    fn is_pinned(&self, memory: MemoryId) -> Result<bool> {
+        Ok(self.reader()?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pins WHERE memory = ?1)",
+            [memory.0],
+            |r| r.get(0),
+        )?)
     }
 
     fn tombstone(&self, id: MemoryId) -> Result<Option<Tombstone>> {

@@ -64,6 +64,7 @@ impl Rig {
             replace,
             claude_md,
             ask: &|_| false,
+            service: &|_| Ok(()),
         }
         .run()
     }
@@ -143,6 +144,7 @@ fn without_claude_nothing_is_written() {
         replace: false,
         claude_md: Some(true),
         ask: &|_| true,
+        service: &|_| Ok(()),
     }
     .run()
     .unwrap_err();
@@ -218,8 +220,14 @@ fn a_file_with_the_wrong_sha_replaces_nothing() {
 #[test]
 fn the_command_runs_setup_with_the_flags() {
     let r = rig();
+    // A `systemctl` that does nothing: the real one must not be touched.
+    let systemctl = r.dir.join("systemctl");
+    std::fs::write(&systemctl, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&systemctl, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", r.dir.display(), std::env::var("PATH").unwrap());
     let o = std::process::Command::new(env!("CARGO_BIN_EXE_clio-memory"))
         .env("HOME", &r.home)
+        .env("PATH", path)
         .env("CLIO_MEMORY_CLAUDE", &r.claude)
         .args(["setup", "claude-code", "--no-claude-md"])
         .stdin(std::process::Stdio::null())

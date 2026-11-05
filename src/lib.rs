@@ -40,12 +40,16 @@ mod vector;
 pub mod agent;
 pub mod mcp;
 pub mod setup;
+pub mod sleep;
 pub mod tools;
 
 pub use clock::{Clock, FixedClock, SystemClock};
 pub use decider::{Decider, NearDuplicateDecider};
 pub use embed::{Embedder, GRANITE_ID};
-pub use engine::{Engine, Judge, Judged, Sureness};
+pub use engine::{
+    Engine, Judge, Judged, SLEEP_PURGE_DAYS, SLEEP_REASON, SLEEP_SECRET, SLEEP_SECRET_DAYS,
+    Sureness, Vectors,
+};
 pub use error::{Error, Result};
 #[cfg(feature = "granite")]
 pub use granite::Granite;

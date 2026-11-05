@@ -151,6 +151,9 @@ pub trait Store: VectorIndex + Send + Sync {
     fn decay_candidates(&self, scope: ScopeId, cutoff: i64) -> Result<Vec<MemoryRow>>;
     /// The internal actor that signs background operations; created on first use.
     fn system_actor(&self) -> Result<ActorId>;
+    /// When the memory was last written by an actor other than `except`, or last used (a recall,
+    /// applied or still queued); 0 when never.
+    fn last_activity(&self, except: ActorId) -> Result<i64>;
 
     /// Hot backup with SQLite's online backup API into a new file `path` (mode 0600). Written to
     /// `<path>.tmp` first and published with a hard link, so an existing `path` is never
@@ -161,7 +164,16 @@ pub trait Store: VectorIndex + Send + Sync {
     /// past operations, decision reasons, vector, usage, feedback, block entries), appends `op`
     /// (a PURGE with no changes), then rewrites the file and empties the write-ahead log. The
     /// flag is false when the log could not be emptied. `NotFound` if the memory does not exist.
-    fn purge(&self, op: NewOperation) -> Result<(OpId, bool)>;
+    fn purge(&self, op: NewOperation) -> Result<(OpId, bool)> {
+        let (ops, truncated) = self.purge_many(vec![op])?;
+        Ok((ops[0], truncated))
+    }
+    /// `purge` for several memories, each in its own transaction, with one rewrite of the file at
+    /// the end (the rewrite holds the writer: once, not once per memory). A failure stops there;
+    /// what was purged before it is still rewritten away.
+    fn purge_many(&self, ops: Vec<NewOperation>) -> Result<(Vec<OpId>, bool)>;
+    /// Whether a pin row names the memory, whatever its state now.
+    fn is_pinned(&self, memory: MemoryId) -> Result<bool>;
     /// The tombstone of a purged memory.
     fn tombstone(&self, id: MemoryId) -> Result<Option<Tombstone>>;
 

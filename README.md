@@ -100,7 +100,7 @@ clio-memory setup
 
 Compila la rama principal; sin `--features` el binario no puede cargar los modelos. `setup` conecta los agentes con la ruta de ese binario (en `~/.cargo/bin`); `uninstall` lo deja ahí, porque solo borra el que está en `~/.local/bin`. Si después instalas con la línea de `curl`, el de `~/.cargo/bin` puede ir antes en el `PATH` y ser el que corre al escribir `clio-memory`: `setup` lo quita con `cargo uninstall` cuando los registros de cargo dicen que es este crate, y si no puede, lo dice; `doctor` también lo avisa.
 
-Como biblioteca (lo que hace Clio): `clio-memory = { …, default-features = false, features = ["model2vec", "granite"] }`. La feature `cli`, que va por defecto, es solo la del binario (la pantalla de `setup`); sin ella no se compilan cliclack ni console.
+Como biblioteca (lo que hace Clio): `clio-memory = { …, default-features = false, features = ["model2vec", "granite"] }`. La feature `cli`, que va por defecto, es solo la del binario: la pantalla de `setup` (cliclack, console) y `serde_json/preserve_order`, que mantiene en su sitio las claves de los archivos de configuración de los agentes que `setup` edita. Sin ella no se compila nada de eso, y la biblioteca no cambia cómo serializa JSON el programa que la usa: cargo unifica las features, y `preserve_order` las aplicaría a todo `serde_json::Value` de ese programa.
 
 ### El modelo de vectores
 

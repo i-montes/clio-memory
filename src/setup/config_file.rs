@@ -1,8 +1,9 @@
 //! Editing another program's JSON configuration without touching what is not ours.
 //!
 //! The file is read whole, our key is changed in the parsed value, and the value is written back
-//! through a temporary file in the same folder. With serde_json's `preserve_order` every other
-//! key comes back in the place it had. A file that is not plain JSON (comments, trailing commas)
+//! through a temporary file in the same folder. With serde_json's `preserve_order` (the `cli`
+//! feature turns it on) every other key comes back in the place it had; without it they come back
+//! sorted. A file that is not plain JSON (comments, trailing commas)
 //! is refused before anything is written: rewriting it would lose what the person put there.
 
 use std::io::Write;

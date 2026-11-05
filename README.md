@@ -56,6 +56,31 @@ clio-memory setup claude-code    # la deja como memoria principal de Claude Code
 
 No toca otros servidores MCP ni otras skills. Si ya hay algo llamado `clio-memory` que no es esto, te lo dice y pregunta (`--replace` lo reemplaza). Correrlo otra vez no cambia nada.
 
+### Los agentes
+
+clio-memory se conecta a cinco agentes. En todos, el servidor MCP es `<ruta absoluta del binario> mcp`, la skill es la misma, y la línea de instrucciones es una sola: `- Mi memoria principal es clio-memory (MCP): úsala según la skill clio-memory.`
+
+| Agente | Se detecta por | Servidor MCP | Línea de instrucciones |
+|---|---|---|---|
+| Claude Code | `claude` | `claude mcp add --scope user …` | `~/.claude/CLAUDE.md` |
+| OpenCode | `opencode` o `~/.config/opencode/` | `mcp.clio-memory` en `~/.config/opencode/opencode.json` | `~/.config/opencode/clio-memory.md`, enlazado en `instructions` de `opencode.json` |
+| Codex | `codex` | `codex mcp add clio-memory -- …` | `~/.codex/AGENTS.md` (`CODEX_HOME` si está definida) |
+| Gemini CLI | `gemini` | `gemini mcp add -s user …` | `~/.gemini/GEMINI.md` |
+| Antigravity | `agy`, `antigravity` o `~/.gemini/config/` | `mcpServers.clio-memory` en `~/.gemini/config/mcp_config.json` | `~/.gemini/GEMINI.md` (la de Gemini CLI) |
+
+La skill va en la menor cantidad de carpetas que cubra a los agentes conectados, para que ninguno la vea dos veces si se puede evitar. Hoy `setup claude-code` conecta Claude Code; conectar los otros cuatro desde la línea de comandos llega con `clio-memory setup` (versión 0.6.0). `doctor` y `uninstall` ya conocen a los cinco. Los archivos exactos, los comandos, dónde va la skill en cada combinación y lo que está sin verificar: [docs/instalador.md](docs/instalador.md).
+
+### Desinstalar
+
+```sh
+clio-memory uninstall                         # todos los agentes, el sueño y el binario
+clio-memory uninstall --agents codex,gemini   # solo esos agentes
+clio-memory uninstall --models                # además borra ~/.cache/clio-models
+clio-memory uninstall --data                  # además borra la memoria (pregunta antes)
+```
+
+Quita de cada agente el servidor MCP `clio-memory`, la skill y la línea de instrucciones, pero **solo lo que es nuestro**: un servidor o una skill ajenos con ese nombre no se tocan. Sin `--agents` quita también el timer del sueño y, al final, el binario si está en `~/.local/bin` (o en `$CLIO_MEMORY_BIN_DIR`); si algo no se pudo quitar, el binario se queda y puedes correrlo otra vez. **No borra la memoria ni los modelos si no lo pides.** `--data` borra para siempre `memory.db` (con sus `-wal`, `-shm` y candados) y la carpeta `sleep/` de al lado, y nada más de esa carpeta, porque ahí guarda sus archivos Clio. Sin terminal exige `--yes`.
+
 ### El modelo de vectores
 
 `setup model` descarga **Granite Embedding 311M multilingual R2** (IBM, Apache-2.0; 1,25 GB), fijado por revisión y sha256. Busca por significado, no por palabra: en la prueba de `bench/embeddings` acierta el recuerdo correcto en primer lugar el 90 % de las veces, contra el 40 % del modelo estático anterior. Usa los primeros 384 de sus 768 componentes, que ordenan igual de bien y ocupan la mitad.
@@ -112,6 +137,8 @@ clio-memory purge 12          # borra su contenido para siempre (pregunta antes)
 clio-memory export copia.jsonl
 clio-memory sleep --dry-run --now   # qué haría el sueño ahora, sin cambiar nada
 clio-memory sleep --report    # el informe de la última noche
+clio-memory doctor           # la salud de la memoria y de cada agente conectado
+clio-memory uninstall        # la quita de los agentes (ver «Desinstalar»)
 clio-memory --help            # todo lo demás
 ```
 

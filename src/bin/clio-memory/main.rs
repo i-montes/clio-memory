@@ -10,6 +10,8 @@ mod write;
 
 use std::process::ExitCode;
 
+use clio_memory::setup::agents::{AgentId, Env};
+
 fn main() -> ExitCode {
     match args::parse(std::env::args().skip(1)) {
         Ok(args::Parsed::Help) => {
@@ -44,6 +46,17 @@ fn main() -> ExitCode {
             json,
             ..
         })) => done(sleep(&db, model, now, dry_run, report, json)),
+        Ok(args::Parsed::Run(args::Cli {
+            command:
+                args::Command::Uninstall {
+                    agents,
+                    models,
+                    data,
+                    yes,
+                },
+            db,
+            ..
+        })) => uninstall(&db, agents.as_deref(), models, data, yes),
         Ok(args::Parsed::Run(cli)) if matches!(cli.command, args::Command::Mcp) => {
             match mcp(&cli.db) {
                 Ok(()) => ExitCode::SUCCESS,
@@ -53,7 +66,7 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Ok(args::Parsed::Run(cli)) => match commands::run(&cli) {
+        Ok(args::Parsed::Run(cli)) => match commands::run(&cli, machine().ok().as_ref()) {
             Ok(code) => code,
             Err(message) => {
                 output::error(&format!("error: {message}"));
@@ -129,6 +142,133 @@ fn ask(question: &str) -> bool {
         answer.trim().to_lowercase().as_str(),
         "s" | "si" | "sí" | "y" | "yes"
     )
+}
+
+/// This machine, as setup sees it: the home, this binary, the `PATH`, and the overrides of
+/// where Codex and Claude Code are.
+fn machine() -> Result<Env<'static>, String> {
+    let var = |name: &str| {
+        std::env::var_os(name)
+            .filter(|v| !v.is_empty())
+            .map(std::path::PathBuf::from)
+    };
+    Ok(Env {
+        home: home()?,
+        exe: std::env::current_exe().map_err(|e| e.to_string())?,
+        path: std::env::var_os("PATH")
+            .map(|p| std::env::split_paths(&p).collect())
+            .unwrap_or_default(),
+        codex_home: var("CODEX_HOME"),
+        claude: var("CLIO_MEMORY_CLAUDE"),
+        service: &clio_memory::setup::service_command,
+    })
+}
+
+/// `clio-memory uninstall`: every step says how it went; any that failed makes the exit code 1.
+fn uninstall(
+    db: &std::path::Path,
+    agents: Option<&[AgentId]>,
+    models: bool,
+    data: bool,
+    yes: bool,
+) -> ExitCode {
+    use clio_memory::setup::plan::{self, Step};
+    let fail = |message: String, code: u8| {
+        output::error(&format!("error: {message}"));
+        ExitCode::from(code)
+    };
+    let env = match machine() {
+        Ok(env) => env,
+        Err(e) => return fail(e, 1),
+    };
+    // The memory goes only with a yes, asked before anything else: a no changes nothing.
+    let folder = match data.then(|| data_folder(db, &env.home)).transpose() {
+        Ok(folder) => folder,
+        Err(e) => return fail(e, 2),
+    };
+    if let Some(folder) = folder.as_ref().filter(|_| !yes) {
+        if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            return fail(
+                format!(
+                    "--data borra {} para siempre: sin terminal, confírmalo con --yes",
+                    folder.display()
+                ),
+                2,
+            );
+        }
+        if !ask(&format!(
+            "¿Borro {} con toda la memoria? No se puede deshacer.",
+            folder.display()
+        )) {
+            return fail("no se cambió nada".into(), 1);
+        }
+    }
+    let mut steps = plan::uninstall(&env, agents);
+    let mut gone = Vec::new();
+    if models {
+        let dir = env.home.join(".cache/clio-models");
+        gone.push(Step {
+            agent: None,
+            what: "modelos".into(),
+            outcome: remove_folder(&dir).map(|()| format!("modelos borrados: {}", dir.display())),
+        });
+    }
+    if let Some(folder) = folder {
+        gone.push(Step {
+            agent: None,
+            what: "datos".into(),
+            outcome: remove_folder(&folder)
+                .map(|()| format!("memoria borrada: {}", folder.display())),
+        });
+    }
+    // Before the binary, which goes last.
+    let at = steps
+        .iter()
+        .position(|s| s.what == plan::BINARY)
+        .unwrap_or(steps.len());
+    steps.splice(at..at, gone);
+    if steps.is_empty() {
+        output::line("nada que quitar");
+    }
+    for step in &steps {
+        output::line(&step.line());
+    }
+    if steps.iter().any(|s| s.outcome.is_err()) {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// The folder of the memory file, checked to be one `--data` may delete: the file is called
+/// `memory.db`, and the folder is neither the home nor a root.
+fn data_folder(db: &std::path::Path, home: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    use clio_memory::agent::memory::DB_FILE;
+    let canon = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let folder = db.parent().map(canon);
+    match folder {
+        Some(folder)
+            if db.file_name().is_some_and(|n| n == DB_FILE)
+                && folder.parent().is_some()
+                && folder != canon(home) =>
+        {
+            Ok(folder)
+        }
+        _ => Err(format!(
+            "--data borra la carpeta de {DB_FILE}, y {} no es una que se pueda borrar entera",
+            db.display()
+        )),
+    }
+}
+
+/// Deletes a folder and everything in it; one that is not there is already gone.
+fn remove_folder(dir: &std::path::Path) -> Result<(), String> {
+    match std::fs::remove_dir_all(dir) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(format!("{}: {e}", dir.display()))
+        }
+        _ => Ok(()),
+    }
 }
 
 fn setup_claude_code(replace: bool, claude_md: Option<bool>) -> Result<Vec<String>, String> {

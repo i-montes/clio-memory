@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 
+use clio_memory::setup::agents::AgentId;
 use clio_memory::{JobState, MemoryId, MemoryType, OpId, Origin, Signal, State};
 
 pub const USAGE: &str = "\
@@ -19,6 +20,14 @@ agents:
   setup sleep [--remove]      install (or remove) the nightly sleep: a user timer that runs
                               `clio-memory sleep` every half hour from 23:00 to 05:30
                               (setup claude-code installs it too)
+  uninstall [--agents LIST] [--models] [--data] [--yes]
+                              take clio-memory out of the agents: the MCP server, the skill (only
+                              ours) and the instructions line; with no --agents, out of all of
+                              them, with the nightly sleep and, last, this binary when it is in
+                              ~/.local/bin (or $CLIO_MEMORY_BIN_DIR). LIST: claude-code,opencode,
+                              codex,gemini,antigravity. --models deletes ~/.cache/clio-models;
+                              --data deletes the memory's folder (the one of memory.db): it asks
+                              first in a terminal, and without one needs --yes
   sleep [--now] [--dry-run] [--report]
                               one night of sleep: check and copy the file, quarantine secrets
                               and likely attacks, fold repeats, purge what was discarded long
@@ -33,7 +42,8 @@ agents:
 inspect (open the file read-only; never write):
   scopes                      list scopes
   stats                       sizes, counts by state, queue
-  doctor                      health checks (exit 1 if one fails)
+  doctor                      health checks, then one line per agent found (ok, FAIL or --
+                              for not connected); exit 1 if one fails
   list SCOPE [--state S]      memories (S: active|quarantine|archived|replaced)
   get ID                      one memory (ID is 12 or m12)
   history ID                  every operation that touched a memory
@@ -93,6 +103,13 @@ pub enum Command {
     },
     SetupSleep {
         remove: bool,
+    },
+    /// `uninstall`: from `agents` (None: everything), and the models and the data on request.
+    Uninstall {
+        agents: Option<Vec<AgentId>>,
+        models: bool,
+        data: bool,
+        yes: bool,
     },
     Sleep {
         now: bool,
@@ -356,6 +373,27 @@ fn parse_job_state(s: &str) -> Result<JobState, UsageError> {
     }
 }
 
+/// `claude-code,codex`: agents by their keys.
+fn parse_agents(list: &str) -> Result<Vec<AgentId>, UsageError> {
+    list.split(',')
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .map(|k| {
+            AgentId::from_key(k).ok_or_else(|| {
+                let keys: Vec<&str> = AgentId::ALL.iter().map(|a| a.key()).collect();
+                UsageError(format!("unknown agent {k:?} ({})", keys.join("|")))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .and_then(|agents| {
+            if agents.is_empty() {
+                usage("--agents needs at least one agent")
+            } else {
+                Ok(agents)
+            }
+        })
+}
+
 pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, UsageError> {
     let mut args = args.into_iter();
     let (mut db, mut actor, mut model, mut json) = (None, None, None, false);
@@ -416,6 +454,22 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, UsageErro
                 return usage("--remove goes with setup sleep");
             }
             command
+        }
+        "uninstall" => {
+            let agents = rest
+                .flag("--agents")?
+                .map(|list| parse_agents(&list))
+                .transpose()?;
+            let models = rest.switch("--models");
+            let data = rest.switch("--data");
+            let yes = rest.switch("--yes");
+            rest.none()?;
+            Command::Uninstall {
+                agents,
+                models,
+                data,
+                yes,
+            }
         }
         "sleep" => {
             let now = rest.switch("--now");

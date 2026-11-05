@@ -9,6 +9,15 @@ use std::sync::Arc;
 use clio_memory::*;
 use common::*;
 
+/// The binary, kept away from this machine's agents: `doctor` looks for them in the home and
+/// the `PATH`, and here there are none.
+fn isolated(cmd: &mut Command) -> &mut Command {
+    cmd.env("HOME", "/nonexistent/clio-memory-test-home")
+        .env("PATH", "/nonexistent/clio-memory-test-path")
+        .env_remove("CLIO_MEMORY_CLAUDE")
+        .env_remove("CODEX_HOME")
+}
+
 fn run(db: Option<&Path>, args: &[&str]) -> Output {
     // Tests run in parallel threads. While one thread holds an engine open, another can fork a
     // child that inherits a copy of the lock file until its `exec`; the lock then outlives the
@@ -19,7 +28,7 @@ fn run(db: Option<&Path>, args: &[&str]) -> Output {
         if let Some(db) = db {
             cmd.arg("--db").arg(db);
         }
-        let o = cmd
+        let o = isolated(&mut cmd)
             .env("USER", "tester")
             .env("CLIO_MEMORY_DATA", "/nonexistent/clio-memory-test")
             .args(args)
@@ -36,7 +45,8 @@ fn run(db: Option<&Path>, args: &[&str]) -> Output {
     if let Some(db) = db {
         cmd.arg("--db").arg(db);
     }
-    cmd.env("USER", "tester")
+    isolated(&mut cmd)
+        .env("USER", "tester")
         .env("CLIO_MEMORY_DATA", "/nonexistent/clio-memory-test")
         .args(args)
         .output()
@@ -881,4 +891,190 @@ fn without_home_or_clio_memory_data_nothing_is_created_in_the_current_folder() {
     assert_eq!(code(&o), 2, "{}", err(&o));
     assert!(err(&o).contains("CLIO_MEMORY_DATA"), "{}", err(&o));
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
+// ---- the agents: `uninstall` and the agent lines of `doctor` ----
+
+/// A machine for the agents' commands: a temporary home, a `PATH` with only `bin` (a fake
+/// `systemctl` there, so the real one is never touched), and the memory in `data`.
+struct Machine {
+    _t: tempfile::TempDir,
+    home: std::path::PathBuf,
+    bin: std::path::PathBuf,
+    data: std::path::PathBuf,
+    /// This binary as it sees itself: what its MCP entries point at.
+    exe: std::path::PathBuf,
+}
+
+fn machine() -> Machine {
+    use std::os::unix::fs::PermissionsExt;
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path().join("home");
+    let bin = t.path().join("bin");
+    let data = t.path().join("data");
+    for d in [&home, &bin, &data] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let systemctl = bin.join("systemctl");
+    std::fs::write(&systemctl, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&systemctl, std::fs::Permissions::from_mode(0o755)).unwrap();
+    {
+        let e = Engine::open(
+            &data.join("memory.db"),
+            OpenMode::ReadWrite,
+            Arc::new(SystemClock),
+        )
+        .unwrap();
+        e.create_scope("main", "es").unwrap();
+    }
+    let exe = std::fs::canonicalize(env!("CARGO_BIN_EXE_clio-memory")).unwrap();
+    Machine {
+        _t: t,
+        home,
+        bin,
+        data,
+        exe,
+    }
+}
+
+impl Machine {
+    fn run(&self, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_clio-memory"))
+            .env("HOME", &self.home)
+            .env("PATH", &self.bin)
+            .env("CLIO_MEMORY_DATA", &self.data)
+            .env_remove("CLIO_MEMORY_CLAUDE")
+            .env_remove("CLIO_MEMORY_BIN_DIR")
+            .env_remove("CODEX_HOME")
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap()
+    }
+
+    /// OpenCode connected to this binary, with its skill.
+    fn opencode_connected(&self) -> std::path::PathBuf {
+        let config = self.home.join(".config/opencode/opencode.json");
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        std::fs::write(
+            &config,
+            serde_json::json!({"mcp": {"clio-memory": {"type": "local", "command": [self.exe, "mcp"], "enabled": true}}})
+                .to_string(),
+        )
+        .unwrap();
+        let skill = self
+            .home
+            .join(".config/opencode/skills/clio-memory/SKILL.md");
+        std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
+        std::fs::write(&skill, clio_memory::setup::SKILL).unwrap();
+        config
+    }
+}
+
+#[test]
+fn uninstall_data_needs_yes_without_tty() {
+    let m = machine();
+    let config = m.opencode_connected();
+    let before = std::fs::read(&config).unwrap();
+    let o = m.run(&["uninstall", "--data"]);
+    assert!(matches!(code(&o), 1 | 2), "{}", err(&o));
+    assert!(err(&o).contains("--yes"), "{}", err(&o));
+    assert!(
+        m.data.join("memory.db").is_file(),
+        "the memory is still there"
+    );
+    assert_eq!(std::fs::read(&config).unwrap(), before, "nothing was done");
+}
+
+#[test]
+fn uninstall_with_data_and_yes_takes_everything_out() {
+    let m = machine();
+    let config = m.opencode_connected();
+    let models = m.home.join(".cache/clio-models/potion-multilingual-128M");
+    std::fs::create_dir_all(&models).unwrap();
+    std::fs::write(models.join("model.safetensors"), "pesos").unwrap();
+    let o = m.run(&["uninstall", "--data", "--models", "--yes"]);
+    assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+    assert!(!m.data.exists(), "{}", out(&o));
+    assert!(!m.home.join(".cache/clio-models").exists());
+    assert!(m.home.is_dir());
+    let left: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+    assert!(left.get("mcp").is_none(), "{left}");
+    assert!(!m.home.join(".config/opencode/skills/clio-memory").exists());
+    assert!(out(&o).contains("✔ OpenCode"), "{}", out(&o));
+}
+
+#[test]
+fn uninstall_without_data_keeps_the_memory_and_takes_the_agents_listed() {
+    let m = machine();
+    let config = m.opencode_connected();
+    let o = m.run(&["uninstall", "--agents", "antigravity"]);
+    assert_eq!(code(&o), 0, "{}", err(&o));
+    assert!(
+        std::fs::read_to_string(&config)
+            .unwrap()
+            .contains("clio-memory")
+    );
+    let o = m.run(&["uninstall", "--agents", "opencode,antigravity"]);
+    assert_eq!(code(&o), 0, "{}", err(&o));
+    assert!(
+        !std::fs::read_to_string(&config)
+            .unwrap()
+            .contains("clio-memory")
+    );
+    assert!(m.data.join("memory.db").is_file());
+    let o = m.run(&["uninstall", "--agents", "vscode"]);
+    assert_eq!(code(&o), 2);
+    assert!(err(&o).contains("vscode"), "{}", err(&o));
+}
+
+#[test]
+fn doctor_lists_agents() {
+    use std::os::unix::fs::PermissionsExt;
+    let m = machine();
+    m.opencode_connected();
+    // Gemini CLI is there, not connected; Antigravity points at an older binary.
+    let gemini = m.bin.join("gemini");
+    std::fs::write(&gemini, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&gemini, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let old = m.home.join(".cargo/bin/clio-memory");
+    let antigravity = m.home.join(".gemini/config/mcp_config.json");
+    std::fs::create_dir_all(antigravity.parent().unwrap()).unwrap();
+    std::fs::write(
+        &antigravity,
+        serde_json::json!({"mcpServers": {"clio-memory": {"command": old, "args": ["mcp"]}}})
+            .to_string(),
+    )
+    .unwrap();
+    let o = m.run(&["doctor"]);
+    let text = out(&o);
+    assert_eq!(code(&o), 1, "{text}");
+    assert!(text.contains("ok   agente opencode: conectado\n"), "{text}");
+    assert!(
+        text.contains("--   agente gemini: no conectado\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "FAIL agente antigravity: el MCP apunta a {}\n",
+            old.display()
+        )),
+        "{text}"
+    );
+    assert!(!text.contains("agente claude-code"), "{text}");
+    // The agent lines come after the checks.
+    assert!(
+        text.find("ok   agente").unwrap() > text.find("info sueño").unwrap(),
+        "{text}"
+    );
+    // Only FAIL changes the exit code.
+    std::fs::remove_file(&antigravity).unwrap();
+    let o = m.run(&["doctor"]);
+    assert_eq!(code(&o), 0, "{}", out(&o));
+    let o = m.run(&["--json", "doctor"]);
+    let v: serde_json::Value = serde_json::from_str(&out(&o)).unwrap();
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["agents"][0]["agent"], "opencode");
+    assert_eq!(v["agents"][0]["ok"], true);
 }

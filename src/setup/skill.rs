@@ -23,7 +23,7 @@ pub enum SkillDir {
 
 impl SkillDir {
     /// In the order ties in `placement` are broken.
-    const ALL: [SkillDir; 4] = [
+    pub const ALL: [SkillDir; 4] = [
         SkillDir::Claude,
         SkillDir::OpenCode,
         SkillDir::Agents,

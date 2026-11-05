@@ -6,12 +6,17 @@ use clio_memory::{
     SystemClock,
 };
 
+use clio_memory::setup::agents::Env;
+use clio_memory::setup::plan::{NOT_CONNECTED, agent_report};
+
 use crate::args::{Cli, Command};
 use crate::output::{clean, clean_multiline, line};
 
 const JOB_LIMIT: usize = 200;
 
-pub fn run(cli: &Cli) -> Result<ExitCode, String> {
+/// Runs a command that reads; `machine` is where `doctor` looks for the agents (`None`: no
+/// agent lines, as without a home).
+pub fn run(cli: &Cli, machine: Option<&Env>) -> Result<ExitCode, String> {
     if cli.command.writes() {
         return crate::write::run(cli);
     }
@@ -69,16 +74,36 @@ pub fn run(cli: &Cli) -> Result<ExitCode, String> {
         }
         Command::Doctor => {
             let report = engine.doctor().map_err(fail)?;
+            let agents = machine.map(agent_report).unwrap_or_default();
+            let agents_ok = agents.iter().all(|(_, ok, _)| *ok);
             if cli.json {
-                json(&serde_json::json!({ "ok": report.all_ok(), "checks": report.checks }))?;
+                let agents: Vec<_> = agents
+                    .iter()
+                    .map(|(a, ok, detail)| {
+                        serde_json::json!({ "agent": a.key(), "ok": ok, "detail": detail })
+                    })
+                    .collect();
+                json(&serde_json::json!({
+                    "ok": report.all_ok() && agents_ok,
+                    "checks": report.checks,
+                    "agents": agents,
+                }))?;
             } else {
                 for c in &report.checks {
                     let mark = if c.ok { "ok  " } else { "FAIL" };
                     line(&format!("{mark} {}: {}", c.name, clean(&c.detail)));
                 }
                 line(&slept(&cli.db));
+                for (agent, ok, detail) in &agents {
+                    let mark = match (ok, detail.as_str()) {
+                        (false, _) => "FAIL",
+                        (true, NOT_CONNECTED) => "--  ",
+                        (true, _) => "ok  ",
+                    };
+                    line(&format!("{mark} agente {}: {}", agent.key(), clean(detail)));
+                }
             }
-            return Ok(if report.all_ok() {
+            return Ok(if report.all_ok() && agents_ok {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::from(1)

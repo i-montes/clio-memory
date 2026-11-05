@@ -434,3 +434,56 @@ fn unreadable_instructions_file_is_an_error_not_overwritten() {
     assert!(e.contains("CLAUDE.md"), "{e}");
     assert_eq!(std::fs::read(&md).unwrap(), [0xff, 0xfe, b'\n']);
 }
+
+#[test]
+fn writing_the_line_keeps_the_files_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let r = rig();
+    let env = r.env();
+    let md = r.home.join(".claude/CLAUDE.md");
+    put(&md, "# Mis reglas\n");
+    std::fs::set_permissions(&md, std::fs::Permissions::from_mode(0o600)).unwrap();
+    add_instructions(&env, AgentId::ClaudeCode).unwrap();
+    let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&md), 0o600, "adding");
+    std::fs::set_permissions(&md, std::fs::Permissions::from_mode(0o640)).unwrap();
+    remove_instructions(&env, AgentId::ClaudeCode, &[]).unwrap();
+    assert_eq!(mode(&md), 0o640, "removing");
+}
+
+#[test]
+fn codex_removal_takes_the_line_from_both_files() {
+    let mut r = rig();
+    let dir = r.home.join("codex home");
+    r.codex_home = Some(dir.clone());
+    let env = r.env();
+    // The line went into AGENTS.md; the person later wrote an override.
+    put(
+        &dir.join("AGENTS.md"),
+        &format!("# Base\n{INSTRUCTIONS_LINE}\n"),
+    );
+    put(
+        &dir.join("AGENTS.override.md"),
+        &format!("# Solo aquí\n{INSTRUCTIONS_LINE}\n"),
+    );
+    assert!(
+        remove_instructions(&env, AgentId::Codex, &[])
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("AGENTS.md")).unwrap(),
+        "# Base\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("AGENTS.override.md")).unwrap(),
+        "# Solo aquí\n"
+    );
+    // Only in AGENTS.md, behind a non-empty override that lacks it.
+    put(&dir.join("AGENTS.md"), &format!("{INSTRUCTIONS_LINE}\n"));
+    assert_eq!(
+        remove_instructions(&env, AgentId::Codex, &[]).unwrap(),
+        Some(dir.join("AGENTS.md"))
+    );
+    assert_eq!(std::fs::read_to_string(dir.join("AGENTS.md")).unwrap(), "");
+}

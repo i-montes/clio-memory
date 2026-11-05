@@ -13,17 +13,14 @@ use serde_json::{Map, Value};
 
 use super::agents::{AgentId, Env};
 use super::config_file::{opencode_config, read_json, write_json};
-use super::{INSTRUCTIONS_LINE, write_private};
+use super::{INSTRUCTIONS_LINE, write_keeping_mode, write_private};
 
 /// The file `agent`'s line goes in.
 pub fn instructions_file(env: &Env, agent: AgentId) -> PathBuf {
     match agent {
         AgentId::ClaudeCode => env.home.join(".claude/CLAUDE.md"),
         AgentId::Codex => {
-            let dir = env
-                .codex_home
-                .clone()
-                .unwrap_or_else(|| env.home.join(".codex"));
+            let dir = codex_dir(env);
             // Codex reads the override instead of `AGENTS.md` when it has something in it.
             let over = dir.join("AGENTS.override.md");
             if std::fs::metadata(&over).is_ok_and(|m| m.len() > 0) {
@@ -35,6 +32,13 @@ pub fn instructions_file(env: &Env, agent: AgentId) -> PathBuf {
         AgentId::Gemini | AgentId::Antigravity => env.home.join(".gemini/GEMINI.md"),
         AgentId::OpenCode => opencode_md(env),
     }
+}
+
+/// `CODEX_HOME`, else `~/.codex`.
+fn codex_dir(env: &Env) -> PathBuf {
+    env.codex_home
+        .clone()
+        .unwrap_or_else(|| env.home.join(".codex"))
 }
 
 fn opencode_md(env: &Env) -> PathBuf {
@@ -120,12 +124,23 @@ pub fn remove_instructions(
     if agent == AgentId::OpenCode {
         return remove_opencode(env, file);
     }
-    let text = read_text(&file)?;
-    let Some(rest) = without_line(&text) else {
-        return Ok(None);
+    // Codex reads one of two files, and which one changes when the person writes an override:
+    // the line goes from whichever holds it.
+    let files = match agent {
+        AgentId::Codex => ["AGENTS.override.md", "AGENTS.md"]
+            .map(|name| codex_dir(env).join(name))
+            .to_vec(),
+        _ => vec![file],
     };
-    write_through(&file, &rest)?;
-    Ok(Some(file))
+    let mut removed = None;
+    for file in files {
+        let text = read_text(&file)?;
+        if let Some(rest) = without_line(&text) {
+            write_through(&file, &rest)?;
+            removed.get_or_insert(file);
+        }
+    }
+    Ok(removed)
 }
 
 /// OpenCode: our entry out of `instructions` (and the key with it when that leaves it empty),
@@ -221,8 +236,8 @@ fn without_line(text: &str) -> Option<String> {
     (kept.len() != text.len()).then_some(kept)
 }
 
-/// `write_private`, but through a symlink (a dotfiles repository) rather than replacing it.
+/// `write_keeping_mode`, through a symlink (a dotfiles repository) rather than replacing it.
 fn write_through(path: &Path, text: &str) -> Result<(), String> {
     let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    write_private(&path, text)
+    write_keeping_mode(&path, text)
 }

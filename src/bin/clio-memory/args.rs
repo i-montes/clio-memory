@@ -58,8 +58,10 @@ agents:
 inspect (open the file read-only; never write):
   scopes                      list scopes
   stats                       sizes, counts by state, queue
-  doctor                      health checks, then one line per agent found (ok, FAIL or --
-                              for not connected); exit 1 if one fails
+  doctor                      health checks (before the first memory, a line that there is
+                              none yet), then one line per agent found (ok, FAIL, or -- for
+                              not connected or unreadable without our skill); exit 1 if one
+                              fails
   list SCOPE [--state S]      memories (S: active|quarantine|archived|replaced)
   get ID                      one memory (ID is 12 or m12)
   history ID                  every operation that touched a memory

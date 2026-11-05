@@ -1500,3 +1500,57 @@ fn doctor_warns_of_an_older_clio_memory_that_runs_first_without_failing() {
     assert!(line.starts_with("--   "), "{text}");
     assert!(line.contains("cargo uninstall clio-memory"), "{text}");
 }
+
+// Right after an install nothing has used the memory yet: doctor says so, still checks the
+// agents, and only an agent's FAIL makes it fail.
+#[test]
+fn doctor_before_the_first_memory_is_not_a_failure() {
+    use std::os::unix::fs::PermissionsExt;
+    let m = machine();
+    std::fs::remove_file(m.data.join("memory.db")).unwrap();
+    m.opencode_connected();
+    let o = m.run(&["doctor"]);
+    let text = out(&o);
+    assert_eq!(code(&o), 0, "{text}{}", err(&o));
+    assert!(
+        text.contains("todavía no hay memoria: se crea la primera vez que un agente la usa"),
+        "{text}"
+    );
+    assert!(text.contains("ok   agente opencode: conectado\n"), "{text}");
+    assert!(
+        !m.data.join("memory.db").exists(),
+        "doctor created the memory"
+    );
+    let o = m.run(&["--json", "doctor"]);
+    let v: serde_json::Value = serde_json::from_str(&out(&o)).unwrap();
+    assert_eq!(v["ok"], true, "{v}");
+    assert_eq!(v["agents"][0]["agent"], "opencode");
+    // An agent that fails still fails it.
+    let gemini = m.bin.join("gemini");
+    std::fs::write(&gemini, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&gemini, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let settings = m.home.join(".gemini/settings.json");
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    std::fs::write(&settings, "{ esto no es JSON").unwrap();
+    let o = m.run(&["doctor"]);
+    let text = out(&o);
+    assert_eq!(
+        code(&o),
+        0,
+        "unreadable and not connected is not a failure: {text}"
+    );
+    assert!(
+        text.lines()
+            .any(|l| l.starts_with("--   agente gemini: ") && l.contains("settings.json")),
+        "{text}"
+    );
+    std::fs::write(
+        m.home.join(".config/opencode/opencode.json"),
+        serde_json::json!({"mcp": {"clio-memory": {"type": "local", "command": ["/viejo/clio-memory", "mcp"]}}})
+            .to_string(),
+    )
+    .unwrap();
+    let o = m.run(&["doctor"]);
+    assert_eq!(code(&o), 1, "{}", out(&o));
+    assert!(out(&o).contains("FAIL agente opencode"), "{}", out(&o));
+}

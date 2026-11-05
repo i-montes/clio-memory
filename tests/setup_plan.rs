@@ -13,7 +13,9 @@ use clio_memory::setup::INSTRUCTIONS_LINE;
 use clio_memory::setup::agents::{AgentId, Env};
 use clio_memory::setup::instructions::has_instructions;
 use clio_memory::setup::mcp::{McpState, mcp_state};
-use clio_memory::setup::plan::{Selection, Step, agent_report, apply, connected, uninstall};
+use clio_memory::setup::plan::{
+    Health, Selection, Step, agent_report, apply, connected, uninstall,
+};
 use common::fakes::{calls, fake_claude_mcp, fake_codex, fake_gemini};
 use serde_json::{Value, json};
 
@@ -465,21 +467,24 @@ fn the_report_says_each_agents_state() {
     let foreign = r.skill(".gemini/config/skills");
     std::fs::create_dir_all(foreign.parent().unwrap()).unwrap();
     std::fs::write(&foreign, "otra\n").unwrap();
-    let report: BTreeMap<AgentId, (bool, String)> = agent_report(&r.env())
+    let report: BTreeMap<AgentId, (Health, String)> = agent_report(&r.env())
         .into_iter()
-        .map(|(a, ok, text)| (a, (ok, text)))
+        .map(|(a, health, text)| (a, (health, text)))
         .collect();
     assert_eq!(report.len(), 5, "{report:?}");
-    assert_eq!(report[&ClaudeCode], (true, "conectado".to_owned()));
-    assert_eq!(report[&Codex], (true, "conectado".to_owned()));
-    assert_eq!(report[&Gemini], (true, "no conectado".to_owned()));
+    assert_eq!(report[&ClaudeCode], (Health::Ok, "conectado".to_owned()));
+    assert_eq!(report[&Codex], (Health::Ok, "conectado".to_owned()));
+    assert_eq!(report[&Gemini], (Health::Off, "no conectado".to_owned()));
     assert_eq!(
         report[&OpenCode],
-        (false, format!("el MCP apunta a {}", old.display()))
+        (Health::Fail, format!("el MCP apunta a {}", old.display()))
     );
     assert_eq!(
         report[&Antigravity],
-        (false, format!("skill ajena en {}", foreign.display()))
+        (
+            Health::Fail,
+            format!("skill ajena en {}", foreign.display())
+        )
     );
     // Only the agents found on this machine.
     std::fs::remove_file(r.bin.join("gemini")).unwrap();
@@ -657,4 +662,29 @@ fn uninstall_deletes_the_binary_from_clio_memory_bin_dir() {
     r.bin_dir = Some(dir);
     all_ok(&uninstall(&r.env(), None));
     assert!(!r.exe.exists());
+}
+
+// An agent whose state cannot be read: not a failure while nothing of ours is there (it is most
+// likely not connected); a failure once it sees our skill (it was connected, and now it cannot
+// be checked).
+#[test]
+fn an_unreadable_agent_fails_only_when_it_had_the_memory() {
+    let r = rig();
+    let settings = r.home.join(".gemini/settings.json");
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    std::fs::write(&settings, "{ esto no es JSON").unwrap();
+    let gemini = |r: &Rig| {
+        agent_report(&r.env())
+            .into_iter()
+            .find(|(a, _, _)| *a == Gemini)
+            .unwrap()
+    };
+    let (_, health, text) = gemini(&r);
+    assert_eq!(health, Health::Off, "{text}");
+    assert!(text.contains("settings.json"), "{text}");
+    let skill = r.skill(".agents/skills");
+    std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
+    std::fs::write(&skill, clio_memory::setup::SKILL).unwrap();
+    let (_, health, text) = gemini(&r);
+    assert_eq!(health, Health::Fail, "{text}");
 }

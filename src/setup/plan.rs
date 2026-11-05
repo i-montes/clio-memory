@@ -401,33 +401,48 @@ fn placed_by_installer(env: &Env) -> bool {
         .any(|d| canon(&d) == dir)
 }
 
-/// Each agent found on this machine: whether it is well (`false` only for what needs fixing)
-/// and what is the matter: `conectado`, `no conectado` (`NOT_CONNECTED`), or what is wrong.
-pub fn agent_report(env: &Env) -> Vec<(AgentId, bool, String)> {
+/// How an agent found on this machine is, for `doctor`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Health {
+    /// Connected, with the current skill.
+    Ok,
+    /// Not connected (or, as far as can be told, not): nothing to fix.
+    Off,
+    /// Something to fix.
+    Fail,
+}
+
+/// Each agent found on this machine: how it is and what is the matter: `conectado`,
+/// `no conectado` (`NOT_CONNECTED`), or what is wrong. An agent whose state cannot be read is
+/// `Off` while it does not see our skill (most likely it was never connected), else `Fail`.
+pub fn agent_report(env: &Env) -> Vec<(AgentId, Health, String)> {
     detect(env)
         .into_iter()
         .map(|f| {
             let agent = f.agent;
-            let (ok, text) = match mcp_state(env, agent) {
-                Err(e) => (false, e),
-                Ok(McpState::Absent) => (true, NOT_CONNECTED.to_owned()),
+            let (health, text) = match mcp_state(env, agent) {
+                Err(e) if sees_our_skill(&env.home, agent) => (Health::Fail, e),
+                Err(e) => (Health::Off, format!("no se pudo leer su estado: {e}")),
+                Ok(McpState::Absent) => (Health::Off, NOT_CONNECTED.to_owned()),
                 Ok(McpState::Foreign(what)) => (
-                    false,
+                    Health::Fail,
                     format!("otro servidor MCP se llama clio-memory: {what}"),
                 ),
                 Ok(McpState::OtherPath(p)) if p == env.exe => {
-                    (false, "el MCP está desactivado".to_owned())
+                    (Health::Fail, "el MCP está desactivado".to_owned())
                 }
-                Ok(McpState::OtherPath(p)) => (false, format!("el MCP apunta a {}", p.display())),
+                Ok(McpState::OtherPath(p)) => {
+                    (Health::Fail, format!("el MCP apunta a {}", p.display()))
+                }
                 Ok(McpState::Ours) => skill_report(&env.home, agent),
             };
-            (agent, ok, text)
+            (agent, health, text)
         })
         .collect()
 }
 
 /// A connected agent's skill: ours and current in a folder it reads, and nothing foreign there.
-fn skill_report(home: &Path, agent: AgentId) -> (bool, String) {
+fn skill_report(home: &Path, agent: AgentId) -> (Health, String) {
     let states: Vec<(PathBuf, SkillFile)> = read_by(agent)
         .map(|d| d.path(home))
         .map(|p| {
@@ -437,12 +452,15 @@ fn skill_report(home: &Path, agent: AgentId) -> (bool, String) {
         .collect();
     let first = |want: SkillFile| states.iter().find(|(_, s)| *s == want).map(|(p, _)| p);
     if let Some(p) = first(SkillFile::Foreign) {
-        (false, format!("skill ajena en {}", p.display()))
+        (Health::Fail, format!("skill ajena en {}", p.display()))
     } else if first(SkillFile::Current).is_some() {
-        (true, "conectado".to_owned())
+        (Health::Ok, "conectado".to_owned())
     } else if let Some(p) = first(SkillFile::Old) {
-        (false, format!("skill desactualizada en {}", p.display()))
+        (
+            Health::Fail,
+            format!("skill desactualizada en {}", p.display()),
+        )
     } else {
-        (false, "falta la skill".to_owned())
+        (Health::Fail, "falta la skill".to_owned())
     }
 }

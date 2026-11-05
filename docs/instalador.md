@@ -141,17 +141,19 @@ FAIL agente opencode: el MCP apunta a /home/tú/.cargo/bin/clio-memory
 ```
 
 - `ok`: el servidor MCP es de este binario y la skill de esta versión está en una carpeta que ese agente lee.
-- `--`: el agente está, pero la memoria no está conectada. No cuenta como fallo.
+- `--`: el agente está, pero la memoria no está conectada. No cuenta como fallo. También sale `--`, con el motivo (`no se pudo leer su estado: …`), cuando el estado del agente no se puede leer y el agente no ve nuestra skill: lo más probable es que nunca se haya conectado.
 - `FAIL`, con el motivo:
   - `el MCP apunta a <ruta>` (otra instalación);
   - `el MCP está desactivado`;
   - `otro servidor MCP se llama clio-memory: …`;
   - `skill ajena en <ruta>`, `skill desactualizada en <ruta>` o `falta la skill`;
-  - el error al leer el estado (por ejemplo, el programa del agente falla).
+  - el error al leer el estado, si el agente ve nuestra skill (estaba conectado y ya no se puede comprobar).
 
 Antes de las líneas de los agentes, si otro `clio-memory` va antes que este en el `PATH` (por ejemplo, uno viejo de `cargo install` en `~/.cargo/bin`), `doctor` lo dice en una línea `--`: `al escribir `clio-memory` corre <ruta>, no este (<ruta>): si es de `cargo install`, quítalo con `cargo uninstall clio-memory``. No cuenta como fallo. `setup` lo dice también al terminar.
 
-Si algo está en `FAIL`, `doctor` termina con código 1. `--json` agrega `"agents"`, con `agent`, `ok` y `detail` de cada uno. No revisa la línea de instrucciones, que es opcional.
+Recién instalado, antes de que un agente guarde algo, `memory.db` todavía no existe. Entonces `doctor` no corre las comprobaciones del archivo: dice `--   todavía no hay memoria: se crea la primera vez que un agente la usa`, sigue con las líneas de los agentes y no lo cuenta como fallo.
+
+Si algo está en `FAIL`, `doctor` termina con código 1. `--json` agrega `"agents"`, con `agent`, `ok` y `detail` de cada uno, y `"notes"` con las líneas `--` que no son de un agente (sin memoria todavía, otro `clio-memory` antes en el `PATH`); sin memoria, `"checks"` es `null`. No revisa la línea de instrucciones, que es opcional.
 
 ## `clio-memory uninstall`
 

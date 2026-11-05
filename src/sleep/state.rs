@@ -18,6 +18,9 @@ pub struct SleepState {
     pub cursor: i64,
     pub rules_version: u32,
     pub last_complete: i64,
+    /// Memories a cap or a missing piece left for the next night.
+    #[serde(default)]
+    pub pending: Vec<i64>,
 }
 
 pub(crate) fn dir(data: &Path) -> PathBuf {

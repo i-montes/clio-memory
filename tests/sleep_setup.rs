@@ -232,3 +232,51 @@ fn doctor_says_when_it_last_slept() {
     let o = cli(t.path(), &["sleep", "--report"]);
     assert!(String::from_utf8_lossy(&o.stdout).contains("sueño: secreto"));
 }
+
+#[test]
+fn the_sleep_runs_at_the_same_priority_for_the_lock() {
+    let (service, _) = sleep_units(Path::new(EXE), &["sleep"]);
+    // An idle I/O class would hold the writer longer whenever anything else runs.
+    assert!(!service.contains("IOSchedulingClass"), "{service}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn setup_claude_code_leaves_another_sleep_in_place() {
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path().join("home");
+    let fake = t.path().join("fake");
+    std::fs::create_dir_all(&fake).unwrap();
+    fake_systemctl(&fake);
+    let claude = fake.join("claude");
+    std::fs::write(
+        &claude,
+        "#!/bin/sh\ncase \"$1 $2\" in \"mcp get\") exit 1;; esac\n",
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let rec = Recorder::default();
+    install_sleep(
+        &home,
+        Path::new("/opt/bin/clio"),
+        &["memory", "sleep"],
+        &|a| rec.run(a),
+    )
+    .unwrap();
+    let timer = home.join(".config/systemd/user/clio-memory-sleep.service");
+    let before = std::fs::read_to_string(&timer).unwrap();
+    let said = clio_memory::setup::ClaudeCode {
+        home: home.clone(),
+        claude,
+        exe: PathBuf::from(EXE),
+        replace: false,
+        claude_md: Some(false),
+        ask: &|_| false,
+        service: &|a| rec.run(a),
+    }
+    .run()
+    .unwrap();
+    assert_eq!(std::fs::read_to_string(&timer).unwrap(), before);
+    assert!(said.iter().any(|l| l.contains("otro")), "{said:?}");
+}

@@ -86,6 +86,24 @@ fn replace(old: &MemoryRow, new: &MemoryRow) -> Result<Vec<Change>> {
     }])
 }
 
+/// Vectors computed by `Engine::compute_vectors`, waiting for `Engine::store_vectors`. Only the
+/// engine makes them: they are checked and normalized already.
+#[derive(Debug)]
+pub struct Vectors {
+    model: String,
+    dim: usize,
+    good: Vec<(MemoryId, Vec<f32>)>,
+    skipped: Vec<MemoryId>,
+    examined: usize,
+}
+
+impl Vectors {
+    /// How many pending memories were looked at; 0 means nothing was waiting.
+    pub fn examined(&self) -> usize {
+        self.examined
+    }
+}
+
 /// The name of the judge's actor: nobody else can be called that.
 const JUDGE: &str = "jev";
 
@@ -447,11 +465,25 @@ impl Engine {
         if self.mode == OpenMode::ReadOnly {
             return Err(Error::ReadOnly); // before spending CPU on vectors that cannot be stored
         }
+        let computed = self.compute_vectors(limit)?;
+        let examined = computed.examined;
+        Ok((self.store_vectors(computed)?, examined))
+    }
+
+    /// The vectors `embed_pending` would store, computed by an engine that may be read-only: the
+    /// model runs while nobody holds the file's writer lock (the sleep). `store_vectors` on a
+    /// read-write engine with the same model keeps them.
+    pub fn compute_vectors(&self, limit: usize) -> Result<Vectors> {
         let embedder = self.embedder.as_ref().ok_or(Error::NoEmbedder)?;
         let (model, dim) = (embedder.model_id(), embedder.dim());
         let pending = self.store.pending_embeddings(model, limit)?;
-        let examined = pending.len();
-        let mut stored = 0;
+        let mut out = Vectors {
+            model: model.to_owned(),
+            dim,
+            good: Vec::new(),
+            skipped: Vec::new(),
+            examined: pending.len(),
+        };
         for batch in pending.chunks(EMBED_BATCH) {
             let texts: Vec<&str> = batch.iter().map(|(_, t)| t.as_str()).collect();
             // `None`: this text makes the model fail by itself, so it is skipped like one that
@@ -478,21 +510,32 @@ impl Engine {
             if good.is_empty() && !skipped.is_empty() && !self.embedder_works(embedder.as_ref())? {
                 return Err(Error::BadVector);
             }
-            let _g = self.write_guard();
-            self.store.put_vectors(model, dim, &good)?;
-            self.store.mark_unembeddable(model, &skipped)?;
-            stored += good.len();
+            out.good.extend(good);
+            out.skipped.extend(skipped);
         }
-        if examined > 0 {
+        Ok(out)
+    }
+
+    /// Keeps what `compute_vectors` computed; how many vectors were stored. The model must be
+    /// this engine's.
+    pub fn store_vectors(&self, v: Vectors) -> Result<usize> {
+        let embedder = self.embedder.as_ref().ok_or(Error::NoEmbedder)?;
+        if embedder.model_id() != v.model || embedder.dim() != v.dim {
+            return Err(Error::BadVector);
+        }
+        let _g = self.write_guard();
+        self.store.put_vectors(&v.model, v.dim, &v.good)?;
+        self.store.mark_unembeddable(&v.model, &v.skipped)?;
+        if v.examined > 0 {
             event!(
                 INFO,
                 "embedded",
-                model = model,
-                stored = stored,
-                examined = examined
+                model = v.model.as_str(),
+                stored = v.good.len(),
+                examined = v.examined
             );
         }
-        Ok((stored, examined))
+        Ok(v.good.len())
     }
 
     /// The `Embed` job to enqueue with an operation: any operation that leaves a memory that is
@@ -1804,32 +1847,58 @@ impl Engine {
     /// it is not the person's unless the person discarded it. Signed by the system; like `purge`,
     /// it cannot be undone.
     pub fn sleep_purge(&self, id: MemoryId, reason: &str) -> Result<PurgeOutcome> {
+        let (ops, wal_truncated) = self.sleep_purge_inner(&[id], reason)?;
+        Ok(PurgeOutcome {
+            op: ops[0],
+            wal_truncated,
+        })
+    }
+
+    /// `sleep_purge` for several memories with one rewrite of the file, so the writer is held
+    /// once a night and not once per memory. Every one is checked before anything is erased.
+    pub fn sleep_purge_many(&self, ids: &[MemoryId], reason: &str) -> Result<Vec<OpId>> {
+        self.sleep_purge_inner(ids, reason).map(|(ops, _)| ops)
+    }
+
+    fn sleep_purge_inner(&self, ids: &[MemoryId], reason: &str) -> Result<(Vec<OpId>, bool)> {
         let _g = self.write_guard();
         if !reason.starts_with(SLEEP_REASON) {
             return Err(Error::NotAllowed);
         }
         self.check_name(reason)?;
-        let row = self.sleep_purgeable(id)?;
         let system = self.store.system_actor()?;
-        let (op, wal_truncated) = self.store.purge(NewOperation {
-            scope: row.scope,
-            kind: OpKind::Purge,
-            memory: Some(id),
-            changes: Vec::new(),
-            actor: system,
-            reason: reason.into(),
-            at: self.clock.now(),
-            reverts: None,
-            trace_id: self.trace_id(),
-        })?;
-        event!(INFO, "purged", op = op.0);
-        Ok(PurgeOutcome { op, wal_truncated })
+        let now = self.clock.now();
+        let mut ops = Vec::with_capacity(ids.len());
+        for &id in ids {
+            let row = self.sleep_purgeable(id)?;
+            ops.push(NewOperation {
+                scope: row.scope,
+                kind: OpKind::Purge,
+                memory: Some(id),
+                changes: Vec::new(),
+                actor: system,
+                reason: reason.into(),
+                at: now,
+                reverts: None,
+                trace_id: self.trace_id(),
+            });
+        }
+        if ops.is_empty() {
+            return Ok((Vec::new(), true));
+        }
+        let done = self.store.purge_many(ops)?;
+        event!(INFO, "purged", count = done.0.len());
+        Ok(done)
     }
 
     /// Whether `sleep_purge` would purge it now (`NotAllowed` or `InvalidState` if not); reads
     /// only, so a dry run can tell.
     pub fn sleep_purgeable(&self, id: MemoryId) -> Result<MemoryRow> {
         let row = self.store.get(id)?;
+        // A pin outlives a forget: what the person fixed is theirs, whatever happened after.
+        if self.store.is_pinned(id)? {
+            return Err(Error::NotAllowed);
+        }
         if row.state != State::Quarantine {
             return Err(Error::InvalidState);
         }

@@ -7,7 +7,7 @@
 pub mod signals;
 mod state;
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -99,6 +99,8 @@ const MAX_PURGES: usize = 50;
 /// Quarantines a night: at least this many, or a tenth of the active memories.
 const MIN_QUARANTINES: usize = 10;
 const EMBED_BATCH: usize = 32;
+/// Memories left for the next night, at most.
+const MAX_PENDING: usize = 1000;
 
 /// `YYYY-MM-DD` of the evening a night belongs to (UTC, twelve hours back): a sleep at 00:30 is
 /// still the night that began at 23:00.
@@ -187,6 +189,9 @@ pub fn run(
     }
     let mut night_run = Night {
         db: db.clone(),
+        data,
+        night: &night,
+        clock: opts.clock.clone(),
         read,
         open: &open,
         embedder: embedder.clone(),
@@ -195,9 +200,11 @@ pub fn run(
         seen: OpId(state.cursor),
         activity,
         report: &mut report,
+        deferred: BTreeSet::new(),
     };
-    let done = night_run.sleep(data, &night, &state, merger);
+    let done = night_run.sleep(&state, merger);
     let cursor = night_run.seen;
+    let deferred = std::mem::take(&mut night_run.deferred);
     report.tokens += merger.map_or(0, |m| m.tokens());
     match done {
         Ok(()) => {
@@ -208,7 +215,13 @@ pub fn run(
                     &SleepState {
                         cursor: cursor.0,
                         rules_version: RULES_VERSION,
-                        last_complete: opts.clock.now(),
+                        // A run by hand does not take the night's place.
+                        last_complete: if opts.now {
+                            state.last_complete
+                        } else {
+                            opts.clock.now()
+                        },
+                        pending: deferred.iter().take(MAX_PENDING).map(|i| i.0).collect(),
                     },
                 )?;
             }
@@ -255,6 +268,9 @@ fn quick_check(db: &Path) -> Result<(), String> {
 
 struct Night<'a> {
     db: PathBuf,
+    data: &'a Path,
+    night: &'a str,
+    clock: Arc<dyn Clock>,
     /// Reads go here; it never holds the writer.
     read: Engine,
     open: &'a dyn Fn(OpenMode) -> Result<Engine, Error>,
@@ -266,16 +282,12 @@ struct Night<'a> {
     /// The last use or foreign write when the night began.
     activity: i64,
     report: &'a mut Report,
+    /// What a cap or a missing piece left for the next night: it is taken up again then.
+    deferred: BTreeSet<MemoryId>,
 }
 
 impl Night<'_> {
-    fn sleep(
-        &mut self,
-        data: &Path,
-        night: &str,
-        state: &SleepState,
-        merger: Option<&dyn Merger>,
-    ) -> Result<(), Stop> {
+    fn sleep(&mut self, state: &SleepState, merger: Option<&dyn Merger>) -> Result<(), Stop> {
         let changed = self.read.operations_after(OpId(state.cursor), usize::MAX)?;
         if let Some(last) = changed.last() {
             self.seen = last.id;
@@ -284,7 +296,7 @@ impl Night<'_> {
             self.system = self.writer()?.system_actor()?;
         }
         let copied = self.dry_run
-            || match state::copy(&self.db, data, night) {
+            || match state::copy(&self.db, self.data, self.night) {
                 Ok(()) => true,
                 Err(e) => {
                     self.report.alarm(format!(
@@ -295,20 +307,19 @@ impl Night<'_> {
             };
         self.vectors()?;
 
-        let mut fresh: Vec<MemoryId> = changed
+        let mut fresh: BTreeSet<MemoryId> = changed
             .iter()
             .flat_map(|op| op.changes.iter().map(|c| c.memory))
-            .collect::<HashSet<_>>()
-            .into_iter()
             .collect();
-        fresh.sort();
+        fresh.extend(state.pending.iter().map(|&id| MemoryId(id)));
         let mut active = Vec::new();
         for scope in self.read.scopes()? {
             active.extend(self.read.list(scope.id, Some(State::Active), None)?);
         }
-        let fresh: Vec<MemoryRow> = fresh
-            .into_iter()
-            .filter_map(|id| active.iter().find(|r| r.id == id).cloned())
+        let fresh: Vec<MemoryRow> = active
+            .iter()
+            .filter(|r| fresh.contains(&r.id))
+            .cloned()
             .collect();
         // New rules look at everything once; otherwise only at what changed.
         let checked = if state.rules_version == RULES_VERSION {
@@ -326,8 +337,13 @@ impl Night<'_> {
         let left = limit.saturating_sub(self.report.quarantined.len() - before);
         if self.embedder.is_some() {
             self.repeats(&fresh, left, &mut gone)?;
-            if let (Some(m), true, false) = (merger, copied, self.dry_run) {
-                self.merge(m, &fresh, &mut gone)?;
+            match merger {
+                Some(m) if copied && !self.dry_run => self.merge(m, &fresh, &mut gone)?,
+                // A model that could not run tonight merges these another night.
+                Some(_) if !self.dry_run => self
+                    .deferred
+                    .extend(fresh.iter().map(|r| r.id).filter(|id| !gone.contains(id))),
+                _ => {}
             }
         }
         self.contradictions(&fresh, &gone)?;
@@ -338,6 +354,15 @@ impl Night<'_> {
             return Err(Stop::Disturbed);
         }
         Ok(())
+    }
+
+    /// The report as it stands, on disk: a night that dies still says what it did.
+    fn saved(&mut self) -> Result<(), Stop> {
+        if self.dry_run {
+            return Ok(());
+        }
+        self.report.ended = self.clock.now();
+        state::save_report(self.data, self.night, self.report).map_err(Stop::Failed)
     }
 
     /// Did anyone else write or use the memory since the night began?
@@ -367,19 +392,25 @@ impl Night<'_> {
         Err(Stop::Disturbed)
     }
 
+    /// Missing vectors: computed by the read engine, while nobody holds the writer, and stored
+    /// in a short section.
     fn vectors(&mut self) -> Result<(), Stop> {
         if self.dry_run || self.embedder.is_none() {
             return Ok(());
         }
         // shortcut: bounded so a model that never finishes cannot hold the night; the rest waits.
         for _ in 0..1000 {
-            match self.writer()?.embed_pending(EMBED_BATCH) {
-                Ok(0) => break,
-                Ok(_) => {}
+            let computed = match self.read.compute_vectors(EMBED_BATCH) {
+                Ok(c) if c.examined() == 0 => break,
+                Ok(c) => c,
                 Err(e) => {
                     self.report.alarm(format!("los vectores fallaron: {e}"));
                     break;
                 }
+            };
+            if let Err(e) = self.writer()?.store_vectors(computed) {
+                self.report.alarm(format!("los vectores fallaron: {e}"));
+                break;
             }
         }
         Ok(())
@@ -389,7 +420,7 @@ impl Night<'_> {
         Ok(self.read.kept_by_person(row)?)
     }
 
-    /// Secrets first, then likely attacks, up to `limit`.
+    /// Secrets first, then likely attacks, up to `limit`; what the cap leaves waits a night.
     fn quarantine(
         &mut self,
         rows: &[MemoryRow],
@@ -401,17 +432,26 @@ impl Night<'_> {
         for r in rows {
             let text = format!("{}\n{}", r.content, r.title.as_deref().unwrap_or(""));
             let kept = self.kept(r)?;
+            let external = r.origin == Origin::External;
             if has_secret(&text) {
                 if kept {
                     self.report.alarm(format!(
-                        "m{} es de la persona y parece tener un secreto: no se tocó",
+                        "m{} es de la persona o está fijado y parece tener un secreto: no se tocó",
                         r.id.0
                     ));
                 } else {
                     secrets.push((r.id, SLEEP_SECRET.to_owned()));
                 }
-            } else if !kept && looks_like_attack(&text, r.origin == Origin::External) {
-                let families: Vec<&str> = attack_families(&text, r.origin == Origin::External)
+            } else if looks_like_attack(&text, external) {
+                if kept {
+                    // An agent can pin too: a pinned attack is not touched, but it is told.
+                    self.report.alarm(format!(
+                        "m{} parece un ataque pero es de la persona o está fijado: no se tocó",
+                        r.id.0
+                    ));
+                    continue;
+                }
+                let families: Vec<&str> = attack_families(&text, external)
                     .into_iter()
                     .map(|f| f.label())
                     .collect();
@@ -425,9 +465,10 @@ impl Night<'_> {
         all.extend(attacks);
         if all.len() > limit {
             self.report.alarm(format!(
-                "demasiados para cuarentena ({}; tope {limit}): posible ataque o regla rota",
+                "demasiados para cuarentena ({}; tope {limit}): posible ataque o regla rota; el resto sigue mañana",
                 all.len()
             ));
+            self.deferred.extend(all[limit..].iter().map(|(id, _)| *id));
             all.truncate(limit);
         }
         for (id, why) in all {
@@ -442,12 +483,31 @@ impl Night<'_> {
         let done = self.dry_run || self.writer()?.sleep_quarantine(id, why).is_ok();
         if done {
             self.report.quarantined.push((id.0, why.to_owned()));
+            self.saved()?;
         }
         Ok(done)
     }
 
-    /// The same thing said twice in a place, with the same trust: one stays (the person's, else
-    /// the pinned, else the most used, else the newest) with the other's relations.
+    /// Has it an open contradiction (with an active memory)? It is for review, never folded.
+    fn contradicted(&self, id: MemoryId) -> Result<bool, Stop> {
+        for rel in self.read.relations(id)? {
+            let other = if rel.source == id {
+                rel.target
+            } else {
+                rel.source
+            };
+            if rel.relation == Relation::ConflictsWith
+                && self.read.get(other).is_ok_and(|o| o.state == State::Active)
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// The same thing said twice in a place, with the same trust, the same numbers and names:
+    /// one stays (the person's, else the pinned, else the most used, else the newest) with the
+    /// other's relations.
     fn repeats(
         &mut self,
         fresh: &[MemoryRow],
@@ -455,11 +515,20 @@ impl Night<'_> {
         gone: &mut HashSet<MemoryId>,
     ) -> Result<(), Stop> {
         for r in fresh {
-            if gone.contains(&r.id) || !self.read.has_vector(r.id)? {
+            if gone.contains(&r.id) || self.contradicted(r.id)? {
+                continue;
+            }
+            if !self.read.has_vector(r.id)? {
+                self.deferred.insert(r.id);
                 continue;
             }
             for (n, score) in self.read.neighbors(r.id, &[r.scope], NEIGHBORS)? {
-                if score < REPEAT || gone.contains(&n.id) || trust(&n) != trust(r) {
+                if score < REPEAT
+                    || gone.contains(&n.id)
+                    || trust(&n) != trust(r)
+                    || marks(&n.content) != marks(&r.content)
+                    || self.contradicted(n.id)?
+                {
                     continue;
                 }
                 let (keep, lose) = if self.rank(&n)? > self.rank(r)? {
@@ -472,15 +541,17 @@ impl Night<'_> {
                 }
                 if left == 0 {
                     self.report
-                        .alarm("demasiados para cuarentena: quedaron repetidos sin unir".into());
-                    return Ok(());
+                        .alarm("demasiados para cuarentena: quedaron repetidos para mañana".into());
+                    self.deferred.insert(r.id);
+                    break;
                 }
                 let why = format!("{SLEEP_REASON} repetido de m{}", keep.id.0);
-                if !self.dry_run {
-                    let _ = self.writer()?.copy_relations(lose.id, keep.id);
-                }
                 if self.quarantine_one(lose.id, &why)? {
+                    if !self.dry_run {
+                        let _ = self.writer()?.copy_relations(lose.id, keep.id);
+                    }
                     self.report.repeated.push((lose.id.0, keep.id.0));
+                    self.saved()?;
                     gone.insert(lose.id);
                     left -= 1;
                 }
@@ -499,7 +570,8 @@ impl Night<'_> {
     }
 
     /// Groups of new memories and their near-duplicates, merged by the model and checked before
-    /// anything is written.
+    /// anything is written. What could not be tried tonight (the cap, no answer, Jev could not
+    /// be asked) is tried another night.
     fn merge(
         &mut self,
         merger: &dyn Merger,
@@ -507,11 +579,13 @@ impl Night<'_> {
         gone: &mut HashSet<MemoryId>,
     ) -> Result<(), Stop> {
         let (mut tried, mut failed) = (0usize, 0usize);
+        let mut stopped = false;
         for seed in fresh {
-            if tried >= MAX_GROUPS {
-                break;
+            if gone.contains(&seed.id) || self.kept(seed)? || self.contradicted(seed.id)? {
+                continue;
             }
-            if gone.contains(&seed.id) || self.kept(seed)? || !self.read.has_vector(seed.id)? {
+            if stopped || tried >= MAX_GROUPS || !self.read.has_vector(seed.id)? {
+                self.deferred.insert(seed.id);
                 continue;
             }
             let mut group = vec![seed.clone()];
@@ -524,7 +598,7 @@ impl Night<'_> {
                     || n.kind != seed.kind
                     || trust(&n) != trust(seed)
                     || self.kept(&n)?
-                    || self.conflicts(&n, &group)?
+                    || self.contradicted(n.id)?
                 {
                     continue;
                 }
@@ -534,7 +608,6 @@ impl Night<'_> {
                 continue;
             }
             gone.extend(group.iter().map(|r| r.id));
-            tried += 1;
             if self.disturbed()? {
                 return Err(Stop::Disturbed);
             }
@@ -545,33 +618,48 @@ impl Night<'_> {
                 .collect::<Vec<_>>()
                 .join(" + ");
             let Some(answer) = merger.merge(&group) else {
-                self.report.review(format!(
-                    "{names}: el modelo no respondió; la unión quedó para otra noche"
-                ));
-                break;
+                // No model tonight (down, budget spent): these and the rest wait.
+                self.deferred.extend(ids.iter().copied());
+                stopped = true;
+                continue;
             };
-            let checked = validate_merge(&group, &answer, &|a, b| self.similarity(a, b))
-                .map_err(|r| format!("{r:?}"))
-                .and_then(|m| {
-                    match group
-                        .iter()
-                        .find(|o| merger.preserved(o, &m.text) != Some(true))
-                    {
-                        Some(o) => Err(format!("se pierde algo de m{}", o.id.0)),
-                        None => Ok(m),
+            tried += 1;
+            let checked = match validate_merge(&group, &answer, &|a, b| self.similarity(a, b)) {
+                Err(r) => Err(format!("{r:?}")),
+                Ok(m) => {
+                    let mut verdict = Ok(m);
+                    for o in &group {
+                        let Ok(m) = &verdict else { break };
+                        match merger.preserved(o, &m.text) {
+                            Some(true) => {}
+                            Some(false) => verdict = Err(format!("se pierde algo de m{}", o.id.0)),
+                            // Jev could not be asked: a doubt, not a failure of the model.
+                            None => {
+                                verdict = Err(String::new());
+                            }
+                        }
                     }
-                });
+                    verdict
+                }
+            };
             match checked {
                 Ok(m) => match self
                     .writer()?
                     .sleep_merge(&ids, &m.text, m.title.as_deref())
                 {
-                    Ok((new, _)) => self
-                        .report
-                        .merged
-                        .push((new.0, ids.iter().map(|i| i.0).collect())),
+                    Ok((new, _)) => {
+                        self.report
+                            .merged
+                            .push((new.0, ids.iter().map(|i| i.0).collect()));
+                        self.saved()?;
+                    }
                     Err(e) => self.report.review(format!("{names}: no se unieron ({e})")),
                 },
+                Err(why) if why.is_empty() => {
+                    tried -= 1;
+                    self.deferred.extend(ids.iter().copied());
+                    stopped = true;
+                }
                 Err(why) => {
                     failed += 1;
                     self.report
@@ -586,13 +674,6 @@ impl Night<'_> {
             }
         }
         Ok(())
-    }
-
-    fn conflicts(&self, n: &MemoryRow, group: &[MemoryRow]) -> Result<bool, Stop> {
-        Ok(self.read.relations(n.id)?.iter().any(|r| {
-            r.relation == Relation::ConflictsWith
-                && group.iter().any(|g| g.id == r.source || g.id == r.target)
-        }))
     }
 
     fn similarity(&self, a: &str, b: &str) -> Option<f32> {
@@ -638,29 +719,43 @@ impl Night<'_> {
         Ok(())
     }
 
+    /// What the engine lets the sleep purge, in one go: the file is rewritten once.
     fn purge(&mut self) -> Result<(), Stop> {
-        let mut waiting = Vec::new();
+        let mut ids = Vec::new();
+        let room = MAX_PURGES.saturating_sub(self.report.purged.len());
         for scope in self.read.scopes()? {
-            waiting.extend(self.read.list(scope.id, Some(State::Quarantine), None)?);
-        }
-        for r in waiting {
-            if self.report.purged.len() >= MAX_PURGES {
-                break;
-            }
-            if self.read.sleep_purgeable(r.id).is_err() {
-                continue;
-            }
-            if self.dry_run
-                || self
-                    .writer()?
-                    .sleep_purge(r.id, &format!("{SLEEP_REASON} purga"))
-                    .is_ok()
-            {
-                self.report.purged.push(r.id.0);
+            for r in self.read.list(scope.id, Some(State::Quarantine), None)? {
+                if ids.len() < room && self.read.sleep_purgeable(r.id).is_ok() {
+                    ids.push(r.id);
+                }
             }
         }
-        Ok(())
+        if ids.is_empty() {
+            return Ok(());
+        }
+        if !self.dry_run
+            && let Err(e) = self
+                .writer()?
+                .sleep_purge_many(&ids, &format!("{SLEEP_REASON} purga"))
+        {
+            self.report.alarm(format!("la purga falló: {e}"));
+            return Ok(());
+        }
+        self.report.purged.extend(ids.iter().map(|i| i.0));
+        self.saved()
     }
+}
+
+/// The numbers and code-like words of a text (with a digit, or `_ / . : -` inside): two memories
+/// that differ in one of them are not the same thing said twice ("puerto 5432", "puerto 6432").
+fn marks(text: &str) -> BTreeSet<&str> {
+    text.split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
+        .filter(|w| {
+            w.chars()
+                .any(|c| c.is_ascii_digit() || matches!(c, '_' | '/' | '.' | ':' | '-'))
+        })
+        .collect()
 }
 
 /// Outside text and the agent's own are never mixed.
@@ -703,9 +798,12 @@ pub fn morning_line(r: &Report, now: i64) -> Option<String> {
     if !r.review.is_empty() {
         line.push_str(&format!(" · para revisar: {}", r.review.join("; ")));
     }
-    if !r.alarms.is_empty() {
-        line.push_str(&format!(" · alarmas: {}", r.alarms.join("; ")));
+    // An alarm can quote an error, and an error can quote a memory: only how many, here.
+    match r.alarms.len() {
+        0 => {}
+        1 => line.push_str(" · 1 alarma (ver el informe del sueño)"),
+        n => line.push_str(&format!(" · {n} alarmas (ver el informe del sueño)")),
     }
     let line = line.trim_start_matches(" · ").to_owned();
-    (!line.is_empty()).then(|| format!("Anoche (sueño): {line}"))
+    (!line.is_empty()).then(|| crate::agent::memory::clean_text(&format!("Anoche (sueño): {line}")))
 }

@@ -48,7 +48,7 @@ pub use decider::{Decider, NearDuplicateDecider};
 pub use embed::{Embedder, GRANITE_ID};
 pub use engine::{
     Engine, Judge, Judged, SLEEP_PURGE_DAYS, SLEEP_REASON, SLEEP_SECRET, SLEEP_SECRET_DAYS,
-    Sureness,
+    Sureness, Vectors,
 };
 pub use error::{Error, Result};
 #[cfg(feature = "granite")]

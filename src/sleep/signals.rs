@@ -5,7 +5,7 @@
 use std::collections::BTreeSet;
 use std::sync::LazyLock;
 
-use regex::{Regex, RegexSet};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
 
@@ -16,6 +16,18 @@ pub const RULES_VERSION: u32 = 1;
 
 /// Cosine similarity a merged text keeps with each of its originals, at least (Granite).
 pub const MERGE_SIMILARITY: f32 = 0.80;
+
+/// Words of four letters or more a merged text may bring that its originals did not have.
+const NEW_WORDS: usize = 2;
+
+/// The folded words of a text (lowercase, no accents), split at anything not a letter or digit.
+fn words(text: &str) -> BTreeSet<String> {
+    fold(text)
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
 
 /// A kind of signal. Hidden characters are enough on their own; any other needs company.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,15 +88,17 @@ const INJECTION: &[&str] = &[
     "</datos>",
 ];
 
-static EXFIL: LazyLock<RegexSet> = LazyLock::new(|| {
-    RegexSet::new([
+static EXFIL: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    [
         r"\b(curl|wget)\b[^|\n]*\|\s*(sudo\s+)?(ba|z)?sh\b",
         r"base64\s+(-d|--decode)\b[^|\n]*\|",
         r"[?&](token|key|secret|api_key|apikey|password|passwd)=",
         r"/dev/tcp/",
         r"\bnc\s+(-\w+\s+)*-e\b",
-    ])
-    .expect("static exfil patterns compile")
+    ]
+    .into_iter()
+    .map(|p| Regex::new(p).expect("static exfil patterns compile"))
+    .collect()
 });
 
 static URL: LazyLock<Regex> = LazyLock::new(|| {
@@ -132,7 +146,7 @@ pub fn attack_families(text: &str, external: bool) -> Vec<Family> {
     if !injections(&fold(text)).is_empty() {
         out.push(Family::Injection);
     }
-    if EXFIL.is_match(text) {
+    if EXFIL.iter().any(|r| r.is_match(text)) {
         out.push(Family::Exfil);
     }
     if external {
@@ -161,6 +175,10 @@ pub enum Rejected {
     NewPath,
     NewCommand,
     NewInjection,
+    /// Words or numbers the originals did not have.
+    NewWords,
+    /// A title with words the originals did not have.
+    Title,
     Secret,
     Drift(MemoryId),
 }
@@ -242,8 +260,12 @@ pub fn validate_merge(
     {
         return Err(Rejected::NewPath);
     }
-    let had = EXFIL.matches(&source);
-    if EXFIL.matches(&said).iter().any(|i| !had.matched(i)) {
+    // By what it says, not by its kind: one command in an original does not allow another.
+    if EXFIL
+        .iter()
+        .flat_map(|r| r.find_iter(&said))
+        .any(|m| !source.contains(m.as_str()))
+    {
         return Err(Rejected::NewCommand);
     }
     let had: BTreeSet<&str> = injections(&fold(&source));
@@ -251,6 +273,24 @@ pub fn validate_merge(
         || said.chars().any(|c| hidden(c) && !source.contains(c))
     {
         return Err(Rejected::NewInjection);
+    }
+    // What it adds: an instruction in plain words passes every check above. Every number and
+    // every word of four letters or more must come from the originals, but for a word or two of
+    // paraphrase; the title, wholly.
+    let known = words(&source_without_urls);
+    if let Some(t) = &title
+        && !words(t).is_subset(&known)
+    {
+        return Err(Rejected::Title);
+    }
+    let new: Vec<String> = words(&URL.replace_all(&text, " "))
+        .into_iter()
+        .filter(|w| {
+            !known.contains(w) && (w.chars().count() >= 4 || w.chars().any(|c| c.is_ascii_digit()))
+        })
+        .collect();
+    if new.iter().any(|w| w.chars().any(|c| c.is_ascii_digit())) || new.len() > NEW_WORDS {
+        return Err(Rejected::NewWords);
     }
     for r in originals {
         if similarity(&text, &r.content).is_some_and(|s| s < MERGE_SIMILARITY) {

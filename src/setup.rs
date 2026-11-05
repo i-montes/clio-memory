@@ -187,6 +187,9 @@ impl ClaudeCode<'_> {
         // a user service manager still gets the rest.
         said.push(if sleep_installed(&self.home, &self.exe, &["sleep"]) {
             "el sueño nocturno ya está instalado".into()
+        } else if sleep_present(&self.home) {
+            // Clio's (`clio memory sleep`) also merges with the person's model: not replaced.
+            "ya hay otro sueño nocturno instalado (de Clio u otro binario): no se cambió; `clio-memory setup sleep` lo reemplaza".into()
         } else {
             match install_sleep(&self.home, &self.exe, &["sleep"], self.service) {
                 Ok(at) => format!("sueño nocturno instalado: {}", at.display()),
@@ -242,7 +245,7 @@ pub fn sleep_units(exe: &Path, args: &[&str]) -> (String, String) {
     let mut line = vec![quote(&exe.to_string_lossy())];
     line.extend(args.iter().map(|a| quote(a)));
     let service = format!(
-        "[Unit]\nDescription=clio-memory: la fase de sueño de la memoria\n\n[Service]\nType=oneshot\nExecStart={}\nNice=10\nIOSchedulingClass=idle\n",
+        "[Unit]\nDescription=clio-memory: la fase de sueño de la memoria\n\n[Service]\nType=oneshot\nExecStart={}\nNice=10\n",
         line.join(" ")
     );
     let timer = "[Unit]\nDescription=clio-memory: despierta el sueño cada media hora de noche\n\n[Timer]\nOnCalendar=*-*-* 23,00,01,02,03,04,05:00,30:00\nAccuracySec=1min\n\n[Install]\nWantedBy=timers.target\n".to_owned();
@@ -286,6 +289,19 @@ pub fn sleep_installed(home: &Path, exe: &Path, args: &[&str]) -> bool {
     let (service, timer) = sleep_units(exe, args);
     same(dir.join(format!("{SLEEP_UNIT}.service")), &service)
         && same(dir.join(format!("{SLEEP_UNIT}.timer")), &timer)
+}
+
+/// Whether some sleep is installed, whatever it runs.
+fn sleep_present(home: &Path) -> bool {
+    if cfg!(target_os = "macos") {
+        return home
+            .join("Library/LaunchAgents")
+            .join(format!("{SLEEP_LABEL}.plist"))
+            .is_file();
+    }
+    home.join(".config/systemd/user")
+        .join(format!("{SLEEP_UNIT}.service"))
+        .is_file()
 }
 
 /// Runs a service manager command (`systemctl --user …`, `launchctl …`).

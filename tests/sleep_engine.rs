@@ -321,3 +321,38 @@ fn operations_after_and_last_activity() {
     // What the sleep itself did is not activity.
     assert_eq!(f.engine.last_activity(system).unwrap(), 3000);
 }
+
+#[test]
+fn sleep_purge_many_checks_all_then_purges_together() {
+    let f = fixture();
+    let a = agent_memory(&f, "un dato descartado");
+    let b = agent_memory(&f, "otro dato descartado");
+    let fresh = agent_memory(&f, "uno olvidado hace poco");
+    f.engine.forget(a, f.agent, "ya no vale").unwrap();
+    f.engine.forget(b, f.agent, "ya no vale").unwrap();
+    f.clock.set(1000 + 30 * DAY);
+    f.engine.forget(fresh, f.agent, "ya no vale").unwrap();
+    // One that may not be purged stops them all, before anything is erased.
+    assert!(matches!(
+        f.engine.sleep_purge_many(&[a, b, fresh], "sueño: purga"),
+        Err(Error::NotAllowed)
+    ));
+    assert!(f.engine.tombstone(a).unwrap().is_none());
+    let ops = f.engine.sleep_purge_many(&[a, b], "sueño: purga").unwrap();
+    assert_eq!(ops.len(), 2);
+    assert!(f.engine.tombstone(a).unwrap().is_some());
+    assert!(f.engine.tombstone(b).unwrap().is_some());
+}
+
+#[test]
+fn a_pinned_memory_is_never_purged_even_after_forget() {
+    let f = fixture();
+    let id = agent_memory(&f, "algo que la persona fijó");
+    f.engine.pin(id, f.person).unwrap();
+    f.engine.forget(id, f.agent, "ya no vale").unwrap();
+    f.clock.set(1000 + 90 * DAY);
+    assert!(matches!(
+        f.engine.sleep_purgeable(id),
+        Err(Error::NotAllowed)
+    ));
+}

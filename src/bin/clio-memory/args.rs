@@ -72,7 +72,8 @@ options:
   --actor NAME  act as this person instead of cli:$USER (write commands)
   --model DIR   local vector model for recall and context: Granite (ONNX) or model2vec
   --json        machine-readable output where supported
-  -h, --help    this text";
+  -h, --help    this text
+  -V, --version print the version and exit";
 
 #[derive(Debug)]
 pub struct UsageError(pub String);
@@ -205,6 +206,7 @@ pub struct Cli {
 #[derive(Debug)]
 pub enum Parsed {
     Help,
+    Version,
     Run(Cli),
 }
 
@@ -366,6 +368,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, UsageErro
             None => return usage("no command given"),
             Some(a) => match a.as_str() {
                 "-h" | "--help" => return Ok(Parsed::Help),
+                "-V" | "--version" => return Ok(Parsed::Version),
                 "--db" => db = Some(PathBuf::from(value(&mut args, "--db")?)),
                 "--actor" => actor = Some(value(&mut args, "--actor")?),
                 "--model" => model = Some(PathBuf::from(value(&mut args, "--model")?)),

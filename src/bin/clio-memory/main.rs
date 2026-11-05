@@ -16,6 +16,10 @@ fn main() -> ExitCode {
             output::line(args::USAGE);
             ExitCode::SUCCESS
         }
+        Ok(args::Parsed::Version) => {
+            output::line(&format!("clio-memory {}", env!("CARGO_PKG_VERSION")));
+            ExitCode::SUCCESS
+        }
         Ok(args::Parsed::Run(args::Cli {
             command: args::Command::SetupClaudeCode { replace, claude_md },
             ..

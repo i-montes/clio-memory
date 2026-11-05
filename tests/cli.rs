@@ -92,6 +92,26 @@ fn no_command_or_unknown_command_exits_2_with_usage() {
 }
 
 #[test]
+fn version_prints_the_crate_version() {
+    // Scripts (install.sh, the release workflow) compare this line; it must not open the file.
+    let dir = tempfile::tempdir().unwrap();
+    for flag in ["--version", "-V"] {
+        let o = Command::new(env!("CARGO_BIN_EXE_clio-memory"))
+            .env("CLIO_MEMORY_DATA", dir.path())
+            .arg(flag)
+            .output()
+            .unwrap();
+        assert_eq!(code(&o), 0, "{flag}: {}", err(&o));
+        assert_eq!(
+            out(&o),
+            format!("clio-memory {}\n", env!("CARGO_PKG_VERSION")),
+            "{flag}"
+        );
+    }
+    assert!(listing(dir.path()).is_empty());
+}
+
+#[test]
 fn scopes_stats_list_get_history_review_jobs_print_what_the_library_holds() {
     let f = populated();
     let o = run(Some(&f.path), &["scopes"]);

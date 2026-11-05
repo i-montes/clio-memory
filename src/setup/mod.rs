@@ -326,7 +326,7 @@ pub fn sleep_installed(home: &Path, exe: &Path, args: &[&str]) -> bool {
 }
 
 /// Whether some sleep is installed, whatever it runs.
-pub(crate) fn sleep_present(home: &Path) -> bool {
+pub fn sleep_present(home: &Path) -> bool {
     if cfg!(target_os = "macos") {
         return home
             .join("Library/LaunchAgents")

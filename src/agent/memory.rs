@@ -311,6 +311,11 @@ impl EmbedModel {
         !self.dirs.is_empty()
     }
 
+    /// Whether `get` was called already (it loaded, or failed to).
+    pub fn is_loaded(&self) -> bool {
+        self.cell.get().is_some()
+    }
+
     /// The model, loaded the first time: the first folder that loads; `None` with no folder; the
     /// reasons of every folder when none loads.
     pub fn get(&self) -> Result<Option<Arc<dyn crate::Embedder>>, String> {

@@ -162,6 +162,22 @@ pub fn run(
         save(&mut report)?;
         return Ok(Slept::Done(report));
     }
+    // Whether the memory is quiet, before the model loads (Granite takes seconds and 2 GB).
+    let (system, activity) = {
+        let read = Engine::open(&db, OpenMode::ReadOnly, opts.clock.clone())
+            .map_err(|e| crate::agent::memory::explain(&e))?;
+        let system = read
+            .actors()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|a| a.kind == ActorKind::System)
+            .map_or(ActorId(0), |a| a.id);
+        let activity = read.last_activity(system).map_err(|e| e.to_string())?;
+        if !opts.now && now - activity < QUIET {
+            return Ok(Slept::Skipped("la memoria está en uso"));
+        }
+        (system, activity)
+    };
     let embedder = match model.get() {
         Ok(e) => e,
         Err(e) => {
@@ -177,16 +193,6 @@ pub fn run(
         })
     };
     let read = open(OpenMode::ReadOnly).map_err(|e| crate::agent::memory::explain(&e))?;
-    let system = read
-        .actors()
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .find(|a| a.kind == ActorKind::System)
-        .map_or(ActorId(0), |a| a.id);
-    let activity = read.last_activity(system).map_err(|e| e.to_string())?;
-    if !opts.now && now - activity < QUIET {
-        return Ok(Slept::Skipped("la memoria está en uso"));
-    }
     let mut night_run = Night {
         db: db.clone(),
         data,

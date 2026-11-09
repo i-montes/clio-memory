@@ -204,12 +204,14 @@ fn opts(min_vector_score: f32, min_text_coverage: f64) -> RecallOpts {
             ..SearchOpts::default()
         },
         min_vector_score,
+        // The sweep sets the floor itself.
+        model_floor: false,
         min_text_coverage,
         token_budget: None,
     }
 }
 
-/// What `memory_search` uses: the engine's defaults.
+/// What `memory_search` uses: the engine's defaults, the model's own floor included.
 fn default_opts() -> RecallOpts {
     RecallOpts {
         search: SearchOpts {
@@ -397,7 +399,7 @@ fn evaluate(model: Arc<EmbedModel>, sweep: bool) -> Value {
         .unwrap_or_else(|| "none".into());
 
     let d = default_opts();
-    let vector_floor = d.min_vector_score;
+    let vector_floor = clio_memory::relevance_floor(&model_id).unwrap_or(d.min_vector_score);
     let (by_type, yes, no) = score_all(&b, &rs, &qs, &d);
     println!(
         "\n## Recall with the default thresholds (vector {vector_floor}, text {}) · model {model_id}\n",

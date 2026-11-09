@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::clock::Clock;
 use crate::decider::Decider;
-use crate::embed::{Embedder, panic_message, unit_vector};
+use crate::embed::{Embedder, panic_message, relevance_floor, unit_vector};
 use crate::error::{Error, Result};
 use crate::format::{compact_line, json_item};
 use crate::model::{
@@ -2582,11 +2582,16 @@ impl Engine {
                 .pop()
                 .and_then(|v| unit_vector(v, e.dim()).ok());
             if let Some(q) = q {
+                let floor = opts
+                    .model_floor
+                    .then(|| relevance_floor(e.model_id()))
+                    .flatten()
+                    .unwrap_or(opts.min_vector_score);
                 for (id, cos) in self
                     .store
                     .nearest(scope, e.model_id(), &q, &pool_opts, pool)?
                 {
-                    if cos >= opts.min_vector_score {
+                    if cos >= floor {
                         if let std::collections::hash_map::Entry::Vacant(v) = rows.entry(id) {
                             v.insert(self.store.get(id)?);
                         }

@@ -4,6 +4,16 @@ use crate::error::{Error, Result};
 /// `granite` feature too: a file may hold Granite vectors written by another build.
 pub const GRANITE_ID: &str = "granite-embedding-311m-multilingual-r2@384";
 
+/// The cosine from which a vector match counts as relevant, for a model where it was measured;
+/// `None` leaves `RecallOpts::min_vector_score`. Granite puts unrelated Spanish text at 0.78 to
+/// 0.90, so the generic 0.30 let everything through and recall never abstained. On
+/// `bench/recall` (2026-11-09) 0.84 kept more right answers in the top 5 than 0.30 (97 % against
+/// 91 %) and abstained on 38 % of the questions with no answer (none before); higher floors
+/// abstain more but start losing answers (`bench/recall/results.md`).
+pub fn relevance_floor(model: &str) -> Option<f32> {
+    (model == GRANITE_ID).then_some(0.84)
+}
+
 /// Turns text into vectors. The model id names the vector space: vectors from different
 /// models are never compared.
 pub trait Embedder: Send + Sync {

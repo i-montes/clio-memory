@@ -354,8 +354,12 @@ pub enum OpenMode {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RecallOpts {
     pub search: SearchOpts,
-    /// Minimum cosine for a vector match to count as relevant.
+    /// Minimum cosine for a vector match to count as relevant, for a model without its own
+    /// (see `model_floor`).
     pub min_vector_score: f32,
+    /// Use the model's own floor (`relevance_floor`) instead of `min_vector_score` when it has
+    /// one. Off only for a caller that wants raw cosines (a benchmark).
+    pub model_floor: bool,
     /// Fraction of the query's words (after stemming) a text match must contain to count as
     /// relevant. BM25 scores are not used for this: they depend on corpus size (all near zero
     /// with one or two memories) and rate common words like "de" as meaningful.
@@ -364,14 +368,15 @@ pub struct RecallOpts {
 }
 
 impl Default for RecallOpts {
-    // Checked once against potion-multilingual-128M on a 12-memory Spanish bench
-    // (`real_model_abstention_bench`): questions with an answer scored 0.44-0.77 cosine and
-    // questions without one 0.11-0.20, so 0.30 sits between them. A small sample: still to be
-    // tuned by the evaluation harness (v2). The thresholds lean towards "no results".
+    // `min_vector_score` was checked against potion-multilingual-128M on a 12-memory Spanish
+    // bench (`real_model_abstention_bench`): questions with an answer scored 0.44-0.77 cosine and
+    // questions without one 0.11-0.20, so 0.30 sits between them. Granite has its own floor
+    // (`relevance_floor`). The text coverage was checked on `bench/recall` (results.md).
     fn default() -> Self {
         Self {
             search: SearchOpts::default(),
             min_vector_score: 0.30,
+            model_floor: true,
             min_text_coverage: 0.5,
             token_budget: None,
         }

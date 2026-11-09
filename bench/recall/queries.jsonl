@@ -1,0 +1,159 @@
+{"q": "¿cómo se llama la persona y en qué ciudad vive?", "project": null, "type": "parafrasis", "gold": [1]}
+{"q": "¿en qué horario trabaja?", "project": null, "type": "parafrasis", "gold": [2]}
+{"q": "¿se puede desplegar un viernes por la tarde?", "project": "tienda", "type": "parafrasis", "gold": [2]}
+{"q": "¿qué computadores usa?", "project": null, "type": "parafrasis", "gold": [3]}
+{"q": "¿en qué idioma hay que contestarle?", "project": null, "type": "parafrasis", "gold": [4]}
+{"q": "¿cómo se llama su mascota?", "project": null, "type": "parafrasis", "gold": [5]}
+{"q": "¿dónde estudió la carrera?", "project": null, "type": "parafrasis", "gold": [6]}
+{"q": "¿qué tan largas deben ser las respuestas?", "project": null, "type": "parafrasis", "gold": [7]}
+{"q": "¿quién fusiona los cambios y cómo se entregan?", "project": "tienda", "type": "parafrasis", "gold": [8]}
+{"q": "¿en qué idioma se escriben los mensajes de los commits?", "project": "clima", "type": "parafrasis", "gold": [9]}
+{"q": "¿se escriben primero las pruebas o el código?", "project": "tienda", "type": "parafrasis", "gold": [10]}
+{"q": "¿con cuántos espacios se indenta el código de Python?", "project": "clima", "type": "parafrasis", "gold": [11]}
+{"q": "¿puedo agregar una librería nueva al proyecto?", "project": "tienda", "type": "parafrasis", "gold": [12]}
+{"q": "¿qué palabras hay que evitar al explicarle algo?", "project": null, "type": "parafrasis", "gold": [13]}
+{"q": "¿cómo deben estar redactados los errores que ve el cliente?", "project": "tienda", "type": "parafrasis", "gold": [14]}
+{"q": "¿usa algún ORM para hablar con la base de datos?", "project": "tienda", "type": "parafrasis", "gold": [15]}
+{"q": "¿en qué formato se escriben las fechas?", "project": null, "type": "parafrasis", "gold": [16, 83]}
+{"q": "¿qué hay que hacer antes de eliminar datos?", "project": null, "type": "parafrasis", "gold": [17]}
+{"q": "¿qué herramienta da formato al código TypeScript?", "project": "tienda", "type": "parafrasis", "gold": [18]}
+{"q": "¿qué motor de base de datos usa la tienda y por qué?", "project": "tienda", "type": "parafrasis", "gold": [19]}
+{"q": "¿la tienda tiene un servidor de backend separado?", "project": "tienda", "type": "parafrasis", "gold": [20]}
+{"q": "¿dónde está alojada la tienda en producción?", "project": "tienda", "type": "parafrasis", "gold": [21]}
+{"q": "¿con qué pasarela se cobra y por qué no se usó Stripe?", "project": "tienda", "type": "parafrasis", "gold": [22]}
+{"q": "¿dónde se guarda el carrito antes de pagar?", "project": "tienda", "type": "parafrasis", "gold": [23]}
+{"q": "¿cómo se manejan las variables de entorno en el equipo local?", "project": "tienda", "type": "parafrasis", "gold": [24]}
+{"q": "¿de qué tipo es la columna donde se guardan los precios?", "project": "tienda", "type": "parafrasis", "gold": [25, 80]}
+{"q": "¿qué pasa si la notificación de un pago llega repetida?", "project": "tienda", "type": "parafrasis", "gold": [26, 77]}
+{"q": "¿dónde están almacenadas las fotos de los productos?", "project": "tienda", "type": "parafrasis", "gold": [27]}
+{"q": "¿qué servicio envía los correos de confirmación de pedido?", "project": "tienda", "type": "parafrasis", "gold": [28]}
+{"q": "¿cómo funciona el buscador de productos?", "project": "tienda", "type": "parafrasis", "gold": [29]}
+{"q": "¿qué estados puede tener un pedido?", "project": "tienda", "type": "parafrasis", "gold": [30]}
+{"q": "¿cómo se aplican los cambios de esquema de la base de la tienda?", "project": "tienda", "type": "parafrasis", "gold": [31]}
+{"q": "¿en qué momento se resta el inventario?", "project": "tienda", "type": "parafrasis", "gold": [32]}
+{"q": "¿por qué la exportación de pedidos corre en segundo plano?", "project": "tienda", "type": "parafrasis", "gold": [33]}
+{"q": "¿cómo se calcula cuánto cuesta enviar un pedido?", "project": "tienda", "type": "parafrasis", "gold": [34]}
+{"q": "¿los clientes entran con contraseña?", "project": "tienda", "type": "parafrasis", "gold": [35]}
+{"q": "¿quién puede entrar al panel de administración?", "project": "tienda", "type": "parafrasis", "gold": [36]}
+{"q": "¿por qué fallaban las fotos tomadas con un iPhone?", "project": "tienda", "type": "parafrasis", "gold": [37]}
+{"q": "¿con qué se hacen las pruebas de extremo a extremo de la tienda?", "project": "tienda", "type": "parafrasis", "gold": [38]}
+{"q": "¿quién emite la factura electrónica?", "project": "tienda", "type": "parafrasis", "gold": [39]}
+{"q": "¿por qué el buscador no encontraba palabras en plural?", "project": "tienda", "type": "parafrasis", "gold": [40]}
+{"q": "¿dónde se administra el DNS del dominio?", "project": "tienda", "type": "parafrasis", "gold": [41]}
+{"q": "¿dónde se comprueban los cupones de descuento?", "project": "tienda", "type": "parafrasis", "gold": [42]}
+{"q": "¿cuánto tiempo se conservan los registros de la tienda?", "project": "tienda", "type": "parafrasis", "gold": [43]}
+{"q": "¿a qué hora sale el reporte diario de ventas y por qué a esa hora?", "project": "tienda", "type": "parafrasis", "gold": [44]}
+{"q": "¿cuál es el peso máximo de una imagen de producto?", "project": "tienda", "type": "parafrasis", "gold": [45]}
+{"q": "¿se almacenan los números de las tarjetas?", "project": "tienda", "type": "parafrasis", "gold": [46]}
+{"q": "¿cómo se sabe quién cambió el estado de un pedido?", "project": "tienda", "type": "parafrasis", "gold": [47]}
+{"q": "¿por qué se perdía la sesión en las vistas previas?", "project": "tienda", "type": "parafrasis", "gold": [48]}
+{"q": "¿cada PR tiene su propia base de datos?", "project": "tienda", "type": "parafrasis", "gold": [49]}
+{"q": "¿se hacen envíos al exterior?", "project": "tienda", "type": "parafrasis", "gold": [50]}
+{"q": "¿de dónde saca los datos el proyecto del clima?", "project": "clima", "type": "parafrasis", "gold": [51]}
+{"q": "¿en qué máquina corre la ingesta de clima?", "project": "clima", "type": "parafrasis", "gold": [52, 62]}
+{"q": "¿por qué se escogió DuckDB?", "project": "clima", "type": "parafrasis", "gold": [53]}
+{"q": "¿por qué algunas temperaturas salían diez veces más altas?", "project": "clima", "type": "parafrasis", "gold": [54]}
+{"q": "¿dónde quedan guardados los archivos sin procesar?", "project": "clima", "type": "parafrasis", "gold": [55]}
+{"q": "¿con qué está hecho el tablero del clima?", "project": "clima", "type": "parafrasis", "gold": [56]}
+{"q": "¿en qué zona horaria se guardan las lecturas?", "project": "clima", "type": "parafrasis", "gold": [57]}
+{"q": "¿por qué se bloqueaba la ingesta cuando el tablero estaba abierto?", "project": "clima", "type": "parafrasis", "gold": [58, 86]}
+{"q": "¿qué versión de Python usa el proyecto del clima?", "project": "clima", "type": "parafrasis", "gold": [59]}
+{"q": "¿qué se hace con los datos que faltan?", "project": "clima", "type": "parafrasis", "gold": [60]}
+{"q": "¿cómo se respalda la base del clima?", "project": "clima", "type": "parafrasis", "gold": [61, 88]}
+{"q": "¿qué le pasó a la tarjeta de memoria de la Raspberry?", "project": "clima", "type": "parafrasis", "gold": [62]}
+{"q": "¿cómo se avisa cuando una estación deja de mandar datos?", "project": "clima", "type": "parafrasis", "gold": [63]}
+{"q": "¿con qué se identifica cada estación?", "project": "clima", "type": "parafrasis", "gold": [64]}
+{"q": "¿las pruebas del clima usan internet?", "project": "clima", "type": "parafrasis", "gold": [65]}
+{"q": "¿cuántas filas devuelve como máximo la API del IDEAM?", "project": "clima", "type": "parafrasis", "gold": [66]}
+{"q": "¿con qué tecnología está hecha la app de citas?", "project": "app-citas", "type": "parafrasis", "gold": [67, 68]}
+{"q": "¿dónde se firma la app para iOS?", "project": "app-citas", "type": "parafrasis", "gold": [69]}
+{"q": "¿por qué salía cara la base de datos de la app de citas?", "project": "app-citas", "type": "parafrasis", "gold": [70, 84]}
+{"q": "¿cuándo se mandan los recordatorios de las citas?", "project": "app-citas", "type": "parafrasis", "gold": [71]}
+{"q": "¿cuál es el identificador del paquete de Android?", "project": "app-citas", "type": "parafrasis", "gold": [72]}
+{"q": "¿por qué no llegaban las notificaciones en Android 14?", "project": "app-citas", "type": "parafrasis", "gold": [73]}
+{"q": "¿cómo se arregló el error de demasiadas conexiones a la base?", "project": "tienda", "type": "parafrasis", "gold": [75]}
+{"q": "¿por qué pandas confundía el día con el mes?", "project": "clima", "type": "parafrasis", "gold": [76]}
+{"q": "¿cómo hacer que una tarea programada recupere lo que no corrió con el equipo apagado?", "project": "clima", "type": "parafrasis", "gold": [78]}
+{"q": "¿cómo se resolvió el fallo de CocoaPods al compilar?", "project": "app-citas", "type": "parafrasis", "gold": [79]}
+{"q": "¿por qué una variable de entorno no aparecía en el navegador?", "project": "tienda", "type": "parafrasis", "gold": [81]}
+{"q": "¿cómo leer un archivo enorme sin quedarse sin memoria?", "project": "clima", "type": "parafrasis", "gold": [82]}
+{"q": "¿cómo evitar que las pruebas de Playwright fallen al azar?", "project": "tienda", "type": "parafrasis", "gold": [85]}
+{"q": "¿qué hacer cuando un servicio externo falla a ratos?", "project": "clima", "type": "parafrasis", "gold": [89]}
+{"q": "¿por qué faltaban estilos de Tailwind en producción?", "project": "tienda", "type": "parafrasis", "gold": [90]}
+{"q": "¿por qué una migración dejó bloqueada la tabla de pedidos?", "project": "tienda", "type": "parafrasis", "gold": [93]}
+{"q": "¿cómo encontrar rápido el commit que metió un error?", "project": "tienda", "type": "parafrasis", "gold": [94]}
+{"q": "¿por qué el timer no arrancaba después de reiniciar el equipo?", "project": "clima", "type": "parafrasis", "gold": [95]}
+{"q": "¿por qué los correos llegaban a correo no deseado?", "project": "tienda", "type": "parafrasis", "gold": [96]}
+{"q": "¿cómo se controlan los intentos de inicio de sesión?", "project": "tienda", "type": "parafrasis", "gold": [98]}
+{"q": "¿cómo se invalida la caché de la página de un producto?", "project": "tienda", "type": "parafrasis", "gold": [102]}
+{"q": "¿quién es Camilo?", "project": null, "type": "parafrasis", "gold": [106]}
+{"q": "¿le puedo mandar alertas el sábado?", "project": null, "type": "parafrasis", "gold": [107]}
+{"q": "¿cómo se evitó el stock negativo con pagos al mismo tiempo?", "project": "tienda", "type": "parafrasis", "gold": [114]}
+{"q": "¿cuándo cumple años?", "project": null, "type": "parafrasis", "gold": [116]}
+{"q": "¿qué hace los jueves por la tarde?", "project": null, "type": "parafrasis", "gold": [119]}
+{"q": "¿en qué idioma se nombran las variables?", "project": "clima", "type": "parafrasis", "gold": [118]}
+{"q": "¿qué quiere saber al terminar una tarea?", "project": null, "type": "parafrasis", "gold": [120]}
+{"q": "¿puedo hacer merge directo a main?", "project": "tienda", "type": "mixto", "gold": [8]}
+{"q": "what database does the store use?", "project": "tienda", "type": "mixto", "gold": [19]}
+{"q": "¿cuál es el scope del token de Coordinadora?", "project": "tienda", "type": "mixto", "gold": [97]}
+{"q": "¿qué ámbito de permisos tiene la credencial de la API de envíos?", "project": "tienda", "type": "mixto", "gold": [97]}
+{"q": "¿hay rate limiting en el login?", "project": "tienda", "type": "mixto", "gold": [98]}
+{"q": "¿cuál es el límite de peticiones por minuto para iniciar sesión?", "project": "tienda", "type": "mixto", "gold": [98]}
+{"q": "¿qué pasa si hago requests en paralelo a la API del IDEAM?", "project": "clima", "type": "mixto", "gold": [99]}
+{"q": "¿cuántas peticiones simultáneas aguanta el servicio del IDEAM antes de rechazarlas?", "project": "clima", "type": "mixto", "gold": [99]}
+{"q": "¿está activo el feature flag de pagos en la app?", "project": "app-citas", "type": "mixto", "gold": [100]}
+{"q": "¿la bandera de funcionalidad de pagos está encendida en la app de citas?", "project": "app-citas", "type": "mixto", "gold": [100]}
+{"q": "how should code review comments be written?", "project": null, "type": "mixto", "gold": [101]}
+{"q": "¿qué hacer cuando el deploy falla por el lockfile?", "project": "tienda", "type": "mixto", "gold": [103]}
+{"q": "¿dónde están los logs de la ingesta del clima?", "project": "clima", "type": "mixto", "gold": [104]}
+{"q": "¿qué índice faltaba y cómo se notó con EXPLAIN?", "project": "tienda", "type": "mixto", "gold": [105]}
+{"q": "how is uptime monitored for the store?", "project": "tienda", "type": "mixto", "gold": [110]}
+{"q": "¿cada cuánto se revisa que la tienda esté arriba?", "project": "tienda", "type": "mixto", "gold": [110]}
+{"q": "race condition del stock con dos pagos al mismo tiempo", "project": "tienda", "type": "mixto", "gold": [114]}
+{"q": "¿cómo cachear consultas pesadas en el dashboard?", "project": "clima", "type": "mixto", "gold": [115]}
+{"q": "¿qué pasa con setState después de un await?", "project": "app-citas", "type": "mixto", "gold": [91]}
+{"q": "¿por qué no abría el deep link en Android?", "project": "app-citas", "type": "mixto", "gold": [112]}
+{"q": "¿cuál es la backup strategy antes de cambiar el schema?", "project": "tienda", "type": "mixto", "gold": [113]}
+{"q": "webhook idempotency", "project": "tienda", "type": "mixto", "gold": [77, 26]}
+{"q": "¿dónde están los raw data del proyecto de clima?", "project": "clima", "type": "mixto", "gold": [55]}
+{"q": "what timezone are dates stored in?", "project": null, "type": "mixto", "gold": [83, 57, 16, 74]}
+{"q": "¿cómo se cobra en la tienda?", "project": "clima", "type": "otro-proyecto", "gold": [22]}
+{"q": "¿cómo se avisa en clima cuando una estación se cae?", "project": "tienda", "type": "otro-proyecto", "gold": [63]}
+{"q": "¿qué aprendí sobre webhooks que llegan repetidos?", "project": "app-citas", "type": "otro-proyecto", "gold": [77, 26]}
+{"q": "¿cómo se resolvieron las conexiones agotadas a Postgres en otro proyecto?", "project": "clima", "type": "otro-proyecto", "gold": [75]}
+{"q": "¿cómo se firma la app de iOS?", "project": "tienda", "type": "otro-proyecto", "gold": [69]}
+{"q": "¿qué base de datos usa la tienda?", "project": "app-citas", "type": "otro-proyecto", "gold": [19]}
+{"q": "¿por qué la Raspberry arranca desde un SSD?", "project": "tienda", "type": "otro-proyecto", "gold": [62]}
+{"q": "¿qué se aprendió de que Firestore cobre por lectura?", "project": "clima", "type": "otro-proyecto", "gold": [84, 70]}
+{"q": "¿qué versión de Node usa la tienda?", "project": "tienda", "type": "sin-respuesta", "gold": []}
+{"q": "¿cuántos productos hay en el catálogo?", "project": "tienda", "type": "sin-respuesta", "gold": []}
+{"q": "¿qué proveedor de correo usa la app de citas?", "project": "app-citas", "type": "sin-respuesta", "gold": []}
+{"q": "¿cuántos clientes tiene la peluquería?", "project": "app-citas", "type": "sin-respuesta", "gold": []}
+{"q": "¿qué ORM usa el proyecto del clima?", "project": "clima", "type": "sin-respuesta", "gold": []}
+{"q": "¿cuál es el número de teléfono de Camilo?", "project": null, "type": "sin-respuesta", "gold": []}
+{"q": "¿qué sistema operativo tiene la Raspberry?", "project": "clima", "type": "sin-respuesta", "gold": []}
+{"q": "¿cuánto cuesta el plan de Neon?", "project": "tienda", "type": "sin-respuesta", "gold": []}
+{"q": "¿qué versión de Flutter usa la app?", "project": "app-citas", "type": "sin-respuesta", "gold": []}
+{"q": "¿quién lleva la contabilidad de la tienda?", "project": "tienda", "type": "sin-respuesta", "gold": []}
+{"q": "¿cómo se llama el gato de Andrés?", "project": null, "type": "sin-respuesta", "gold": []}
+{"q": "¿cuál es su comida favorita?", "project": null, "type": "sin-respuesta", "gold": []}
+{"q": "¿qué framework de pruebas usa la app de citas?", "project": "app-citas", "type": "sin-respuesta", "gold": []}
+{"q": "¿de qué color es el logo de la tienda?", "project": "tienda", "type": "sin-respuesta", "gold": []}
+{"q": "¿la tienda acepta pagos con criptomonedas?", "project": "tienda", "type": "sin-respuesta", "gold": []}
+{"q": "¿cuántas estaciones del IDEAM se monitorean?", "project": "clima", "type": "sin-respuesta", "gold": []}
+{"q": "¿qué editor usa Camilo?", "project": null, "type": "sin-respuesta", "gold": []}
+{"q": "¿cuál es la política de devoluciones de la tienda?", "project": "tienda", "type": "sin-respuesta", "gold": []}
+{"q": "¿con qué herramienta se hacen las migraciones de la app de citas?", "project": "app-citas", "type": "sin-respuesta", "gold": []}
+{"q": "¿en qué año se fundó la peluquería?", "project": "app-citas", "type": "sin-respuesta", "gold": []}
+{"q": "receta de arepas de choclo", "project": null, "type": "fuera", "gold": []}
+{"q": "¿quién ganó el mundial de fútbol de 2014?", "project": null, "type": "fuera", "gold": []}
+{"q": "capital de Australia", "project": null, "type": "fuera", "gold": []}
+{"q": "¿cómo se dice gato en francés?", "project": null, "type": "fuera", "gold": []}
+{"q": "precio del dólar hoy", "project": null, "type": "fuera", "gold": []}
+{"q": "¿cuántos planetas tiene el sistema solar?", "project": null, "type": "fuera", "gold": []}
+{"q": "letra de una canción de Shakira", "project": null, "type": "fuera", "gold": []}
+{"q": "¿cuál es la montaña más alta del mundo?", "project": null, "type": "fuera", "gold": []}
+{"q": "horario de misa en Manizales", "project": null, "type": "fuera", "gold": []}
+{"q": "¿qué es la fotosíntesis?", "project": null, "type": "fuera", "gold": []}
+{"q": "resultados del partido del Once Caldas", "project": null, "type": "fuera", "gold": []}
+{"q": "¿cómo cuidar un bonsái?", "project": null, "type": "fuera", "gold": []}

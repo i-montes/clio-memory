@@ -79,6 +79,33 @@ fn text_only_before_embed_pending() {
     assert_eq!(r.hits[0].vector, None);
 }
 
+/// A model that is there but does not load or run (Granite reads its model on the first query).
+struct BrokenEmbedder;
+
+impl Embedder for BrokenEmbedder {
+    fn model_id(&self) -> &str {
+        "m"
+    }
+    fn dim(&self) -> usize {
+        256
+    }
+    fn embed(&self, _texts: &[&str]) -> clio_memory::Result<Vec<Vec<f32>>> {
+        Err(Error::Embedding("the model did not load".into()))
+    }
+}
+
+#[test]
+fn a_model_that_fails_leaves_the_text_search() {
+    let f = fixture_with(Arc::new(BrokenEmbedder));
+    let m = f
+        .engine
+        .propose(prop(f.scope, f.person, "vive en Medellín"))
+        .unwrap();
+    let r = recall(&f, "Medellín");
+    assert_eq!(ids(&r), [m.memory]);
+    assert_eq!(r.hits[0].vector, None);
+}
+
 #[test]
 fn t12_abstains_when_nothing_is_relevant() {
     let (f, made) = loaded(true);

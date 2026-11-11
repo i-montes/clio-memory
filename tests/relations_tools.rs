@@ -338,6 +338,9 @@ fn save_twice(model: Arc<EmbedModel>) -> String {
 
 #[test]
 fn saving_a_near_duplicate_says_so() {
+    // With the quantized model `setup model` installs too: it has a floor of its own.
+    let quantized = save_twice(twins_model(clio_memory::GRANITE_Q8_ID));
+    assert!(quantized.contains("muy parecida a m1:"), "{quantized}");
     let said = save_twice(twins_model(clio_memory::GRANITE_ID));
     assert!(said.contains("muy parecida a m1:"), "{said}");
     // The answer to a save is not framed as data: no text of another memory goes in it.

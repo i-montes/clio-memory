@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
 use clio_memory::setup::model_choice::{
-    ModelChoice, default_choice, granite_available, installed_best, to_remove,
+    ModelChoice, default_choice, granite_available, installed_best, to_remove, up_to_date,
 };
 use clio_memory::setup::{GRANITE, POTION, RUNTIME_DIR, curl_get_watching};
 
@@ -20,7 +20,12 @@ fn put(home: &Path, dir: &str, files: &[&str], bytes: usize) {
 }
 
 fn put_granite(home: &Path) {
-    put(home, GRANITE.dir, &["tokenizer.json", "model.onnx"], 10);
+    put(
+        home,
+        GRANITE.dir,
+        &["tokenizer.json", "model_quint8_avx2.onnx"],
+        10,
+    );
 }
 
 fn put_potion(home: &Path) {
@@ -65,9 +70,14 @@ fn a_partial_folder_is_not_an_installed_model() {
     assert_eq!(installed_best(t.path()), ModelChoice::None);
     put(t.path(), POTION.dir, &["model.safetensors"], 7);
     assert_eq!(installed_best(t.path()), ModelChoice::Potion);
-    // Every file of Granite: Granite.
+    // The full model of an older version: Granite was chosen, but it is not up to date.
     put(t.path(), GRANITE.dir, &["model.onnx"], 10);
     assert_eq!(installed_best(t.path()), ModelChoice::Granite);
+    assert!(!up_to_date(t.path(), ModelChoice::Granite));
+    // Every file of Granite: Granite, up to date.
+    put(t.path(), GRANITE.dir, &["model_quint8_avx2.onnx"], 10);
+    assert_eq!(installed_best(t.path()), ModelChoice::Granite);
+    assert!(up_to_date(t.path(), ModelChoice::Granite));
 }
 
 #[test]
@@ -128,7 +138,7 @@ fn to_remove_stays_inside_the_models_folder() {
 #[test]
 fn granite_size_is_pinned() {
     let sum: u64 = GRANITE.files.iter().map(|f| f.size).sum();
-    assert!((1_200_000_000..=1_300_000_000).contains(&sum), "{sum}");
+    assert!((340_000_000..=350_000_000).contains(&sum), "{sum}");
     assert!(POTION.files.iter().all(|f| f.size > 0));
 }
 

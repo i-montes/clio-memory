@@ -11,7 +11,7 @@ use crate::idle::{DEFAULT_IDLE, IdleCache};
 
 /// Embeddings from a Model2Vec static model (CPU only: encoding a query takes microseconds, so a
 /// GPU would add nothing). The model is read from a local directory; this crate never downloads
-/// anything. It takes about 1 GB of memory, so it is dropped after five idle minutes and read
+/// anything. It takes about 1 GB of memory, so it is dropped after an idle minute and read
 /// again on the next use.
 pub struct Model2VecEmbedder {
     model: IdleCache<StaticModel>,

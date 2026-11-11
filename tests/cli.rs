@@ -1330,6 +1330,33 @@ fn fake_failing_curl(bin: &Path) {
     std::fs::set_permissions(&curl, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
+// `update` runs `setup --yes`: a Granite of before 0.9 (the full model) keeps Granite and brings the
+// quantized model; the full one is only removed once the new one and its runtime are in place.
+#[test]
+fn setup_yes_brings_an_older_granite_up_to_date() {
+    let m = machine();
+    fake_failing_curl(&m.bin);
+    let granite = m
+        .home
+        .join(".cache/clio-models/granite-embedding-311m-multilingual-r2");
+    std::fs::create_dir_all(&granite).unwrap();
+    for f in ["tokenizer.json", "model.onnx"] {
+        std::fs::write(granite.join(f), "pesos").unwrap();
+    }
+    let o = setup_on(&m, None, &["setup", "--yes"]);
+    let text = out(&o);
+    let log = std::fs::read_to_string(m.bin.join("curl.log")).unwrap_or_default();
+    // The fake tokenizer is not the pinned one, so the first download asked for is Granite's.
+    assert!(
+        log.contains("granite-embedding-311m-multilingual-r2/resolve/"),
+        "{log}{text}"
+    );
+    assert!(!log.contains("potion"), "{log}");
+    // The download failed: the old model is still there, and still used.
+    assert!(granite.join("model.onnx").is_file(), "{text}");
+    assert_ne!(code(&o), 0, "{text}");
+}
+
 // A better or equal model already there: the default asks for nothing to be downloaded.
 #[test]
 fn setup_default_model_downloads_nothing_when_a_good_one_is_installed() {

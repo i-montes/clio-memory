@@ -1,13 +1,14 @@
 //! A value that leaves memory after a while without use and is loaded again when needed. It
-//! holds the embedding model (about 1 GB) and the in-memory copy of the vectors of a store.
+//! holds the embedding model (hundreds of MB) and the in-memory copy of the vectors of a store.
 
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::error::{Error, Result};
 
-/// How long the model stays in memory after its last use.
-pub(crate) const DEFAULT_IDLE: Duration = Duration::from_secs(300);
+/// How long the model stays in memory after its last use: a minute, so an agent's session that
+/// stopped searching gives the memory back soon (reading the model again takes about 2 s).
+pub(crate) const DEFAULT_IDLE: Duration = Duration::from_secs(60);
 
 struct Slot<T> {
     value: Option<T>,
@@ -27,8 +28,24 @@ impl<T: Send + 'static> IdleCache<T> {
         idle: Option<Duration>,
         load: impl Fn() -> Result<T> + Send + Sync + 'static,
     ) -> Self {
+        Self::with_value(Some(first), idle, load)
+    }
+
+    /// Nothing loaded yet: `load` runs on the first use.
+    pub(crate) fn empty(
+        idle: Duration,
+        load: impl Fn() -> Result<T> + Send + Sync + 'static,
+    ) -> Self {
+        Self::with_value(None, Some(idle), load)
+    }
+
+    fn with_value(
+        value: Option<T>,
+        idle: Option<Duration>,
+        load: impl Fn() -> Result<T> + Send + Sync + 'static,
+    ) -> Self {
         let slot = Arc::new(Mutex::new(Slot {
-            value: Some(first),
+            value,
             used: Instant::now(),
         }));
         if let Some(idle) = idle {
@@ -91,6 +108,34 @@ mod tests {
         assert_eq!(cache.with(|v| *v).unwrap(), 100);
         assert_eq!(cache.with(|v| *v).unwrap(), 100, "used again: not reloaded");
         assert_eq!(loads.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn an_empty_cache_loads_on_first_use_only() {
+        let loads = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&loads);
+        let cache = IdleCache::empty(Duration::from_secs(60), move || {
+            Ok(counter.fetch_add(1, Ordering::SeqCst) + 7)
+        });
+        assert!(!cache.loaded(), "nothing is read before it is needed");
+        assert_eq!(loads.load(Ordering::SeqCst), 0);
+        assert_eq!(cache.with(|v| *v).unwrap(), 7);
+        assert_eq!(cache.with(|v| *v).unwrap(), 7);
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_failed_first_load_is_an_error_and_is_tried_again() {
+        let loads = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&loads);
+        let cache = IdleCache::empty(Duration::from_secs(60), move || {
+            match counter.fetch_add(1, Ordering::SeqCst) {
+                0 => Err(Error::Embedding("not yet".into())),
+                n => Ok(n),
+            }
+        });
+        assert!(cache.with(|v| *v).is_err());
+        assert_eq!(cache.with(|v| *v).unwrap(), 1);
     }
 
     #[test]

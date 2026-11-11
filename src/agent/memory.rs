@@ -23,10 +23,15 @@ use crate::{
 };
 
 /// The similarity from which a new memory is called nearly the same as an old one, per model:
-/// measured on the relations benchmark (its three contradictions are at 0.880 to 0.937; the
-/// pairs from 0.87 are memories worth seeing together). `None`: not measured, no warning.
+/// measured on the relations benchmark, so its three contradictions are above it (the full model
+/// puts them at 0.880 to 0.937, the quantized one at 0.863 to 0.939; the pairs above are memories
+/// worth seeing together, 10 and 12 of them). `None`: not measured, no warning.
 pub fn near_duplicate_floor(model: &str) -> Option<f32> {
-    (model == crate::GRANITE_ID).then_some(0.87)
+    match model {
+        crate::GRANITE_ID => Some(0.87),
+        crate::GRANITE_Q8_ID => Some(0.86),
+        _ => None,
+    }
 }
 
 /// How long a neighbor's preview is.

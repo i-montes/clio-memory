@@ -96,3 +96,27 @@ El aviso de «muy parecida» usa 0,87 con Granite (medido en `bench/relations`, 
 | 0,92 | 11 de 12 | 0 de 8 |
 
 Con 0,90 el aviso acertaría lo mismo con muchas menos falsas alarmas, pero dejaría de avisar de una contradicción por debajo de 0,90 (en `bench/relations` hay una en 0,880). No se cambia: avisar de más solo cuesta una línea, y callar una contradicción cuesta un recuerdo falso. Queda para decidir con más datos.
+
+## 5. Con el modelo cuantizado (2026-11-11, desde la 0.9)
+
+Desde la 0.9, `setup` instala Granite cuantizado (`model_quint8_avx2.onnx`) y corre en el procesador (`bench/embeddings/results.md`). Sus vectores son otro espacio (`granite-embedding-311m-multilingual-r2-q8@384`), así que tiene sus umbrales. Medido igual, en el procesador de un equipo de 16 hilos, en 128 s.
+
+Mejor coseno de cada pregunta, solo por vectores: todo queda alrededor de 0,01 más abajo que con el completo.
+
+| Preguntas | mín. | p10 | p50 | p90 | máx. |
+|---|---|---|---|---|---|
+| con respuesta (127) | 0,838 | 0,859 | 0,897 | 0,932 | 0,982 |
+| sin respuesta (32) | 0,779 | 0,790 | 0,847 | 0,891 | 0,895 |
+
+El barrido, con el umbral de texto en 0,5:
+
+| vector ≥ | con respuesta: la correcta entre los 5 | con respuesta: se calló | sin respuesta: se calló |
+|---|---|---|---|
+| 0,30 | 91 % | 0 % | 0 % |
+| 0,82 | 97 % | 0 % | 31 % |
+| **0,83 (su umbral)** | **97 %** | **0 %** | **31 %** |
+| 0,84 | 95 % | 0 % | 34 % |
+| 0,85 | 93 % | 0 % | 41 % |
+| 0,86 | 86 % | 6 % | 50 % |
+
+Con 0,83 encuentra lo mismo que el completo con 0,84 (97 % entre los 5) y se calla algo menos (31 % contra 38 %). Su aviso de «muy parecida» es 0,86 (medido en `bench/relations`, donde sus tres contradicciones quedan entre 0,863 y 0,939); aquí avisa 12 de 12 paráfrasis y 6 de 8 parecidas sin serlo (el completo con 0,87: 12 de 12 y 5 de 8).

@@ -14,12 +14,12 @@ use std::process::ExitCode;
 use clio_memory::setup::agents::{AgentId, Env, Found, detect, shadowing, take_away_shadow};
 use clio_memory::setup::instructions::instructions_file;
 use clio_memory::setup::model_choice::{
-    ModelChoice, default_choice, granite_available, installed_best, to_remove,
+    ModelChoice, default_choice, granite_available, installed_best, to_remove, up_to_date,
 };
 use clio_memory::setup::plan::{Selection, Step, apply, connected};
 use clio_memory::setup::{
-    GRANITE, ModelSpec, POTION, RUNTIME_DIR, curl_get_watching, driver_major, install_model,
-    install_runtime, runtime_here, tar_unpack,
+    GRANITE, ModelSpec, POTION, RUNTIME_DIR, curl_get_watching, install_model, install_runtime,
+    remove_obsolete, runtime_here, tar_unpack,
 };
 
 /// What `setup` was given on the command line (`args::Command::Setup`).
@@ -42,7 +42,7 @@ pub struct SetupArgs {
 /// person cancelled.
 pub trait Screen {
     fn header(&mut self, version: &str);
-    fn machine(&mut self, os: &str, arch: &str, gpu: Option<&str>);
+    fn machine(&mut self, os: &str, arch: &str);
     /// clio-memory is installed at `at` (only when it comes from the installer).
     fn installed(&mut self, at: &Path);
     fn choose_agents(&mut self, found: &[Found], connected: &[AgentId]) -> Option<Vec<AgentId>>;
@@ -76,9 +76,8 @@ impl Screen for Plain {
         Self::line(&format!("clio-memory {version}"));
     }
 
-    fn machine(&mut self, os: &str, arch: &str, gpu: Option<&str>) {
-        let gpu = gpu.map(|g| format!(", {g}")).unwrap_or_default();
-        Self::line(&format!("✓ Esta máquina · {os} {arch}{gpu}"));
+    fn machine(&mut self, os: &str, arch: &str) {
+        Self::line(&format!("✓ Esta máquina · {os} {arch}"));
     }
 
     fn installed(&mut self, at: &Path) {
@@ -232,15 +231,6 @@ fn cancelled(screen: &mut dyn Screen) -> ExitCode {
     ExitCode::from(1)
 }
 
-/// The NVIDIA card, when there is one with its driver loaded.
-fn gpu() -> Option<String> {
-    let text = std::fs::read_to_string("/proc/driver/nvidia/version").ok()?;
-    Some(match driver_major(&text) {
-        Some(major) => format!("GPU NVIDIA (driver {major})"),
-        None => "GPU NVIDIA".to_owned(),
-    })
-}
-
 /// The whole of `setup`: what was chosen is done step by step, and one step that fails (an agent,
 /// the model) leaves the others done and makes the exit code 1.
 pub fn run(screen: &mut dyn Screen, env: &Env, args: SetupArgs) -> ExitCode {
@@ -252,7 +242,7 @@ pub fn run(screen: &mut dyn Screen, env: &Env, args: SetupArgs) -> ExitCode {
         "macos" => "macOS",
         other => other,
     };
-    screen.machine(os_label, arch, gpu().as_deref());
+    screen.machine(os_label, arch);
     if args.from_installer {
         screen.installed(&env.exe);
     }
@@ -501,7 +491,10 @@ fn model_steps(
             )];
         }
     };
-    if rank(best) >= rank(model) && !force {
+    // A better one stays; the same one is brought up to date (an older Granite has the full
+    // model, not the quantized one this version installs).
+    let current = rank(best) > rank(model) || (best == model && up_to_date(home, best));
+    if current && !force {
         return vec![step(
             "modelo",
             Ok(format!("{} ya está instalado", model_label(best))),
@@ -532,8 +525,7 @@ fn model_steps(
     if model != ModelChoice::Granite || steps[0].outcome.is_err() {
         return steps;
     }
-    // What Granite runs on: the CPU runtime, or with an NVIDIA card the GPU one and the CUDA
-    // libraries the system lacks.
+    // What Granite runs on: ONNX Runtime for the CPU.
     let runtime = runtime_here();
     if runtime.is_empty() {
         steps.push(step(
@@ -545,26 +537,26 @@ fn model_steps(
         ));
         return steps;
     }
-    let gpu = runtime.len() > 1 || runtime[0].url.contains("gpu");
     let root = home.join(RUNTIME_DIR);
     let fetch = |url: &str, to: &Path| {
         let name = url.rsplit('/').next().unwrap_or(url);
         watched(name, url, None, to)
     };
+    let installed = install_runtime(&root, &runtime, &fetch, &tar_unpack);
+    let ok = installed.is_ok();
     steps.push(step(
         "runtime",
-        install_runtime(&root, &runtime, &fetch, &tar_unpack).map(|_| {
-            format!(
-                "listo en {} ({})",
-                root.display(),
-                if gpu {
-                    "GPU, y el procesador si la GPU no responde"
-                } else {
-                    "procesador"
-                }
-            )
-        }),
+        installed.map(|_| format!("listo en {} (procesador)", root.display())),
     ));
+    // What an older version left (the full model, CUDA's libraries): only once Granite runs.
+    if ok {
+        let removed = remove_obsolete(home);
+        if !removed.is_empty() {
+            let failed = removed.iter().any(|r| r.starts_with("no se pudo"));
+            let text = removed.join("; ");
+            steps.push(step("limpieza", if failed { Err(text) } else { Ok(text) }));
+        }
+    }
     steps
 }
 
@@ -671,7 +663,7 @@ mod tests {
 
     impl Screen for Script {
         fn header(&mut self, _: &str) {}
-        fn machine(&mut self, _: &str, _: &str, _: Option<&str>) {}
+        fn machine(&mut self, _: &str, _: &str) {}
         fn installed(&mut self, _: &Path) {}
         fn choose_agents(&mut self, _: &[Found], _: &[AgentId]) -> Option<Vec<AgentId>> {
             Some(self.agents.clone())
@@ -822,7 +814,7 @@ mod tests {
         assert_eq!(s.asked.len(), 1);
         assert!(s.asked[0].starts_with("¿Borro "), "{:?}", s.asked);
         assert!(s.asked[0].contains("también los usa Clio"), "{:?}", s.asked);
-        assert!(granite.join("model.onnx").is_file());
+        assert!(granite.join("model_quint8_avx2.onnx").is_file());
         assert!(!t.path().join("curl.log").exists(), "{:?}", s.steps);
         assert!(s.steps.iter().all(|st| st.outcome.is_ok()), "{:?}", s.steps);
     }
@@ -840,7 +832,11 @@ mod tests {
         };
         ask(&mut s, &env, &curl);
         assert!(t.path().join("curl.log").is_file(), "{:?}", s.steps);
-        assert!(granite.join("model.onnx").is_file(), "{:?}", s.steps);
+        assert!(
+            granite.join("model_quint8_avx2.onnx").is_file(),
+            "{:?}",
+            s.steps
+        );
         assert!(
             s.steps
                 .iter()

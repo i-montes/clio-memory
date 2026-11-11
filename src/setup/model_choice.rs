@@ -15,7 +15,7 @@ pub enum ModelChoice {
 
 /// Whether a runtime for Granite is published for this system (not for macOS on Intel).
 pub fn granite_available(os: &str, arch: &str) -> bool {
-    !runtime_for(os, arch, None, "").is_empty()
+    !runtime_for(os, arch).is_empty()
 }
 
 /// Granite where it runs; the static model where it does not.
@@ -34,16 +34,34 @@ fn is_installed(home: &Path, spec: &ModelSpec) -> bool {
     spec.files.iter().all(|f| dir.join(f.local).is_file())
 }
 
-/// The best model installed in `home`: the first of Granite and Potion with all its files. (The
-/// loader, `EmbedModel::of_home`, takes any existing folder and falls back at load time; this has
-/// no fallback, so it asks for the files.)
+/// Granite as versions before 0.9 installed it: the full model and its tokenizer. The person chose
+/// Granite; it is not up to date (`up_to_date`), so `setup` brings the quantized model.
+fn is_granite_of_before(home: &Path) -> bool {
+    let dir = home.join(GRANITE.dir);
+    ["tokenizer.json", "model.onnx"]
+        .iter()
+        .all(|f| dir.join(f).is_file())
+}
+
+/// The best model installed in `home`: the first of Granite and Potion with all its files, or
+/// Granite as an older version installed it. (The loader, `EmbedModel::of_home`, takes any existing
+/// folder and falls back at load time; this has no fallback, so it asks for the files.)
 pub fn installed_best(home: &Path) -> ModelChoice {
-    if is_installed(home, &GRANITE) {
+    if is_installed(home, &GRANITE) || is_granite_of_before(home) {
         ModelChoice::Granite
     } else if is_installed(home, &POTION) {
         ModelChoice::Potion
     } else {
         ModelChoice::None
+    }
+}
+
+/// Whether `choice` is installed with the files this version installs (an older Granite is not).
+pub fn up_to_date(home: &Path, choice: ModelChoice) -> bool {
+    match choice {
+        ModelChoice::Granite => is_installed(home, &GRANITE),
+        ModelChoice::Potion => is_installed(home, &POTION),
+        ModelChoice::None => true,
     }
 }
 

@@ -3,15 +3,24 @@ use crate::error::{Error, Result};
 /// What a Granite vector is called in the file: the model and the cut. Known without the
 /// `granite` feature too: a file may hold Granite vectors written by another build.
 pub const GRANITE_ID: &str = "granite-embedding-311m-multilingual-r2@384";
+/// The same, from the quantized model (`model_quint8_avx2.onnx`): close to the full model's vectors
+/// (cosine 0.98 to 0.995) but not the same, so they are a space of their own.
+pub const GRANITE_Q8_ID: &str = "granite-embedding-311m-multilingual-r2-q8@384";
 
 /// The cosine from which a vector match counts as relevant, for a model where it was measured;
 /// `None` leaves `RecallOpts::min_vector_score`. Granite puts unrelated Spanish text at 0.78 to
 /// 0.90, so the generic 0.30 let everything through and recall never abstained. On
 /// `bench/recall` (2026-11-09) 0.84 kept more right answers in the top 5 than 0.30 (97 % against
 /// 91 %) and abstained on 38 % of the questions with no answer (none before); higher floors
-/// abstain more but start losing answers (`bench/recall/results.md`).
+/// abstain more but start losing answers (`bench/recall/results.md`). The quantized model puts
+/// every cosine about 0.01 lower: at 0.83 it keeps the same 97 % in the top 5 and abstains on 31 %
+/// (2026-11-11, same bench).
 pub fn relevance_floor(model: &str) -> Option<f32> {
-    (model == GRANITE_ID).then_some(0.84)
+    match model {
+        GRANITE_ID => Some(0.84),
+        GRANITE_Q8_ID => Some(0.83),
+        _ => None,
+    }
 }
 
 /// Turns text into vectors. The model id names the vector space: vectors from different
@@ -59,6 +68,13 @@ pub(crate) fn unit_vector(mut v: Vec<f32>, dim: usize) -> Result<Vec<f32>> {
 mod tests {
     use super::*;
     use crate::Error;
+
+    #[test]
+    fn each_granite_has_its_floor() {
+        assert_eq!(relevance_floor(GRANITE_ID), Some(0.84));
+        assert_eq!(relevance_floor(GRANITE_Q8_ID), Some(0.83));
+        assert_eq!(relevance_floor("model2vec:potion"), None);
+    }
 
     #[test]
     fn catch_panic_passes_values_through() {

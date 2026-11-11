@@ -5,7 +5,7 @@
 //! ```text
 //! ┌   Clio  memory · la memoria de tu agente · v0.6.0
 //! │
-//! ◇  Esta máquina · Linux x86_64 · GPU NVIDIA (driver 550)
+//! ◇  Esta máquina · Linux x86_64
 //! │
 //! ◆  ¿A qué agentes le conecto la memoria?
 //! │  ◼ Claude Code   encontrado en ~/.claude
@@ -316,8 +316,6 @@ pub struct Tui {
     pal: Palette,
     hint: Arc<AtomicU8>,
     home: PathBuf,
-    /// Whether this machine has an NVIDIA card (`machine`): Granite's hint says where it runs.
-    gpu: bool,
     /// The last question was cancelled: the note that follows closes the screen.
     cancelled: bool,
 }
@@ -339,7 +337,6 @@ impl Tui {
             pal,
             hint,
             home,
-            gpu: false,
             cancelled: false,
         }
     }
@@ -411,20 +408,13 @@ fn size(spec: &ModelSpec) -> String {
     }
 }
 
-/// Granite's hint: its size is the model alone, and what it runs on (ONNX Runtime and, with an
-/// NVIDIA card, the CUDA libraries the system lacks) is downloaded on top.
-fn granite_hint(gpu: bool) -> String {
-    if gpu {
-        format!(
-            "{} el modelo, más ONNX Runtime y las bibliotecas de CUDA · recomendado (GPU)",
-            size(&GRANITE)
-        )
-    } else {
-        format!(
-            "{} el modelo, más ONNX Runtime · recomendado (procesador)",
-            size(&GRANITE)
-        )
-    }
+/// Granite's hint: its size is the model alone, and what it runs on (ONNX Runtime) is downloaded
+/// on top.
+fn granite_hint() -> String {
+    format!(
+        "{} el modelo, más ONNX Runtime · recomendado",
+        size(&GRANITE)
+    )
 }
 
 /// `12,3 MB`; under a megabyte, `271 B` or `18,6 KB`.
@@ -515,12 +505,8 @@ impl Screen for Tui {
         let _ = cliclack::intro(title);
     }
 
-    fn machine(&mut self, os: &str, arch: &str, gpu: Option<&str>) {
-        self.gpu = gpu.is_some();
-        let mut detail = format!(" · {os} {arch}");
-        if let Some(gpu) = gpu {
-            detail.push_str(&format!(" · {}", clean(gpu)));
-        }
+    fn machine(&mut self, os: &str, arch: &str) {
+        let detail = format!(" · {os} {arch}");
         self.entry(
             &self.pal.verde_suave.apply_to("◇").to_string(),
             &format!(
@@ -606,7 +592,7 @@ impl Screen for Tui {
             cliclack::select("¿Qué modelo instalo para la búsqueda?").initial_value(current);
         for option in options {
             let (label, hint) = match option {
-                ModelChoice::Granite => ("Granite 311M", granite_hint(self.gpu)),
+                ModelChoice::Granite => ("Granite 311M", granite_hint()),
                 ModelChoice::Potion => ("potion", format!("{} · liviano", size(&POTION))),
                 ModelChoice::None => ("ninguno", "búsqueda por texto".to_owned()),
             };
@@ -737,8 +723,8 @@ mod tests {
     // What the model question shows: every file of the model, as it is downloaded.
     #[test]
     fn sizes_on_screen() {
-        // 33 384 821 + 1 247 170 481 bytes.
-        assert_eq!(size(&GRANITE), "1,28 GB");
+        // 33 384 821 + 313 421 909 bytes.
+        assert_eq!(size(&GRANITE), "347 MB");
         // 271 + 18 616 131 + 512 361 560 bytes.
         assert_eq!(size(&POTION), "531 MB");
         assert_eq!(mb(271), "271 B");
@@ -749,16 +735,10 @@ mod tests {
     // Granite's size is the model alone: what it runs on comes on top, and says so.
     #[test]
     fn granite_says_what_comes_on_top() {
-        let cpu = granite_hint(false);
-        assert!(cpu.starts_with("1,28 GB el modelo"), "{cpu}");
-        assert!(cpu.contains("ONNX Runtime"), "{cpu}");
-        assert!(!cpu.contains("CUDA"), "{cpu}");
-        assert!(cpu.ends_with("recomendado (procesador)"), "{cpu}");
-        let gpu = granite_hint(true);
-        assert!(
-            gpu.contains("ONNX Runtime") && gpu.contains("CUDA"),
-            "{gpu}"
-        );
-        assert!(gpu.ends_with("recomendado (GPU)"), "{gpu}");
+        let hint = granite_hint();
+        assert!(hint.starts_with("347 MB el modelo"), "{hint}");
+        assert!(hint.contains("ONNX Runtime"), "{hint}");
+        assert!(!hint.contains("CUDA"), "{hint}");
+        assert!(hint.ends_with("recomendado"), "{hint}");
     }
 }

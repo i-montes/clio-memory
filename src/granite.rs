@@ -1,18 +1,20 @@
-//! Granite Embedding 311M multilingual R2 (IBM, Apache-2.0) through ONNX Runtime: the one `setup
-//! model` leaves beside the models (`onnxruntime/`), else `ORT_DYLIB_PATH`, else the system's. With
-//! a runtime that has CUDA it runs on the GPU, otherwise (or when the GPU fails) on the CPU, always with
-//! the full model (`model.onnx`): on the CPU it takes ~26 ms per memory and ranks better than the
-//! quantized one (90 % against 85 % first hits), which is only used when it is the only file. The
-//! vector is the CLS token's, its first 384 components (Matryoshka), L2-normalized: the 384 of
-//! 768 that rank Spanish memories as well as the whole (`bench/embeddings/results.md`).
+//! Granite Embedding 311M multilingual R2 (IBM, Apache-2.0) through ONNX Runtime, on the CPU: the
+//! runtime `setup model` leaves beside the models (`onnxruntime/`), else `ORT_DYLIB_PATH`, else the
+//! system's. The quantized model (`model_quint8_avx2.onnx`, 313 MB) when it is there: about 490 MB
+//! of memory and 26 ms per memory, with the same first five as the full one (97.5 %; 85 % of first
+//! hits against 90 %). The full model (`model.onnx`, 1.2 GB, about 2 GB of memory) only when it is
+//! the only file; its vectors are another space (`GRANITE_ID` and `GRANITE_Q8_ID`), so a switch
+//! computes them again. The vector is the CLS token's, its first 384 components (Matryoshka),
+//! L2-normalized: the 384 of 768 that rank Spanish memories as well as the whole
+//! (`bench/embeddings/results.md`).
 //!
-//! The model leaves memory (and the GPU) after five idle minutes, like the static model.
+//! The model is read when there is a text to turn into a vector, not when the memory opens (most
+//! calls need none), and leaves memory after a minute without use.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use ort::environment::Environment;
-use ort::ep::{self, ExecutionProvider};
 use ort::session::Session;
 use ort::value::Tensor;
 use tokenizers::{PaddingParams, Tokenizer, TruncationParams};
@@ -21,7 +23,7 @@ use crate::embed::{Embedder, catch_panic};
 use crate::error::{Error, Result};
 use crate::idle::{DEFAULT_IDLE, IdleCache};
 
-pub use crate::embed::GRANITE_ID;
+pub use crate::embed::{GRANITE_ID, GRANITE_Q8_ID};
 const DIM: usize = 384;
 /// Tokens per text: a memory is at most 1,200 characters, well under this.
 const MAX_TOKENS: usize = 1024;
@@ -65,28 +67,6 @@ fn env(runtime: &Path) -> Result<&'static Environment> {
     .map_err(err)
 }
 
-/// The runtime has CUDA (whether the GPU takes a session is only known when it does). The CUDA and
-/// cuDNN libraries `setup model` brought are loaded first, so the provider finds them; the
-/// system's are found by name.
-fn cuda(runtime: &Path) -> bool {
-    if !ep::CUDA::is_available().unwrap_or(false) {
-        return false;
-    }
-    let libs: Vec<PathBuf> = std::fs::read_dir(runtime)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path().join("lib"))
-        .collect();
-    for name in ep::cuda::CUDA_DYLIBS.iter().chain(ep::cuda::CUDNN_DYLIBS) {
-        if let Some(p) = libs.iter().map(|d| d.join(name)).find(|p| p.is_file()) {
-            // A library that does not load leaves the provider to fail, and the CPU to run.
-            let _ = ort::util::preload_dylib(p);
-        }
-    }
-    true
-}
-
 /// Where `setup model` leaves the runtime: beside the model's folder.
 fn runtime_of(dir: &Path) -> PathBuf {
     dir.parent().unwrap_or(dir).join("onnxruntime")
@@ -99,52 +79,65 @@ struct Loaded {
 
 pub struct Granite {
     model: IdleCache<Loaded>,
-    device: &'static str,
+    id: &'static str,
 }
 
 impl Granite {
-    /// From `dir` (`tokenizer.json`, and `model.onnx` and/or `model_quint8_avx2.onnx`): the full
-    /// model when it is there, on the GPU when the runtime has CUDA, else on the CPU.
+    /// From `dir` (`tokenizer.json`, and `model_quint8_avx2.onnx` and/or `model.onnx`): the
+    /// quantized model when it is there, else the full one. Checks the files and loads the runtime
+    /// library; the model itself is read on the first text.
     pub fn load(dir: &Path) -> Result<Self> {
-        let file = [FULL, QUANTIZED]
+        let file = [QUANTIZED, FULL]
             .into_iter()
             .find(|f| dir.join(f).is_file())
-            .ok_or_else(|| err(format!("no {FULL} or {QUANTIZED} in {}", dir.display())))?;
+            .ok_or_else(|| err(format!("no {QUANTIZED} or {FULL} in {}", dir.display())))?;
         Self::load_file(dir, file)
     }
 
-    /// From `dir`, with this model file (the GPU only for the full model).
+    /// From `dir`, with this model file (`model_quint8_avx2.onnx` or `model.onnx`).
     pub fn load_file(dir: &Path, file: &str) -> Result<Self> {
-        if !dir.join("tokenizer.json").is_file() {
-            return Err(err(format!("no tokenizer.json in {}", dir.display())));
+        let id = match file {
+            QUANTIZED => GRANITE_Q8_ID,
+            FULL => GRANITE_ID,
+            other => return Err(err(format!("{other} is not a Granite model file"))),
+        };
+        for f in ["tokenizer.json", file] {
+            if !dir.join(f).is_file() {
+                return Err(err(format!("no {f} in {}", dir.display())));
+            }
         }
-        let runtime = runtime_of(dir);
-        env(&runtime)?;
-        let gpu = file == FULL && cuda(&runtime);
+        if !looks_like_onnx(&dir.join(file)) {
+            return Err(err(format!(
+                "{file} in {} is not an ONNX model",
+                dir.display()
+            )));
+        }
+        // A runtime that is missing or does not load is said now, while the caller can still take
+        // another model; it is loaded once per process and is small beside the model.
+        env(&runtime_of(dir))?;
         let (dir, file) = (dir.to_path_buf(), file.to_owned());
-        let load = move || read(&dir, &file, gpu);
-        let first = load()?;
-        let device = if first.1 { "cuda" } else { "cpu" };
-        // Said once, here: the GPU was there and did not take the model.
-        if gpu && !first.1 {
-            eprintln!(
-                "clio-memory: la GPU no respondió; el modelo de vectores corre en el procesador"
-            );
-        }
         Ok(Self {
-            model: IdleCache::new(first.0, Some(DEFAULT_IDLE), move || load().map(|l| l.0)),
-            device,
+            model: IdleCache::empty(DEFAULT_IDLE, move || read(&dir, &file)),
+            id,
         })
-    }
-
-    /// Where it runs: `"cuda"` or `"cpu"`.
-    pub fn device(&self) -> &'static str {
-        self.device
     }
 }
 
-/// The session and the tokenizer, and whether the GPU took the session.
-fn read(dir: &Path, file: &str, gpu: bool) -> Result<(Loaded, bool)> {
+/// Whether `path` can be an ONNX model: at least a megabyte, starting with its IR version (field 1,
+/// a varint). The model is only read on the first text, so a file cut short or of something else is
+/// caught here, where the caller can still take another model.
+fn looks_like_onnx(path: &Path) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let big = f.metadata().is_ok_and(|m| m.len() >= 1 << 20);
+    let mut first = [0u8; 1];
+    big && f.read_exact(&mut first).is_ok() && first[0] == 0x08
+}
+
+/// The session (on the CPU) and the tokenizer.
+fn read(dir: &Path, file: &str) -> Result<Loaded> {
     let mut tokenizer = Tokenizer::from_file(dir.join("tokenizer.json")).map_err(err)?;
     tokenizer
         .with_truncation(Some(TruncationParams {
@@ -153,28 +146,16 @@ fn read(dir: &Path, file: &str, gpu: bool) -> Result<(Loaded, bool)> {
         }))
         .map_err(err)?;
     tokenizer.with_padding(Some(PaddingParams::default()));
-    let path = dir.join(file);
-    let open = |cuda: bool| -> Result<Session> {
-        let builder = Session::builder(env(&runtime_of(dir))?).map_err(err)?;
-        let mut builder = if cuda {
-            builder
-                .with_execution_providers([ep::CUDA::default().build().error_on_failure()])
-                .map_err(err)?
-        } else {
-            builder
-        };
-        builder.commit_from_file(&path).map_err(err)
-    };
-    if gpu && let Ok(session) = open(true) {
-        return Ok((Loaded { session, tokenizer }, true));
-    }
-    let session = open(false)?;
-    Ok((Loaded { session, tokenizer }, false))
+    let session = Session::builder(env(&runtime_of(dir))?)
+        .map_err(err)?
+        .commit_from_file(dir.join(file))
+        .map_err(err)?;
+    Ok(Loaded { session, tokenizer })
 }
 
 impl Embedder for Granite {
     fn model_id(&self) -> &str {
-        GRANITE_ID
+        self.id
     }
 
     fn dim(&self) -> usize {
@@ -185,8 +166,16 @@ impl Embedder for Granite {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
+        // One text at a time: on the CPU a batch is padded to its longest text, so it is slower
+        // (68 memories: 5.8 s in batches of 32, 2.1 s one by one) and holds more memory at once.
         self.model
-            .with(|m| catch_panic(|| run(m, texts)))?
+            .with(|m| {
+                texts
+                    .iter()
+                    .map(|t| catch_panic(|| run(m, &[t])).and_then(|r| r))
+                    .map(|r| r.and_then(|mut v| v.pop().ok_or_else(|| err("no vector"))))
+                    .collect::<Result<Vec<_>>>()
+            })
             .and_then(|r| r)
     }
 }

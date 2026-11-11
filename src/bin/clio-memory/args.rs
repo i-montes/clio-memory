@@ -55,7 +55,7 @@ agents:
                               (binary sha256-checked) and run `setup --yes` again: what is
                               connected stays, the skill is brought up to date
   setup model [potion]        download the vector model (pinned, sha256-checked): Granite
-                              Embedding 311M (GPU or CPU, needs ONNX Runtime installed) to
+                              Embedding 311M, quantized, on the CPU (with ONNX Runtime) to
                               ~/.cache/clio-models/granite-embedding-311m-multilingual-r2, or with
                               potion the static fallback, potion-multilingual-128M
 

@@ -98,4 +98,21 @@ Medido con `examples/granite_time.rs`, un recuerdo de ~150 caracteres, mediana d
 | `model.onnx` (completo) | CPU | 26 | 2,3 s | 90 % |
 | `model_quint8_avx2.onnx` (cuantizado) | CPU | 18 | 1,5 s | 85 % |
 
-Decisión: el completo siempre (GPU o CPU); el cuantizado solo si es el único archivo. Los vectores en Rust coinciden con los de sentence-transformers en float32 (coseno ≥ 0,999, `tests/fixtures/granite_reference.json`).
+Decisión (hasta la 0.8): el completo siempre (GPU o CPU); el cuantizado solo si es el único archivo. Los vectores en Rust coinciden con los de sentence-transformers en float32 (coseno ≥ 0,999, `tests/fixtures/granite_reference.json`).
+
+## Desde la 0.9: el cuantizado, en el procesador (2026-11-11)
+
+Con el completo en la GPU, cada sesión de agente (un proceso `clio-memory mcp`) guardaba su copia del modelo: unos 1,2 GB de memoria de video por sesión abierta. En el procesador, el completo ocupa unos 2 GB de RAM por sesión. Se midió el cuantizado en esta máquina, en el procesador, con un entrenamiento en la GPU (`examples/granite_time.rs` y `tests/granite.rs`):
+
+| | Completo | Cuantizado |
+|---|---|---|
+| Memoria del proceso, estable | ~1.960 MB | ~490 MB |
+| Lectura | 5,6 s | 2,3 s |
+| ms por recuerdo | 45 | 26 |
+| Acierto 1.º | 90 % | 85 % |
+| Entre los 5 primeros | 97,5 % | 97,5 % |
+| MRR | 0,940 | 0,906 |
+
+`memory_search` devuelve 5 por defecto, y fundidos con la búsqueda por texto: lo que cuenta es «entre los 5 primeros», donde los dos son iguales. Los vectores de uno y otro para el mismo texto tienen coseno 0,981 a 0,995, pero no son el mismo espacio: el cuantizado tiene su nombre (`GRANITE_Q8_ID`) y, al cambiar, la cola los calcula otra vez. En el benchmark de relaciones sus tres contradicciones quedan a 0,863–0,939 (con el completo, 0,880–0,937), así que su umbral de casi duplicados es 0,86 (el completo, 0,87).
+
+Decisión: el cuantizado, siempre en el procesador; el completo solo si es el único archivo. Sin runtime de GPU: una consulta es un texto corto, y el lote nocturno de una memoria personal es pequeño. Cada texto pasa solo por el modelo: un lote se rellena hasta su texto más largo y en el procesador es más lento (68 recuerdos: 5,8 s en lotes de 32, 2,1 s de a uno) y ocupa más memoria a la vez.

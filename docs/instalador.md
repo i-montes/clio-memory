@@ -209,7 +209,7 @@ Mientras tanto, corre `~/.local/bin/clio-memory doctor` con la ruta completa. Qu
 
 El instalador no guarda ninguna preferencia de modelo. El binario usa el mejor que haya en disco: Granite, si no potion, si no búsqueda por texto. `clio-memory setup` te deja elegir (en una terminal) o usa `--model`; `clio-memory setup model` instala Granite y `setup model potion` el estático. Los detalles están en el [README](../README.md#el-modelo-de-vectores).
 
-- Tamaños: Granite 1,28 GB es el modelo solo (con su tokenizador); encima se baja ONNX Runtime y, con una tarjeta NVIDIA, las bibliotecas de CUDA que el sistema no tenga. potion, 531 MB, no necesita nada más.
+- Tamaños: Granite 347 MB es el modelo cuantizado solo (con su tokenizador); encima se baja ONNX Runtime para el procesador. No se baja nada para la GPU. Al instalar Granite se quita lo que dejaron las versiones anteriores a la 0.9: el modelo completo (`model.onnx`, 1,25 GB) y las bibliotecas de CUDA. potion, 531 MB, no necesita nada más.
 - Granite necesita ONNX Runtime, que `setup model` baja solo. Hay runtime publicado para Linux x86_64, Linux aarch64 y macOS arm64. En **macOS x86_64** no lo hay, así que ahí sirve potion, o texto.
 - No hay forma de quitar un solo modelo: `uninstall --models` borra todos (ver arriba).
 - En una terminal, elegir un modelo peor que el instalado ofrece borrar el mejor (y ONNX Runtime) y pregunta antes, con su tamaño y avisando que los modelos de `~/.cache/clio-models` también los usa Clio (si los necesita, se vuelven a bajar); un no lo deja. Sin preguntas (con `--yes` o sin terminal) nunca se borra un modelo, tampoco con `--model`.

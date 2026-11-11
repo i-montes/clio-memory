@@ -868,7 +868,7 @@ impl Reader {
     }
 }
 
-/// The reader leaves memory after five idle minutes, copies of the vectors included.
+/// The reader leaves memory after an idle minute, copies of the vectors included.
 fn vector_reader(path: &Path) -> Result<IdleCache<Reader>> {
     let owned = path.to_path_buf();
     Ok(IdleCache::new(

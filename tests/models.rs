@@ -103,11 +103,11 @@ fn granite_is_pinned_by_revision_and_hash() {
     );
     assert_eq!(GRANITE.rev, "44399559930365213510b1ee2eb15ded83374f0e");
     let names: Vec<&str> = GRANITE.files.iter().map(|f| f.local).collect();
-    assert_eq!(names, ["tokenizer.json", "model.onnx"]);
+    assert_eq!(names, ["tokenizer.json", "model_quint8_avx2.onnx"]);
     assert!(GRANITE.files.iter().all(|f| f.sha256.len() == 64));
     assert_eq!(
-        GRANITE.url("model.onnx").unwrap(),
-        "https://huggingface.co/ibm-granite/granite-embedding-311m-multilingual-r2/resolve/44399559930365213510b1ee2eb15ded83374f0e/onnx/model.onnx"
+        GRANITE.url("model_quint8_avx2.onnx").unwrap(),
+        "https://huggingface.co/ibm-granite/granite-embedding-311m-multilingual-r2/resolve/44399559930365213510b1ee2eb15ded83374f0e/onnx/model_quint8_avx2.onnx"
     );
     assert_eq!(POTION.files.len(), 3);
 }

@@ -93,8 +93,9 @@ impl ModelSpec {
     }
 }
 
-/// The default model: Granite Embedding 311M multilingual R2 (IBM, Apache-2.0), the full ONNX
-/// model, on the GPU or the CPU (`bench/embeddings/results.md`).
+/// The default model: Granite Embedding 311M multilingual R2 (IBM, Apache-2.0), its quantized ONNX
+/// model, on the CPU: a quarter of the full one's size and memory, the same first five
+/// (`bench/embeddings/results.md`).
 pub const GRANITE: ModelSpec = ModelSpec {
     repo: "ibm-granite/granite-embedding-311m-multilingual-r2",
     rev: "44399559930365213510b1ee2eb15ded83374f0e",
@@ -107,10 +108,10 @@ pub const GRANITE: ModelSpec = ModelSpec {
             size: 33384821,
         },
         ModelFile {
-            remote: "onnx/model.onnx",
-            local: "model.onnx",
-            sha256: "75f9f258bf5013f5fe8a4dad61dd0fd16ac0cbaa7a106e3d3f41c2d04a42d541",
-            size: 1247170481,
+            remote: "onnx/model_quint8_avx2.onnx",
+            local: "model_quint8_avx2.onnx",
+            sha256: "f1fdd44e7e1ac51f12ab7957c7bd092e064d596c288513bf9d326842f669edee",
+            size: 313421909,
         },
     ],
 };
@@ -536,15 +537,13 @@ pub fn install_model(
     Ok(said)
 }
 
-/// An archive of the runtime the model needs (ONNX Runtime, and CUDA's libraries for the GPU):
-/// where from, its sha256, the folder under the runtime's it unpacks into, and the library that,
-/// when the system already has it, makes it unnecessary.
+/// An archive of the runtime the model needs (ONNX Runtime for the CPU): where from, its sha256,
+/// and the folder under the runtime's it unpacks into.
 #[derive(Clone, Copy, Debug)]
 pub struct Archive {
     pub url: &'static str,
     pub sha256: &'static str,
     pub into: &'static str,
-    pub system_lib: Option<&'static str>,
 }
 
 /// Where `setup model` leaves the runtime, relative to the home: beside the models, where Granite
@@ -556,7 +555,6 @@ const fn ort(url: &'static str, sha256: &'static str) -> Archive {
         url,
         sha256,
         into: "ort",
-        system_lib: None,
     }
 }
 
@@ -581,99 +579,12 @@ const ORT_MACOS_ARM64: Archive = ort(
     ),
     "2e1344a1926ee50eb25b38153cb6992c3567515aef0e677a1a520a1798896d6f",
 );
-/// With the CUDA execution provider; it also runs on the CPU when the GPU does not answer.
-const ORT_LINUX_X64_GPU: Archive = ort(
-    concat!(
-        "https://github.com/microsoft/onnxruntime/releases/download/v1.31.1/",
-        "onnxruntime-linux-x64-gpu_cuda13-1.31.1.tgz"
-    ),
-    "b2146862e691f7e338f5aff9c7a9a5567c2ca57cf01442a1adb3a13bf62d9095",
-);
-/// cuDNN 9 and the CUDA 13 libraries the CUDA provider loads, from NVIDIA's redistributables.
-const CUDA: [Archive; 6] = [
-    Archive {
-        url: concat!(
-            "https://developer.download.nvidia.com/compute/",
-            "cudnn/redist/cudnn/linux-x86_64/cudnn-linux-x86_64-9.28.0.42_cuda13-archive.tar.xz"
-        ),
-        sha256: "06409e4ab0a78664dc313c5a71d4444e1f8a8cd3eceee74c11c6eef1c9178e1e",
-        into: "cudnn",
-        system_lib: Some("libcudnn.so.9"),
-    },
-    Archive {
-        url: concat!(
-            "https://developer.download.nvidia.com/compute/",
-            "cuda/redist/cuda_cudart/linux-x86_64/cuda_cudart-linux-x86_64-13.5.37-archive.tar.xz"
-        ),
-        sha256: "26ca1b8963ce1b73e0e77113c711730545cacaaee7233c0526477d96d4c621fe",
-        into: "cuda-cudart",
-        system_lib: Some("libcudart.so.13"),
-    },
-    Archive {
-        url: concat!(
-            "https://developer.download.nvidia.com/compute/",
-            "cuda/redist/libcublas/linux-x86_64/libcublas-linux-x86_64-13.10.0.20-archive.tar.xz"
-        ),
-        sha256: "6da2dd456733bc45235e344a6e6aab3e8f43fb775a835c5dc432f4a1fc9f93d2",
-        into: "cuda-cublas",
-        system_lib: Some("libcublas.so.13"),
-    },
-    Archive {
-        url: concat!(
-            "https://developer.download.nvidia.com/compute/",
-            "cuda/redist/cuda_nvrtc/linux-x86_64/cuda_nvrtc-linux-x86_64-13.5.37-archive.tar.xz"
-        ),
-        sha256: "aa4df05e6d97304a1443af87690f20a7a38b0fef4169d34cf30c860ba5ee28fa",
-        into: "cuda-nvrtc",
-        system_lib: Some("libnvrtc.so.13"),
-    },
-    Archive {
-        url: concat!(
-            "https://developer.download.nvidia.com/compute/",
-            "cuda/redist/libcurand/linux-x86_64/libcurand-linux-x86_64-10.4.5.25-archive.tar.xz"
-        ),
-        sha256: "b58397cff0012cf2d143fca148aa7a58831b758cfaf2d4433f35cf267ea9b19b",
-        into: "cuda-curand",
-        system_lib: Some("libcurand.so.10"),
-    },
-    Archive {
-        url: concat!(
-            "https://developer.download.nvidia.com/compute/",
-            "cuda/redist/libcufft/linux-x86_64/libcufft-linux-x86_64-12.5.0.14-archive.tar.xz"
-        ),
-        sha256: "a1d046fc32fec7c2484baad25b22252b0fff770cd698968bd826da51c22a0a01",
-        into: "cuda-cufft",
-        system_lib: Some("libcufft.so.12"),
-    },
-];
-/// CUDA 13 needs a driver of this branch or newer.
-const CUDA13_DRIVER: u32 = 580;
 
-/// The major version of the NVIDIA driver, from `/proc/driver/nvidia/version`.
-pub fn driver_major(text: &str) -> Option<u32> {
-    let line = text.lines().find(|l| l.contains("Kernel Module"))?;
-    line.split_whitespace()
-        .find_map(|w| w.split_once('.').and_then(|(m, _)| m.parse().ok()))
-}
-
-/// What this machine needs to run Granite: the CPU runtime; with an NVIDIA card whose driver runs
-/// CUDA 13, the GPU one, cuDNN, and the CUDA libraries `system_libs` (`ldconfig -p`) lacks. A system
-/// without a published runtime gets nothing (the static model, or text).
-pub fn runtime_for(
-    os: &str,
-    arch: &str,
-    nvidia_driver: Option<u32>,
-    system_libs: &str,
-) -> Vec<&'static Archive> {
+/// What this system needs to run Granite: the CPU runtime. A system without a published runtime
+/// gets nothing (the static model, or text). There is no GPU runtime: one query is a short text
+/// the CPU turns into a vector in about 26 ms, and a GPU kept a copy of the model per agent.
+pub fn runtime_for(os: &str, arch: &str) -> Vec<&'static Archive> {
     match (os, arch) {
-        ("linux", "x86_64") if nvidia_driver.is_some_and(|d| d >= CUDA13_DRIVER) => {
-            std::iter::once(&ORT_LINUX_X64_GPU)
-                .chain(
-                    CUDA.iter()
-                        .filter(|a| !a.system_lib.is_some_and(|l| system_libs.contains(l))),
-                )
-                .collect()
-        }
         ("linux", "x86_64") => vec![&ORT_LINUX_X64],
         ("linux", "aarch64") => vec![&ORT_LINUX_AARCH64],
         ("macos", "aarch64") => vec![&ORT_MACOS_ARM64],
@@ -681,17 +592,43 @@ pub fn runtime_for(
     }
 }
 
-/// What this machine needs, asking the machine.
+/// What this machine needs.
 pub fn runtime_here() -> Vec<&'static Archive> {
-    let driver = std::fs::read_to_string("/proc/driver/nvidia/version")
-        .ok()
-        .and_then(|t| driver_major(&t));
-    let libs = Command::new("ldconfig")
-        .arg("-p")
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default();
-    runtime_for(std::env::consts::OS, std::env::consts::ARCH, driver, &libs)
+    runtime_for(std::env::consts::OS, std::env::consts::ARCH)
+}
+
+/// What versions before 0.9 installed and nothing uses now, relative to the home: Granite's full
+/// model (the quantized one took its place) and the CUDA libraries of the GPU runtime.
+pub const OBSOLETE: [&str; 7] = [
+    ".cache/clio-models/granite-embedding-311m-multilingual-r2/model.onnx",
+    ".cache/clio-models/onnxruntime/cudnn",
+    ".cache/clio-models/onnxruntime/cuda-cudart",
+    ".cache/clio-models/onnxruntime/cuda-cublas",
+    ".cache/clio-models/onnxruntime/cuda-nvrtc",
+    ".cache/clio-models/onnxruntime/cuda-curand",
+    ".cache/clio-models/onnxruntime/cuda-cufft",
+];
+
+/// Removes from `home` what is in `OBSOLETE` (after Granite and its runtime are in place): what
+/// was removed, or why it could not be.
+pub fn remove_obsolete(home: &Path) -> Vec<String> {
+    let mut said = Vec::new();
+    for rel in OBSOLETE {
+        let path = home.join(rel);
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        let gone = if meta.is_dir() {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        said.push(match gone {
+            Ok(()) => format!("quitado   {}", path.display()),
+            Err(e) => format!("no se pudo quitar {}: {e}", path.display()),
+        });
+    }
+    said
 }
 
 /// Installs `archives` under `root`, each in its folder: one already there with the same sha256 is

@@ -45,7 +45,7 @@ pub mod tools;
 
 pub use clock::{Clock, FixedClock, SystemClock};
 pub use decider::{Decider, NearDuplicateDecider};
-pub use embed::{Embedder, GRANITE_ID, relevance_floor};
+pub use embed::{Embedder, GRANITE_ID, GRANITE_Q8_ID, relevance_floor};
 pub use engine::{
     Engine, Judge, Judged, SLEEP_PURGE_DAYS, SLEEP_REASON, SLEEP_SECRET, SLEEP_SECRET_DAYS,
     Sureness, Vectors,

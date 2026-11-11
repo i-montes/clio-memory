@@ -2576,11 +2576,17 @@ impl Engine {
 
         let mut vector: Vec<(MemoryId, f32)> = Vec::new();
         if let Some(e) = &self.embedder {
-            // A query the model cannot represent just means no vector list: text still answers.
-            let q = e
-                .embed(&[query])?
-                .pop()
-                .and_then(|v| unit_vector(v, e.dim()).ok());
+            // A query the model cannot represent, or a model that does not load or run (it is
+            // read on the first query), just means no vector list: text still answers.
+            let q = match e.embed(&[query]) {
+                Ok(mut v) => v.pop().and_then(|v| unit_vector(v, e.dim()).ok()),
+                Err(why) => {
+                    eprintln!(
+                        "clio-memory: búsqueda solo por texto, el modelo de vectores falló: {why}"
+                    );
+                    None
+                }
+            };
             if let Some(q) = q {
                 let floor = opts
                     .model_floor

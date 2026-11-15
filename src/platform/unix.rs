@@ -51,14 +51,22 @@ pub fn create_private_file(path: &Path) -> Result<File> {
 pub fn try_lock_writer(db_path: &Path) -> Result<WriterLock> {
     let mut name = db_path.as_os_str().to_owned();
     name.push(".lock");
+    try_lock(&PathBuf::from(name))?
+        .map(|file| WriterLock { _file: file })
+        .ok_or(Error::WriterLocked)
+}
+
+/// Takes an exclusive, non-blocking `flock` on `path` (created 0600 if missing), held while the
+/// file is open; `None` when another process holds it.
+pub fn try_lock(path: &Path) -> Result<Option<File>> {
     let file = OpenOptions::new()
         .create(true)
         .append(true)
         .mode(0o600)
-        .open(PathBuf::from(name))?;
+        .open(path)?;
     match file.try_lock() {
-        Ok(()) => Ok(WriterLock { _file: file }),
-        Err(TryLockError::WouldBlock) => Err(Error::WriterLocked),
+        Ok(()) => Ok(Some(file)),
+        Err(TryLockError::WouldBlock) => Ok(None),
         Err(TryLockError::Error(e)) => Err(e.into()),
     }
 }

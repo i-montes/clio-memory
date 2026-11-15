@@ -116,6 +116,11 @@ fn main() -> ExitCode {
             db,
             ..
         })) => uninstall(&db, agents.as_deref(), models, data, yes),
+        Ok(args::Parsed::Run(args::Cli {
+            command: args::Command::Daemon { status, stop },
+            db,
+            ..
+        })) => done(daemon(&db, status, stop)),
         Ok(args::Parsed::Run(cli)) if matches!(cli.command, args::Command::Mcp) => {
             match mcp(&cli.db) {
                 Ok(()) => ExitCode::SUCCESS,
@@ -162,6 +167,56 @@ fn mcp(db: &std::path::Path) -> Result<(), String> {
         &cwd,
         &home,
     )
+}
+
+/// `clio-memory daemon`: serve `<folder>/memory.db`'s folder in the foreground, or ask the one
+/// that runs.
+fn daemon(db: &std::path::Path, status: bool, stop: bool) -> Result<Vec<String>, String> {
+    use clio_memory::agent::memory::DB_FILE;
+    use clio_memory::daemon::{NO_DAEMON, request, serve};
+    if db.file_name().is_none_or(|n| n != DB_FILE) {
+        return Err(format!(
+            "daemon uses <folder>/{DB_FILE}: give --db a file called {DB_FILE}, or set CLIO_MEMORY_DATA"
+        ));
+    }
+    let data = db.parent().unwrap_or(std::path::Path::new("."));
+    // Only "nobody is listening" means it is not running; any other failure is said as it is.
+    let ask = |op: &str| match request(data, None, &serde_json::json!({"op": op})) {
+        Ok(a) if a["ok"] == true => Ok(Some(a)),
+        Ok(a) => Err(format!(
+            "el demonio contestó: {}",
+            a["text"].as_str().unwrap_or_default()
+        )),
+        Err(e) if e.starts_with(NO_DAEMON) => Ok(None),
+        Err(e) => Err(e),
+    };
+    if stop {
+        return Ok(vec![match ask("shutdown")? {
+            Some(_) => "demonio detenido".into(),
+            None => "no había demonio".into(),
+        }]);
+    }
+    if status {
+        return Ok(vec![match ask("status")? {
+            Some(a) => format!(
+                "demonio: activo (pid {}, v{}, modelo {}, {} sesiones)",
+                a["pid"],
+                a["bin"].as_str().unwrap_or_default(),
+                if a["loaded"] == true {
+                    "cargado"
+                } else {
+                    "sin cargar"
+                },
+                a["sessions"]
+            ),
+            None => "demonio: inactivo (se inicia solo con la primera llamada)".into(),
+        }]);
+    }
+    let idle = std::env::var("CLIO_MEMORY_DAEMON_IDLE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(600);
+    serve(data, &home()?, std::time::Duration::from_secs(idle)).map(|()| vec![])
 }
 
 fn done(r: Result<Vec<String>, String>) -> ExitCode {

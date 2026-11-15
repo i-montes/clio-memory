@@ -217,7 +217,7 @@ pub struct Memory {
     embed_error: Option<String>,
 }
 
-fn private_dir(dir: &Path) -> Res<()> {
+pub(crate) fn private_dir(dir: &Path) -> Res<()> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
     std::fs::DirBuilder::new()
         .recursive(true)

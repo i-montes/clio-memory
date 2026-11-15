@@ -314,3 +314,16 @@ pub fn quarantined(f: &Fixture, text: &str) -> MemoryId {
         .unwrap();
     id
 }
+
+/// A temporary folder with a short path: a Unix socket's path has room for about 100 bytes, and
+/// macOS's temporary folder alone takes half of them.
+pub fn short_dir() -> TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    if dir.path().as_os_str().len() <= 60 {
+        return dir;
+    }
+    tempfile::Builder::new()
+        .prefix("cm")
+        .tempdir_in("/tmp")
+        .unwrap()
+}

@@ -1,8 +1,14 @@
 //! The daemon: one process per data folder that answers every agent's tool calls with one vector
 //! model. This is its core, without sockets: one request line in, one answer line out
-//! ([`proto`]). Tool calls are served one at a time, each in the session of its client.
+//! ([`proto`]). Tool calls are served one at a time, each in the session of its client. [`serve`]
+//! puts it behind a Unix socket; [`request`] is the client's side.
 
+mod client;
 pub mod proto;
+mod server;
+
+pub use client::{Launch, NO_DAEMON, request, socket_path};
+pub use server::serve;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

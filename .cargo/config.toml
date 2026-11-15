@@ -1,3 +1,5 @@
 # Tests, examples and benches load ONNX Runtime in their own process: never with telemetry on.
 [env]
 ORT_DISABLE_TELEMETRY = "1"
+# Tests reach only the daemons they launch: never a real one through an inherited variable.
+CLIO_MEMORY_SOCK = { value = "", force = true }

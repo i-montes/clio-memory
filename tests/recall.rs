@@ -3,6 +3,7 @@
 mod common;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use clio_memory::*;
 use common::*;
@@ -560,4 +561,62 @@ fn limit_zero_is_not_an_abstention() {
         !r.abstained,
         "a relevant memory exists; the cap, not relevance, emptied the list"
     );
+}
+
+#[test]
+fn a_word_only_in_the_title_is_found() {
+    let f = fixture();
+    let id = f
+        .engine
+        .propose(Proposal {
+            title: Some("Zanahoria cuántica elegida".into()),
+            ..prop(
+                f.scope,
+                f.person,
+                "se eligió el proveedor de despliegue por costo",
+            )
+        })
+        .unwrap()
+        .memory;
+    let r = f
+        .engine
+        .recall(f.scope, "zanahoria cuántica", &RecallOpts::default())
+        .unwrap();
+    assert!(!r.abstained);
+    assert_eq!(r.hits[0].memory.id, id);
+}
+
+#[test]
+fn recall_many_embeds_the_query_once() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let f = fixture_with(Arc::new(CountingEmbedder {
+        inner: HashEmbedder::new("hash", 16),
+        calls: calls.clone(),
+    }));
+    let other = f.engine.create_scope("otro", "es").unwrap();
+    let third = f.engine.create_scope("tercero", "es").unwrap();
+    calls.store(0, Ordering::SeqCst);
+    f.engine
+        .recall_many(
+            &[f.scope, other, third],
+            "una pregunta",
+            &RecallOpts::default(),
+        )
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_query_with_no_letters_never_reaches_the_model_through_recall_many() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let f = fixture_with(Arc::new(CountingEmbedder {
+        inner: HashEmbedder::new("hash", 16),
+        calls: calls.clone(),
+    }));
+    let r = f
+        .engine
+        .recall_many(&[f.scope], "¿¿¿ ???", &RecallOpts::default())
+        .unwrap();
+    assert!(r.abstained);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
 }

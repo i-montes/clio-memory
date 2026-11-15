@@ -214,6 +214,8 @@ pub struct Session {
     bytes: usize,
     saves: u32,
     changes: u32,
+    /// When this session last told the sleep the memory is in use (`sleep::mark_used`).
+    marked: i64,
 }
 
 impl Session {
@@ -227,6 +229,7 @@ impl Session {
             bytes: 0,
             saves: 0,
             changes: 0,
+            marked: 0,
         }
     }
 
@@ -239,6 +242,12 @@ impl Session {
 
     /// Runs tool `name` with `args`: the answer for the model, or why not (also for the model).
     pub fn call(&mut self, name: &str, args: &Value) -> Result<String, String> {
+        // A read is a use too: the sleep waits for it (at most one mark a minute).
+        let now = now_secs();
+        if now - self.marked >= 60 {
+            crate::sleep::mark_used(&self.data, now);
+            self.marked = now;
+        }
         let name = if name == OLD_SAVE {
             "memory_save"
         } else {

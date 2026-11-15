@@ -27,3 +27,11 @@ fn update_fails_when_the_installer_is_missing_or_fails() {
     fs::write(&failing, "exit 3\n").unwrap();
     assert!(update(&format!("file://{}", failing.display())).is_err());
 }
+
+#[test]
+fn the_installer_comes_from_the_latest_release() {
+    assert_eq!(
+        clio_memory::setup::INSTALLER_URL,
+        "https://github.com/i-montes/clio-memory/releases/latest/download/install.sh"
+    );
+}

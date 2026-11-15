@@ -472,15 +472,39 @@ fn restore_record(
             )?;
         }
         ExportRecord::Operation(op) => {
-            let touched = op
+            let touched: Vec<MemoryId> = op
                 .memory
                 .into_iter()
-                .chain(op.changes.iter().map(|c| c.memory));
-            if let Some(m) = touched.into_iter().find(|m| purged.contains(&m.0)) {
-                return Err(Error::BadImport(format!(
-                    "memory {} was purged; an operation after the purge touches it",
-                    m.0
-                )));
+                .chain(op.changes.iter().map(|c| c.memory))
+                .collect();
+            // the ids an operation names feed `next_memory_id` (through `operation_memories`)
+            if touched.iter().any(|m| m.0 <= 0 || m.0 >= MAX_RESTORED_ID) {
+                return bad("a memory id is out of range");
+            }
+            let mut hit: Vec<MemoryId> = touched
+                .into_iter()
+                .filter(|m| purged.contains(&m.0))
+                .collect();
+            hit.sort_by_key(|m| m.0);
+            hit.dedup();
+            // every purged id the operation touches is judged, not only the first
+            for m in &hit {
+                // v0.9.0 gave a purged id to a new memory: that file is honest. The id is born
+                // again only by an operation that creates it: no purge, at least one change on it,
+                // and none of them with a `before`.
+                let mut on_it = op.changes.iter().filter(|c| c.memory == *m).peekable();
+                let reborn = op.kind != OpKind::Purge
+                    && on_it.peek().is_some()
+                    && on_it.all(|c| c.before.is_none());
+                if !reborn {
+                    return Err(Error::BadImport(format!(
+                        "memory {} was purged; an operation after the purge touches it",
+                        m.0
+                    )));
+                }
+            }
+            for m in &hit {
+                purged.remove(&m.0);
             }
             if op.kind == OpKind::Purge {
                 let Some(m) = op.memory.filter(|_| op.changes.is_empty()) else {
@@ -1120,6 +1144,8 @@ fn scrub(row: &mut MemoryRow) {
     row.session = None;
     row.episode = None;
     row.source = None;
+    row.title = None;
+    row.category = None;
 }
 
 /// One memory's purge, in its own transaction (see `Store::purge`); the caller rewrites the file.
@@ -1197,6 +1223,55 @@ fn redact_operations(tx: &Connection, memory: MemoryId) -> Result<()> {
         )?;
     }
     Ok(())
+}
+
+/// Scrubs, in every purge of the log, the snapshots of its memory that older purges left dirty
+/// (the title and the category were not erased before v0.9.1). Only operations before the purge:
+/// a later one may belong to a memory born again under the same id. With `write` false it only
+/// counts. Returns how many snapshots (a change's `before` or `after`) were dirty.
+fn rescrub_in(tx: &Connection, write: bool) -> Result<usize> {
+    let purges = tx
+        .prepare("SELECT id, memory FROM operations WHERE kind = 'Purge' AND memory IS NOT NULL")?
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut dirty = 0;
+    for (purge, memory) in purges {
+        let found = tx
+            .prepare(
+                "SELECT o.id, o.changes FROM operation_memories m JOIN operations o ON o.id = m.op
+                 WHERE m.memory = ?1 AND o.id < ?2",
+            )?
+            .query_map([memory, purge], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        for (id, text) in found {
+            let mut changes: Vec<Change> = serde_json::from_str(&text)?;
+            let mut here = 0;
+            for c in changes.iter_mut().filter(|c| c.memory.0 == memory) {
+                let mut clean = |row: &mut MemoryRow| {
+                    let mut scrubbed = row.clone();
+                    scrub(&mut scrubbed);
+                    if scrubbed != *row {
+                        *row = scrubbed;
+                        here += 1;
+                    }
+                };
+                clean(&mut c.after);
+                if let Some(b) = c.before.as_mut() {
+                    clean(b);
+                }
+            }
+            if write && here > 0 {
+                tx.execute(
+                    "UPDATE operations SET changes = ?1 WHERE id = ?2",
+                    params![serde_json::to_string(&changes)?, id],
+                )?;
+            }
+            dirty += here;
+        }
+    }
+    Ok(dirty)
 }
 
 fn spend_wrong_in(conn: &Connection, memory: MemoryId) -> Result<()> {
@@ -1332,9 +1407,14 @@ impl Store for SqliteStore {
 
     fn next_memory_id(&self) -> Result<MemoryId> {
         let conn = self.writer()?;
-        let max: i64 = conn.query_row("SELECT COALESCE(MAX(id), 0) FROM memories", [], |r| {
-            r.get(0)
-        })?;
+        // a purge deletes the row but `operation_memories` keeps the id: it is never given twice
+        let max: i64 = conn.query_row(
+            "SELECT MAX(m) FROM (
+               SELECT COALESCE(MAX(id), 0) AS m FROM memories
+               UNION ALL SELECT COALESCE(MAX(memory), 0) FROM operation_memories)",
+            [],
+            |r| r.get(0),
+        )?;
         Ok(MemoryId(max + 1))
     }
 
@@ -1722,6 +1802,25 @@ impl Store for SqliteStore {
         }
     }
 
+    fn unscrubbed_purged(&self) -> Result<usize> {
+        rescrub_in(&self.reader()?, false)
+    }
+
+    fn rescrub_purged(&self) -> Result<usize> {
+        let mut conn = self.writer()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let cleaned = rescrub_in(&tx, true)?;
+        tx.commit()?;
+        if cleaned > 0 {
+            // like a purge: the old versions of the rows are still in freed pages and the log
+            conn.execute_batch("VACUUM")?;
+            conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+                r.get::<_, i64>(0)
+            })?;
+        }
+        Ok(cleaned)
+    }
+
     fn is_pinned(&self, memory: MemoryId) -> Result<bool> {
         Ok(self.reader()?.query_row(
             "SELECT EXISTS(SELECT 1 FROM pins WHERE memory = ?1)",
@@ -1736,7 +1835,8 @@ impl Store for SqliteStore {
             .query_row(
                 "SELECT o.id, o.scope, o.actor, o.at, o.reason
                  FROM operation_memories m JOIN operations o ON o.id = m.op
-                 WHERE m.memory = ?1 AND o.kind = 'Purge'",
+                 WHERE m.memory = ?1 AND o.kind = 'Purge'
+                 ORDER BY o.id DESC LIMIT 1",
                 [id.0],
                 |r| {
                     Ok(Tombstone {
@@ -2023,6 +2123,18 @@ impl Store for SqliteStore {
         let count = |sql: &str| -> Result<i64> { Ok(conn.query_row(sql, [], |r| r.get(0))?) };
         let orphan_vectors =
             count("SELECT COUNT(*) FROM vectors WHERE memory NOT IN (SELECT id FROM memories)")?;
+        let dirty = rescrub_in(&conn, false)?;
+        check(
+            "purged_scrubbed",
+            dirty == 0,
+            if dirty == 0 {
+                "no purged memory carries a title or a category".into()
+            } else {
+                format!(
+                    "{dirty} snapshots of purged memories still carry a title or a category (the next sleep cleans them)"
+                )
+            },
+        );
         check(
             "no_orphan_vectors",
             orphan_vectors == 0,
@@ -2145,10 +2257,18 @@ impl Store for SqliteStore {
             Error::Sqlite(e) => Error::BadImport(format!("the file is inconsistent: {e}")),
             other => other,
         })?;
+        // an export from before v0.9.1 can carry the title of a purged memory: clean, not reject
+        let cleaned = rescrub_in(&tx, true)?;
         if let Some(job) = &embed_job {
             insert_job(&tx, job)?;
         }
         tx.commit()?;
+        if cleaned > 0 {
+            conn.execute_batch("VACUUM")?;
+            conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+                r.get::<_, i64>(0)
+            })?;
+        }
         Ok(summary)
     }
 

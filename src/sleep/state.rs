@@ -1,6 +1,7 @@
 //! What the sleep keeps between nights, in `<data>/sleep/` (0700, files 0600): its state, one
-//! report a night (the last 60) and a copy of the file a night (the last 3, so a purged secret does
-//! not live on in a copy for long). Nothing of it is in the database.
+//! report a night (the last 60), a copy of the file a night (the last 3, so a purged secret does
+//! not live on in a copy for long) and when the memory was last read (`last-use`). Nothing of it is
+//! in the database.
 
 use std::path::{Path, PathBuf};
 
@@ -11,8 +12,8 @@ use super::Report;
 const COPIES_KEPT: usize = 3;
 const REPORTS_KEPT: usize = 60;
 
-/// Where the sleep is: the last operation it reviewed, the rules it reviewed with, and when it
-/// last finished a night.
+/// Where the sleep is: the last operation it reviewed, the rules it reviewed with, when it last
+/// finished a night and when the model last merged.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SleepState {
     pub cursor: i64,
@@ -21,6 +22,12 @@ pub struct SleepState {
     /// Memories a cap or a missing piece left for the next night.
     #[serde(default)]
     pub pending: Vec<i64>,
+    /// When the model step last ran: at most once in `MERGE_EVERY`.
+    #[serde(default)]
+    pub last_merge: i64,
+    /// Memories that form a near-duplicate group, waiting for the model's next turn.
+    #[serde(default)]
+    pub awaiting_merge: Vec<i64>,
 }
 
 /// The folder the sleep keeps all of this in, beside the memory file.
@@ -65,6 +72,26 @@ pub(crate) fn save(data: &Path, state: &SleepState) -> Result<(), String> {
     let d = private_dir(data)?;
     let json = serde_json::to_vec_pretty(state).map_err(|e| e.to_string())?;
     write_private(&d.join("state.json"), &json)
+}
+
+/// `now` in `<data>/sleep/last-use`: whoever answers a call says the memory is in use. A failure
+/// is silent (the call matters more than the mark), and a memory folder that is not there yet is
+/// not made for it.
+pub fn mark_used(data: &Path, now: i64) {
+    if !data.is_dir() {
+        return;
+    }
+    if let Ok(d) = private_dir(data) {
+        let _ = write_private(&d.join("last-use"), now.to_string().as_bytes());
+    }
+}
+
+/// When the memory was last read (`mark_used`); 0 when it never was or it cannot be read.
+pub fn last_used(data: &Path) -> i64 {
+    std::fs::read_to_string(dir(data).join("last-use"))
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0)
 }
 
 pub(crate) fn load_report(data: &Path, night: &str) -> Option<Report> {

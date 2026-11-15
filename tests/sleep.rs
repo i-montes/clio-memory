@@ -187,12 +187,267 @@ fn write_state(n: &Night, last_complete: i64) {
 }
 
 #[test]
-fn it_skips_when_slept_less_than_20h_ago() {
+fn it_skips_when_nothing_changed_since_the_last_sleep() {
     let n = night();
-    write_state(&n, NOW - 19 * 3600);
-    assert!(matches!(n.sleep(NOW, None, false), Slept::Skipped(_)));
-    write_state(&n, NOW - 21 * 3600);
+    n.write(NOW - DAY, |e, n| {
+        n.save(e, n.agent, "un dato de ayer");
+    });
+    assert!(matches!(n.sleep(NOW, None, false), Slept::Done(r) if r.complete));
+    assert!(matches!(
+        n.sleep(NOW + 2 * 3600, None, false),
+        Slept::Skipped("nada cambió desde el último sueño")
+    ));
+}
+
+#[test]
+fn it_sleeps_again_the_same_day_when_something_changed() {
+    let n = night();
+    n.write(NOW - DAY, |e, n| {
+        n.save(e, n.agent, "un dato de ayer");
+    });
+    assert!(matches!(n.sleep(NOW, None, false), Slept::Done(r) if r.complete));
+    n.write(NOW + 60, |e, n| {
+        n.save(e, n.agent, "un dato nuevo");
+    });
+    match n.sleep(NOW + 3600, None, false) {
+        Slept::Done(r) => assert!(r.complete, "{r:?}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_read_in_the_last_30_minutes_counts_as_use() {
+    let n = night();
+    n.write(NOW - 2 * 3600, |e, n| {
+        n.save(e, n.agent, "un dato de hace dos horas");
+    });
+    mark_used(&n.data, NOW - 60);
+    assert!(matches!(
+        n.sleep(NOW, None, false),
+        Slept::Skipped("la memoria está en uso")
+    ));
+}
+
+#[test]
+fn a_read_during_the_sleep_stops_it() {
+    let n = night();
+    n.write(NOW - DAY, |e, n| {
+        pair(n, e, DOCKER);
+    });
+    let data = n.data.clone();
+    let fake = Fake::new(move |g| {
+        mark_used(&data, NOW + 1);
+        faithful(g)
+    });
+    let r = n.report(NOW, Some(&fake));
+    assert!(!r.complete);
+    assert!(r.merged.is_empty());
+}
+
+#[test]
+fn a_day_of_housekeeping_runs_even_when_nothing_changed() {
+    let n = night();
+    write_state(&n, NOW - 23 * 3600);
+    assert!(matches!(
+        n.sleep(NOW, None, false),
+        Slept::Skipped("nada cambió desde el último sueño")
+    ));
+    write_state(&n, NOW - 25 * 3600);
     assert!(matches!(n.sleep(NOW, None, false), Slept::Done(_)));
+}
+
+/// The sleep's state file as JSON (`null` when there is none yet).
+fn state(n: &Night) -> serde_json::Value {
+    std::fs::read_to_string(n.data.join("sleep/state.json")).map_or(serde_json::Value::Null, |s| {
+        serde_json::from_str(&s).unwrap()
+    })
+}
+
+/// A list of memory ids in the state (`pending`, `awaiting_merge`); empty when absent.
+fn ids(n: &Night, key: &str) -> Vec<i64> {
+    serde_json::from_value(state(n)[key].clone()).unwrap_or_default()
+}
+
+#[test]
+fn the_merger_runs_at_most_once_in_20_hours() {
+    let n = night();
+    n.write(NOW - 3600, |e, n| {
+        pair(n, e, DOCKER);
+    });
+    let fake = Fake::new(faithful);
+    match n.sleep(NOW, Some(&fake), false) {
+        Slept::Done(r) => assert_eq!(r.merged.len(), 1, "{r:?}"),
+        other => panic!("{other:?}"),
+    }
+    let (c, d) = {
+        let e = open(&n.data, NOW + 60);
+        pair(&n, &e, POSTGRES)
+    };
+    n.write(NOW + 120, |e, n| {
+        n.save(e, n.agent, "un dato suelto sin pareja");
+    });
+    match n.sleep(NOW + 3600, Some(&fake), false) {
+        Slept::Done(r) => assert!(r.complete, "{r:?}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(fake.calls(), 1);
+    // Only the pair waits for the model's turn, not every new memory.
+    let mut waiting = ids(&n, "awaiting_merge");
+    waiting.sort_unstable();
+    assert_eq!(waiting, vec![c.0, d.0]);
+    assert!(ids(&n, "pending").is_empty(), "{}", state(&n));
+    // A pair waiting for a turn that has not come is no reason to wake every half hour.
+    assert!(matches!(
+        n.sleep(NOW + 2 * 3600, Some(&fake), false),
+        Slept::Skipped("nada cambió desde el último sueño")
+    ));
+    // Its turn: the waiting pair is merged.
+    match n.sleep(NOW + 21 * 3600, Some(&fake), false) {
+        Slept::Done(r) => assert!(
+            r.merged.iter().any(|(_, from)| from == &vec![c.0, d.0]),
+            "{r:?}"
+        ),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(fake.calls(), 2);
+    assert!(ids(&n, "awaiting_merge").is_empty(), "{}", state(&n));
+}
+
+#[test]
+fn without_a_merger_a_waiting_group_does_not_keep_waking_the_sleep() {
+    let n = night();
+    let (a, b) = {
+        let e = open(&n.data, NOW - 3600);
+        pair(&n, &e, DOCKER)
+    };
+    // Groups left waiting by another process (Clio shares the state with the CLI).
+    let dir = n.data.join("sleep");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("state.json"),
+        serde_json::json!({
+            "cursor": i64::MAX / 2,
+            "rules_version": signals::RULES_VERSION,
+            "last_complete": NOW,
+            "last_merge": NOW - 30 * 3600,
+            "awaiting_merge": [a.0, b.0],
+        })
+        .to_string(),
+    )
+    .unwrap();
+    // Nobody here can merge them: they are no reason to wake, at 21 h or at any later wake.
+    for wake in [21 * 3600, 21 * 3600 + 1800, 22 * 3600, 23 * 3600] {
+        assert!(
+            matches!(
+                n.sleep(NOW + wake, None, false),
+                Slept::Skipped("nada cambió desde el último sueño")
+            ),
+            "woke at +{wake}"
+        );
+    }
+    // The wait is kept for a sleep that has a merger.
+    let mut waiting = ids(&n, "awaiting_merge");
+    waiting.sort_unstable();
+    assert_eq!(waiting, vec![a.0, b.0]);
+}
+
+#[test]
+fn an_interrupted_sleep_that_called_the_model_still_takes_its_turn() {
+    let n = night();
+    {
+        let e = open(&n.data, NOW - DAY);
+        pair(&n, &e, DOCKER);
+        pair(&n, &e, POSTGRES);
+    }
+    let data = n.data.clone();
+    let (agent, scope) = (n.agent, n.scope);
+    let fake = Fake::new(move |g| {
+        open(&data, NOW)
+            .propose(prop(
+                scope,
+                agent,
+                "Claude Code escribió algo mientras dormía",
+            ))
+            .unwrap();
+        faithful(g)
+    });
+    match n.sleep(NOW, Some(&fake), true) {
+        Slept::Done(r) => assert!(!r.complete, "{r:?}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(state(&n)["last_merge"], NOW, "{}", state(&n));
+    let again = Fake::new(faithful);
+    match n.sleep(NOW + 3600, Some(&again), false) {
+        Slept::Done(r) => assert!(r.complete, "{r:?}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(again.calls(), 0);
+}
+
+#[test]
+fn a_merger_with_no_group_does_not_take_the_turn() {
+    let n = night();
+    n.write(NOW - DAY, |e, n| {
+        n.save(e, n.agent, "un dato suelto sin pareja");
+    });
+    let fake = Fake::new(faithful);
+    match n.sleep(NOW, Some(&fake), false) {
+        Slept::Done(r) => assert!(r.complete, "{r:?}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(fake.calls(), 0);
+    assert_eq!(state(&n)["last_merge"], 0, "{}", state(&n));
+}
+
+#[test]
+fn two_sleeps_of_a_day_share_one_report() {
+    let n = night();
+    let secret = {
+        let e = open(&n.data, NOW - DAY);
+        n.save(&e, n.agent, "la llave del servicio")
+    };
+    // Written before the secret rule knew this format: put straight into the file.
+    rusqlite::Connection::open(db(&n.data))
+        .unwrap()
+        .execute(
+            "UPDATE memories SET content = ?1 WHERE id = ?2",
+            rusqlite::params![
+                concat!(
+                    "la llave es ghp_",
+                    "0123456789abcdefghijABCDEFGHIJ0123456789"
+                ),
+                secret.0
+            ],
+        )
+        .unwrap();
+    match n.sleep(NOW, None, false) {
+        Slept::Done(r) => assert_eq!(r.quarantined.len(), 1, "{r:?}"),
+        other => panic!("{other:?}"),
+    }
+    let copy = n.data.join(format!("sleep/memory-{}.db", night_of(NOW)));
+    let made = |p: &Path| {
+        use std::os::unix::fs::MetadataExt;
+        let m = std::fs::metadata(p).unwrap();
+        (
+            m.ino(),
+            m.mtime(),
+            m.mtime_nsec(),
+            std::fs::read(p).unwrap(),
+        )
+    };
+    let first = made(&copy);
+    n.write(NOW + 60, |e, n| {
+        n.save(e, n.agent, "un dato tranquilo");
+    });
+    match n.sleep(NOW + 3600, None, false) {
+        Slept::Done(r) => assert!(r.complete, "{r:?}"),
+        other => panic!("{other:?}"),
+    }
+    let r = last_report(&n.data).unwrap();
+    assert_eq!(r.quarantined, vec![(secret.0, "sueño: secreto".to_owned())]);
+    assert!(r.complete);
+    // The day's copy is the first sleep's: the second does not make it again.
+    assert!(made(&copy) == first, "the copy was made again");
 }
 
 #[test]
@@ -503,15 +758,19 @@ fn another_writer_stops_the_night_and_the_cursor_stays() {
         .unwrap();
         faithful(g)
     });
-    let before = std::fs::read_to_string(n.data.join("sleep/state.json")).ok();
+    let where_it_is = |s: serde_json::Value| {
+        (
+            s["cursor"].as_i64().unwrap_or(0),
+            serde_json::from_value::<Vec<i64>>(s["pending"].clone()).unwrap_or_default(),
+            s["last_complete"].as_i64().unwrap_or(0),
+        )
+    };
+    let before = where_it_is(state(&n));
     let r = n.report(NOW, Some(&fake));
     assert!(!r.complete);
     assert_eq!(fake.calls(), 1);
     assert!(r.merged.is_empty());
-    assert_eq!(
-        std::fs::read_to_string(n.data.join("sleep/state.json")).ok(),
-        before
-    );
+    assert_eq!(where_it_is(state(&n)), before);
 }
 
 #[test]
@@ -769,4 +1028,58 @@ fn a_manual_run_does_not_take_the_night() {
         Slept::Done(_)
     ));
     assert!(matches!(n.sleep(NOW, None, false), Slept::Done(_)));
+}
+
+#[test]
+fn a_night_scrubs_what_older_purges_left() {
+    let n = night();
+    let gone = {
+        let e = open(&n.data, NOW - 40 * DAY);
+        let id = e
+            .propose(Proposal {
+                title: Some("Viejo título".into()),
+                ..prop(n.scope, n.person, "un dato que se purgará")
+            })
+            .unwrap()
+            .memory;
+        e.purge(id, n.person, "prueba").unwrap();
+        id
+    };
+    // the file as v0.9.0 left it: the title back in the snapshot of the memory's `Add`
+    let conn = rusqlite::Connection::open(db(&n.data)).unwrap();
+    let (op, kind): (i64, String) = conn
+        .query_row(
+            "SELECT o.id, o.kind FROM operation_memories m JOIN operations o ON o.id = m.op
+             WHERE m.memory = ?1 ORDER BY o.id LIMIT 1",
+            [gone.0],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(kind, "Add");
+    conn.execute(
+        "UPDATE operations SET changes = json_set(changes, '$[0].after.title', 'Viejo título') WHERE id = ?1",
+        [op],
+    )
+    .unwrap();
+    drop(conn);
+
+    // a dry run changes nothing
+    let dry = run(
+        &n.data,
+        &n.model,
+        None,
+        &Options {
+            now: true,
+            dry_run: true,
+            clock: Arc::new(FixedClock::new(NOW)),
+        },
+    )
+    .unwrap();
+    assert!(matches!(dry, Slept::Done(_)));
+    assert!(dump_all(&db(&n.data)).contains("Viejo título"));
+
+    let r = n.report(NOW, None);
+    assert!(r.alarms.is_empty(), "{:?}", r.alarms);
+    assert!(!dump_all(&db(&n.data)).contains("Viejo título"));
+    assert_eq!(open(&n.data, NOW).unscrubbed_purged().unwrap(), 0);
 }

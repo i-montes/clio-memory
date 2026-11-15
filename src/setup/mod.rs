@@ -31,9 +31,11 @@ pub const INSTRUCTIONS_LINE: &str =
     "- Mi memoria principal es clio-memory (MCP): úsala según la skill clio-memory.";
 /// The name Claude Code's flow knew it by.
 pub const CLAUDE_MD_LINE: &str = INSTRUCTIONS_LINE;
-/// The installer of the first install, which `update` runs again.
+/// The installer `update` runs again: the one published with the latest release. A release is
+/// immutable, so this is the installer of the same release as the binary it downloads, not
+/// whatever `main` holds at that moment.
 pub const INSTALLER_URL: &str =
-    "https://raw.githubusercontent.com/i-montes/clio-memory/main/install.sh";
+    "https://github.com/i-montes/clio-memory/releases/latest/download/install.sh";
 
 /// `update`: runs the installer at `url`, which brings the latest release (its sha256 checked,
 /// and its attestation when `gh` can) and hands over to `setup --yes`: what is connected stays,
@@ -262,12 +264,10 @@ fn command_line(cmd: &Command) -> String {
 /// The name of the sleep's unit (systemd) and the stem of its job (launchd), whoever installs it:
 /// the last installation decides the binary.
 pub const SLEEP_UNIT: &str = "clio-memory-sleep";
-const SLEEP_LABEL: &str = "com.clio-memory.sleep";
-/// The nightly slots: every half hour from 23:00 to 05:30, local time.
-const SLEEP_HOURS: [u8; 7] = [23, 0, 1, 2, 3, 4, 5];
+pub const SLEEP_LABEL: &str = "com.clio-memory.sleep";
 
-/// The systemd user service and timer that run `exe args` at night. No `Persistent`: a night the
-/// machine was off is skipped, never made up by day.
+/// The systemd user service and timer that run `exe args` every half hour, all day: the sleep
+/// decides on its own whether it is its turn (the memory quiet, something to do).
 pub fn sleep_units(exe: &Path, args: &[&str]) -> (String, String) {
     let quote = |s: &str| {
         format!(
@@ -283,11 +283,11 @@ pub fn sleep_units(exe: &Path, args: &[&str]) -> (String, String) {
         "[Unit]\nDescription=clio-memory: la fase de sueño de la memoria\n\n[Service]\nType=oneshot\nExecStart={}\nNice=10\n",
         line.join(" ")
     );
-    let timer = "[Unit]\nDescription=clio-memory: despierta el sueño cada media hora de noche\n\n[Timer]\nOnCalendar=*-*-* 23,00,01,02,03,04,05:00,30:00\nAccuracySec=1min\n\n[Install]\nWantedBy=timers.target\n".to_owned();
+    let timer = "[Unit]\nDescription=clio-memory: despierta el sueño cada media hora\n\n[Timer]\nOnCalendar=*:0/30\nAccuracySec=1min\n\n[Install]\nWantedBy=timers.target\n".to_owned();
     (service, timer)
 }
 
-/// The launchd job (macOS) for the same slots.
+/// The launchd job (macOS): the same, every 1800 seconds.
 pub fn launchd_plist(exe: &Path, args: &[&str]) -> String {
     let esc = |s: &str| {
         s.replace('&', "&amp;")
@@ -298,15 +298,8 @@ pub fn launchd_plist(exe: &Path, args: &[&str]) -> String {
     for a in args {
         program.push_str(&format!("<string>{}</string>", esc(a)));
     }
-    let slots: String = SLEEP_HOURS
-        .iter()
-        .flat_map(|h| [0, 30].map(|m| (h, m)))
-        .map(|(h, m)| {
-            format!("<dict><key>Hour</key><integer>{h}</integer><key>Minute</key><integer>{m}</integer></dict>")
-        })
-        .collect();
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>Label</key><string>{SLEEP_LABEL}</string><key>ProgramArguments</key><array>{program}</array><key>StartCalendarInterval</key><array>{slots}</array><key>LowPriorityIO</key><true/><key>Nice</key><integer>10</integer></dict></plist>\n"
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>Label</key><string>{SLEEP_LABEL}</string><key>ProgramArguments</key><array>{program}</array><key>StartInterval</key><integer>1800</integer><key>LowPriorityIO</key><true/><key>Nice</key><integer>10</integer></dict></plist>\n"
     )
 }
 
@@ -363,23 +356,21 @@ pub(crate) fn sleep_is_clio_memorys(home: &Path) -> bool {
     })
 }
 
-/// The nightly sleep for this binary: installed if it is not, re-pointed if it is an older
+/// The sleep for this binary: installed if it is not, re-pointed if it is an older
 /// `clio-memory`'s; another program's (Clio's, which also merges with the person's model) is
 /// left as it is. The `Err` says it was not installed, and how to try again.
 pub fn ensure_sleep(env: &Env) -> Result<String, String> {
     let (home, exe) = (&env.home, &env.exe);
     if sleep_installed(home, exe, &["sleep"]) {
-        return Ok("el sueño nocturno ya está instalado".into());
+        return Ok("el sueño ya está instalado".into());
     }
     if sleep_present(home) && !sleep_is_clio_memorys(home) {
-        return Ok("ya hay otro sueño nocturno instalado (de Clio u otro binario): no se cambió; `clio-memory setup sleep` lo reemplaza".into());
+        return Ok("ya hay otro sueño instalado (de Clio u otro binario): no se cambió; `clio-memory setup sleep` lo reemplaza".into());
     }
     install_sleep(home, exe, &["sleep"], env.service)
-        .map(|at| format!("sueño nocturno instalado: {}", at.display()))
+        .map(|at| format!("sueño instalado: {}", at.display()))
         .map_err(|e| {
-            format!(
-                "el sueño nocturno no se instaló ({e}); `clio-memory setup sleep` lo intenta de nuevo"
-            )
+            format!("el sueño no se instaló ({e}); `clio-memory setup sleep` lo intenta de nuevo")
         })
 }
 

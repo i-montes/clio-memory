@@ -172,6 +172,12 @@ pub trait Store: VectorIndex + Send + Sync {
     /// the end (the rewrite holds the writer: once, not once per memory). A failure stops there;
     /// what was purged before it is still rewritten away.
     fn purge_many(&self, ops: Vec<NewOperation>) -> Result<(Vec<OpId>, bool)>;
+    /// How many snapshots of purged memories still carry a title or a category, which purges
+    /// before v0.9.1 left behind. Reads only.
+    fn unscrubbed_purged(&self) -> Result<usize>;
+    /// Erases the title and the category from those snapshots, then rewrites the file; how many
+    /// were cleaned. Only operations before each purge: a later one may be a reborn memory's.
+    fn rescrub_purged(&self) -> Result<usize>;
     /// Whether a pin row names the memory, whatever its state now.
     fn is_pinned(&self, memory: MemoryId) -> Result<bool>;
     /// The tombstone of a purged memory.

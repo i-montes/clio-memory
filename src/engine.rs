@@ -1783,6 +1783,23 @@ impl Engine {
         Ok(PurgeOutcome { op, wal_truncated })
     }
 
+    /// How many snapshots of purged memories still carry a title or a category (purges before
+    /// v0.9.1 left them). Reads only.
+    pub fn unscrubbed_purged(&self) -> Result<usize> {
+        self.store.unscrubbed_purged()
+    }
+
+    /// The sleep erases the title and the category that older purges left in the log. It adds no
+    /// operation: it rewrites snapshots, as `purge` does. How many snapshots were cleaned.
+    pub fn sleep_rescrub_purged(&self) -> Result<usize> {
+        let _g = self.write_guard();
+        let cleaned = self.store.rescrub_purged()?;
+        if cleaned > 0 {
+            event!(INFO, "rescrubbed", count = cleaned);
+        }
+        Ok(cleaned)
+    }
+
     /// The internal actor that signs background operations and the sleep's.
     pub fn system_actor(&self) -> Result<ActorId> {
         self.store.system_actor()
@@ -2490,8 +2507,10 @@ impl Engine {
     ) -> Result<Recall> {
         let mut hits = Vec::new();
         let mut abstained = true;
+        // The query is one text for every scope: the model reads it once.
+        let vector = self.query_vector(query);
         for scope in scopes {
-            let r = self.recall(*scope, query, opts)?;
+            let r = self.recall_with(*scope, query, opts, vector.as_deref())?;
             abstained &= r.abstained;
             hits.extend(r.hits);
         }
@@ -2522,6 +2541,19 @@ impl Engine {
     /// from; if none does the answer is "nothing relevant" (`abstained`) rather than the least
     /// bad matches. A query with no letters or digits abstains without touching the embedder.
     pub fn recall(&self, scope: ScopeId, query: &str, opts: &RecallOpts) -> Result<Recall> {
+        let vector = self.query_vector(query);
+        self.recall_with(scope, query, opts, vector.as_deref())
+    }
+
+    /// `recall` for a query already turned into a vector (or into none), so that several scopes
+    /// share one model call. Each scope still gets its own span.
+    fn recall_with(
+        &self,
+        scope: ScopeId,
+        query: &str,
+        opts: &RecallOpts,
+        vector: Option<&[f32]>,
+    ) -> Result<Recall> {
         let span = span!(
             "recall",
             scope = scope.0,
@@ -2532,10 +2564,36 @@ impl Engine {
             abstained = ::tracing::field::Empty,
             outcome = ::tracing::field::Empty,
         );
-        outcome!(span, self.recall_inner(scope, query, opts))
+        outcome!(span, self.recall_inner(scope, query, opts, vector))
     }
 
-    fn recall_inner(&self, scope: ScopeId, query: &str, opts: &RecallOpts) -> Result<Recall> {
+    /// The query as a unit vector of the current model. `None` without a model, for a query with
+    /// no letters or digits (it abstains without touching the model), for a query the model cannot
+    /// represent, or when the model does not load or run (it is read on the first query): text
+    /// alone still answers.
+    fn query_vector(&self, query: &str) -> Option<Vec<f32>> {
+        let e = self.embedder.as_ref()?;
+        if !query.chars().any(char::is_alphanumeric) {
+            return None;
+        }
+        match e.embed(&[query]) {
+            Ok(mut v) => v.pop().and_then(|v| unit_vector(v, e.dim()).ok()),
+            Err(why) => {
+                eprintln!(
+                    "clio-memory: búsqueda solo por texto, el modelo de vectores falló: {why}"
+                );
+                None
+            }
+        }
+    }
+
+    fn recall_inner(
+        &self,
+        scope: ScopeId,
+        query: &str,
+        opts: &RecallOpts,
+        vector: Option<&[f32]>,
+    ) -> Result<Recall> {
         if !query.chars().any(char::is_alphanumeric) {
             record_current!("hits", 0usize);
             record_current!("abstained", true);
@@ -2555,8 +2613,13 @@ impl Engine {
         // Relevance by text = how many of the query's content words the memory contains. Function
         // words ("de", "en la") do not count, so they neither pad results nor block real matches.
         let wanted: HashSet<String> = content_tokens(&lang, query).into_iter().collect();
-        let covered = |content: &str| {
-            let have: HashSet<String> = tokens(&lang, content).into_iter().collect();
+        // The title is indexed with the content, so a word only in the title counts too.
+        let covered = |memory: &MemoryRow| {
+            let searched = match &memory.title {
+                Some(t) => format!("{t}\n{}", memory.content),
+                None => memory.content.clone(),
+            };
+            let have: HashSet<String> = tokens(&lang, &searched).into_iter().collect();
             wanted.intersection(&have).count() as f64
                 >= opts.min_text_coverage * wanted.len() as f64
         };
@@ -2565,7 +2628,7 @@ impl Engine {
         } else {
             text_hits
                 .iter()
-                .filter(|h| covered(&h.memory.content))
+                .filter(|h| covered(&h.memory))
                 .map(|h| (h.memory.id, h.score))
                 .collect()
         };
@@ -2574,52 +2637,39 @@ impl Engine {
             .map(|h| (h.memory.id, h.memory))
             .collect();
 
-        let mut vector: Vec<(MemoryId, f32)> = Vec::new();
-        if let Some(e) = &self.embedder {
-            // A query the model cannot represent, or a model that does not load or run (it is
-            // read on the first query), just means no vector list: text still answers.
-            let q = match e.embed(&[query]) {
-                Ok(mut v) => v.pop().and_then(|v| unit_vector(v, e.dim()).ok()),
-                Err(why) => {
-                    eprintln!(
-                        "clio-memory: búsqueda solo por texto, el modelo de vectores falló: {why}"
-                    );
-                    None
-                }
-            };
-            if let Some(q) = q {
-                let floor = opts
-                    .model_floor
-                    .then(|| relevance_floor(e.model_id()))
-                    .flatten()
-                    .unwrap_or(opts.min_vector_score);
-                for (id, cos) in self
-                    .store
-                    .nearest(scope, e.model_id(), &q, &pool_opts, pool)?
-                {
-                    if cos >= floor {
-                        if let std::collections::hash_map::Entry::Vacant(v) = rows.entry(id) {
-                            v.insert(self.store.get(id)?);
-                        }
-                        vector.push((id, cos));
+        let mut vector_hits: Vec<(MemoryId, f32)> = Vec::new();
+        if let (Some(e), Some(q)) = (&self.embedder, vector) {
+            let floor = opts
+                .model_floor
+                .then(|| relevance_floor(e.model_id()))
+                .flatten()
+                .unwrap_or(opts.min_vector_score);
+            for (id, cos) in self
+                .store
+                .nearest(scope, e.model_id(), q, &pool_opts, pool)?
+            {
+                if cos >= floor {
+                    if let std::collections::hash_map::Entry::Vacant(v) = rows.entry(id) {
+                        v.insert(self.store.get(id)?);
                     }
+                    vector_hits.push((id, cos));
                 }
             }
         }
 
         record_current!("text_hits", text.len());
-        record_current!("vector_hits", vector.len());
+        record_current!("vector_hits", vector_hits.len());
         let now = self.clock.now();
         let ranked: Vec<MemoryId> = text
             .iter()
             .map(|t| t.0)
-            .chain(vector.iter().map(|v| v.0))
+            .chain(vector_hits.iter().map(|v| v.0))
             .collect();
         let usage = self.store.usage_counts(&ranked).unwrap_or_default();
         let signals = self.store.feedback_counts_many(&ranked).unwrap_or_default();
         let fused = fuse(
             &text,
-            &vector,
+            &vector_hits,
             now,
             |id| rows.get(&id).map_or(now, |r| r.known_since),
             |id| usage.get(&id).copied().unwrap_or(0),

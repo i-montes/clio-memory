@@ -31,6 +31,16 @@ fn a_save_then_a_search_returns_it_wrapped_as_data() {
 }
 
 #[test]
+fn a_read_marks_the_memory_as_used() {
+    let t = tempfile::tempdir().unwrap();
+    let mut s = session(&t);
+    assert_eq!(clio_memory::sleep::last_used(t.path()), 0);
+    // Whatever it answers on an empty memory, it was a use.
+    let _ = s.call("memory_search", &json!({"query": "servidor de pruebas"}));
+    assert!(clio_memory::sleep::last_used(t.path()) > 0);
+}
+
+#[test]
 fn memory_propose_still_saves() {
     let t = tempfile::tempdir().unwrap();
     let mut s = session(&t);

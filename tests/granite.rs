@@ -183,3 +183,53 @@ fn a_dir_without_a_model_is_a_clear_error() {
     let e = Granite::load(t.path()).err().unwrap().to_string();
     assert!(e.contains("tokenizer.json") || e.contains("model"), "{e}");
 }
+
+/// A session that embedded with the runtime: the process is the one `private_runtime` started, so
+/// ONNX Runtime never opened its telemetry database.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_session_that_embedded_holds_no_telemetry_database() {
+    use std::io::{BufRead, BufReader, Write};
+    let Some(dir) = dir() else { return };
+    let Some(models) = dir.parent() else { return };
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join(".cache")).unwrap();
+    std::os::unix::fs::symlink(models, home.path().join(".cache/clio-models")).unwrap();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_clio-memory"))
+        .arg("mcp")
+        .env_remove("ORT_DISABLE_TELEMETRY")
+        .env("HOME", home.path())
+        .env("CLIO_MEMORY_DATA", home.path().join("data"))
+        .current_dir(home.path())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut out = BufReader::new(child.stdout.take().unwrap());
+    let mut ask = |request: &str| {
+        writeln!(stdin, "{request}").unwrap();
+        let mut line = String::new();
+        out.read_line(&mut line).unwrap();
+        line
+    };
+    ask(
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#,
+    );
+    let saved = ask(
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"memory_save","arguments":{"text":"Qué: prueba de vectores","kind":"semantic"}}}"#,
+    );
+    let open: Vec<String> = std::fs::read_dir(format!("/proc/{}/fd", child.id()))
+        .unwrap()
+        .flatten()
+        .filter_map(|e| std::fs::read_link(e.path()).ok())
+        .map(|p| p.display().to_string())
+        .collect();
+    drop(stdin);
+    child.wait().unwrap();
+    assert!(!saved.contains("sin modelo de vectores"), "{saved}");
+    assert!(
+        !open.iter().any(|p| p.contains("onnxruntime.db")),
+        "{open:?}"
+    );
+}

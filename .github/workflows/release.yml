@@ -173,15 +173,20 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: clio-memory-*
           path: dist
           merge-multiple: true
+      # install.sh goes in the release too, so `update` runs the installer of that same release.
       - name: SHA256SUMS
         working-directory: dist
         run: |
-          sha256sum clio-memory-* > SHA256SUMS
+          cp ../install.sh install.sh
+          sha256sum clio-memory-* install.sh > SHA256SUMS
           cat SHA256SUMS
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -189,4 +194,4 @@ jobs:
       # Not a draft: with immutable releases a published release can no longer change.
       - name: Publish the release
         working-directory: dist
-        run: gh release create "$TAG" clio-memory-* SHA256SUMS --title "$TAG" --generate-notes --verify-tag
+        run: gh release create "$TAG" clio-memory-* install.sh SHA256SUMS --title "$TAG" --generate-notes --verify-tag

@@ -15,6 +15,19 @@ Publicar una versión es empujar una etiqueta. No hay PR de sumas que fusionar, 
 
 La etiqueta, sin la `v`, debe ser igual a `version` en `Cargo.toml`. Si no lo es, el workflow falla antes de compilar nada.
 
+## Notas de versiones
+
+### v0.9.1
+
+- **Sin telemetría.** ONNX Runtime nunca arranca con su telemetría encendida: el proceso se relanza con `ORT_DISABLE_TELEMETRY` puesta.
+- **Ids purgados.** Un id purgado no se reutiliza nunca, y la importación acepta un id que renació después de la purga.
+- **La purga borra el título y la categoría**, no solo el texto. El sueño y la importación limpian lo purgado antes, y `doctor` lo comprueba (`purged_scrubbed`).
+- **`update`** usa el `install.sh` del último release, no el de `main`.
+- **`recall`** encuentra una palabra que solo está en el título, y calcula el vector de la consulta una sola vez para todos los lugares.
+- **El sueño corre cuando la memoria está inactiva**, a cualquier hora (el timer despierta cada 30 minutos). Las lecturas cuentan como uso, la fusión se hace como mucho una vez cada 20 horas (en Clio, que es quien une) y `doctor` da `FAIL` si lleva demasiado sin hacerse.
+
+Después de fusionar y etiquetar: correr `clio-memory update`, reiniciar las sesiones de agente abiertas y, en Clio, llamar a `clio_memory::private_runtime()` al empezar `main` (si no, el Granite de Clio se rechaza y vuelve al modelo estático) y correr `clio memory setup sleep` para que el timer tome el horario nuevo.
+
 ## Qué hace cada trabajo
 
 El workflow corre al empujar una etiqueta `v*`. Cada trabajo espera al anterior, así que si uno falla, los siguientes no corren.
@@ -34,9 +47,9 @@ El workflow corre al empujar una etiqueta `v*`. Cada trabajo espera al anterior,
    - `x86_64-apple-darwin` solo si `arch -x86_64 true` funciona en el runner; si no, se salta y el resumen del trabajo lo dice. En esa plataforma solo se prueba `--version`, porque bajo Rosetta `install.sh` elegiría el binario de arm64.
    - En Linux comprueba también que el símbolo `GLIBC_` más alto (`objdump -T`) no pase de `GLIBC_2.28`.
    - Hace una instalación de prueba con `install.sh` sobre los binarios recién construidos (`CLIO_MEMORY_DOWNLOAD_URL=file://…`, `CLIO_MEMORY_VERSION`, `CLIO_MEMORY_SKIP_ATTESTATION=1` y `CLIO_MEMORY_HAND_OVER=0`, que instala sin correr `setup`) y corre `~/.local/bin/clio-memory --version`.
-5. **`publish`**: genera `SHA256SUMS`, firma la procedencia de los 4 binarios con `actions/attest-build-provenance` y crea el release con `gh release create "$TAG" … --generate-notes --verify-tag`, sin `--draft`. Es el único trabajo con `contents: write`, `id-token: write` y `attestations: write`; los demás solo leen. No usa secretos más allá del `GITHUB_TOKEN`.
+5. **`publish`**: copia `install.sh` del commit etiquetado, genera `SHA256SUMS` (de los binarios y de `install.sh`), firma la procedencia de los 4 binarios con `actions/attest-build-provenance` y crea el release con `gh release create "$TAG" clio-memory-* install.sh SHA256SUMS --generate-notes --verify-tag`, sin `--draft`. Es el único trabajo con `contents: write`, `id-token: write` y `attestations: write`; los demás solo leen. No usa secretos más allá del `GITHUB_TOKEN`.
 
-Cada release lleva los 4 binarios (`clio-memory-x86_64-unknown-linux-gnu`, `clio-memory-aarch64-unknown-linux-gnu`, `clio-memory-aarch64-apple-darwin`, `clio-memory-x86_64-apple-darwin`) y `SHA256SUMS`.
+Cada release lleva los 4 binarios (`clio-memory-x86_64-unknown-linux-gnu`, `clio-memory-aarch64-unknown-linux-gnu`, `clio-memory-aarch64-apple-darwin`, `clio-memory-x86_64-apple-darwin`), `install.sh` y `SHA256SUMS`.
 
 ## Si algo falla
 
@@ -62,23 +75,23 @@ Cada release lleva los 4 binarios (`clio-memory-x86_64-unknown-linux-gnu`, `clio
 
 ### Immutable releases
 
-Estado: **pendiente de activar por Iván.** Al 2026-11-05 el repositorio dice `enabled: false`.
+Estado: **activado.** Verificado el 2026-11-15: `gh api repos/i-montes/clio-memory/immutable-releases` dice `"enabled": true` y v0.9.0 es inmutable.
 
 Revisarlo (necesita permiso de administración):
 
 ```sh
 gh api repos/i-montes/clio-memory/immutable-releases
-# {"enabled":true,"enforced_by_owner":false}   <- activado
-# {"enabled":false,...}                         <- pendiente
+# {"enabled":true,"enforced_by_owner":false}   <- activado (el estado de hoy)
+# {"enabled":false,...}                         <- desactivado: volver a activarlo
 ```
 
-Activarlo (responde `204`):
+Si alguna vez apareciera desactivado, se activa así (responde `204`):
 
 ```sh
 gh api -X PUT repos/i-montes/clio-memory/immutable-releases
 ```
 
-Desactivarlo sería `-X DELETE` sobre la misma ruta; no se debe hacer. Conviene activarlo **antes** de empujar la primera etiqueta: la inmutabilidad solo protege los releases publicados después.
+Desactivarlo sería `-X DELETE` sobre la misma ruta; no se debe hacer. Hay que mantenerlo activado: la inmutabilidad solo protege los releases publicados mientras lo está. `update` depende de ello, porque corre el `install.sh` del último release.
 
 ### Permisos de Actions
 

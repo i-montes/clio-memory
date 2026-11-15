@@ -16,7 +16,7 @@ agents:
   setup [--yes] [--agents LIST|all] [--model granite|potion|none]
         [--instructions|--no-instructions] [--replace] [--from-installer]
                               connect clio-memory to the agents on this machine and install the
-                              vector model and the nightly sleep; in a terminal it asks, and with
+                              vector model and the sleep; in a terminal it asks, and with
                               --yes or without a terminal it uses the flags and, where missing:
                               every agent found, granite where it runs (else potion; nothing is
                               downloaded when one as good is installed), the instructions line;
@@ -32,13 +32,13 @@ agents:
                               server (user scope) and install the skill clio-memory; asks before
                               replacing anything of the same name and before adding a line to
                               ~/.claude/CLAUDE.md (the flags answer for it)
-  setup sleep [--remove]      install (or remove) the nightly sleep: a user timer that runs
-                              `clio-memory sleep` every half hour from 23:00 to 05:30
+  setup sleep [--remove]      install (or remove) the sleep: a user timer that runs
+                              `clio-memory sleep` every half hour
                               (setup claude-code installs it too)
   uninstall [--agents LIST] [--models] [--data] [--yes]
                               take clio-memory out of the agents: the MCP server, the skill (only
                               ours) and the instructions line; with no --agents, out of all of
-                              them, with the nightly sleep and, last, this binary when it is in
+                              them, with the sleep and, last, this binary when it is in
                               ~/.local/bin (or $CLIO_MEMORY_BIN_DIR). LIST: claude-code,opencode,
                               codex,gemini,antigravity. --models deletes ~/.cache/clio-models
                               (Clio's models too: they can be downloaded again);
@@ -46,11 +46,11 @@ agents:
                               files) and the sleep's folder beside it, and nothing else of that
                               folder; it asks first in a terminal, and without one needs --yes
   sleep [--now] [--dry-run] [--report]
-                              one night of sleep: check and copy the file, quarantine secrets
-                              and likely attacks, fold repeats, purge what was discarded long
-                              ago; only when nobody used the memory for 30 minutes and it did not
-                              sleep in the last 20 hours (--now skips both waits, --dry-run looks
-                              and changes nothing, --report prints the last night's report)
+                              one sleep: check and copy the file, quarantine secrets and likely
+                              attacks, fold repeats, purge what was discarded long ago; only when
+                              nobody used the memory for 30 minutes and something changed since
+                              the last sleep (or a day went by) (--now skips the waits, --dry-run
+                              looks and changes nothing, --report prints the last report)
   update                      install the latest release with the installer of the first install
                               (binary sha256-checked) and run `setup --yes` again: what is
                               connected stays, the skill is brought up to date

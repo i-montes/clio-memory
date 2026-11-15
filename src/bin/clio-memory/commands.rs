@@ -2,7 +2,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use clio_memory::{
-    ContextOpts, Engine, Error, Format, MemoryRow, OpenMode, RecallOpts, ScopeId, State,
+    Clock, ContextOpts, Engine, Error, Format, MemoryRow, OpenMode, RecallOpts, ScopeId, State,
     SystemClock,
 };
 
@@ -244,10 +244,34 @@ pub fn run(cli: &Cli, machine: Option<&Env>) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// The sleep's folder is beside the memory file.
+fn data_of(db: &std::path::Path) -> &std::path::Path {
+    db.parent().unwrap_or(std::path::Path::new("."))
+}
+
+/// What `sleep::overdue` found (the days since the last complete sleep) as doctor's FAIL line.
+fn overdue_line(days: i64) -> String {
+    overdue_line_on(days, cfg!(target_os = "macos"))
+}
+
+/// The same line with the command that shows the timer: launchd on macOS, systemd elsewhere.
+fn overdue_line_on(days: i64, macos: bool) -> String {
+    let status = if macos {
+        format!("launchctl list {}", clio_memory::setup::SLEEP_LABEL)
+    } else {
+        format!(
+            "systemctl --user status {}.timer",
+            clio_memory::setup::SLEEP_UNIT
+        )
+    };
+    format!(
+        "FAIL sueño: no corre desde hace {days} días y hay cambios sin revisar (¿está el timer? {status})"
+    )
+}
+
 /// When the memory last slept, whether the night was complete, and its alarms.
 fn slept(db: &std::path::Path, home: Option<&std::path::Path>) -> String {
-    let data = db.parent().unwrap_or(std::path::Path::new("."));
-    match clio_memory::sleep::last_report(data) {
+    match clio_memory::sleep::last_report(data_of(db)) {
         // Any sleep counts (Clio's too): it only has not run yet.
         None if home.is_some_and(clio_memory::setup::sleep_present) => {
             "info sueño: todavía no durmió (el timer ya está instalado)".into()
@@ -255,7 +279,7 @@ fn slept(db: &std::path::Path, home: Option<&std::path::Path>) -> String {
         None => "info sueño: todavía no durmió (clio-memory setup sleep instala el timer)".into(),
         Some(r) => {
             let mut s = format!(
-                "info sueño: última noche {} ({})",
+                "info sueño: último sueño {} ({})",
                 clio_memory::sleep::night_of(r.started),
                 if r.complete { "completa" } else { "incompleta" }
             );
@@ -277,6 +301,11 @@ fn doctor(cli: &Cli, machine: Option<&Env>) -> Result<ExitCode, String> {
         None
     };
     let checks_ok = report.as_ref().is_none_or(|r| r.all_ok());
+    // Changes left unreviewed for days: the sleep is not running, a failure.
+    let overdue = report
+        .as_ref()
+        .and_then(|_| clio_memory::sleep::overdue(data_of(&cli.db), SystemClock.now()));
+    let checks_ok = checks_ok && overdue.is_none();
     let agents = machine.map(agent_report).unwrap_or_default();
     let agents_ok = agents.iter().all(|(_, h, _)| *h != Health::Fail);
     let shadow = machine.and_then(|env| shadowing(env).map(|o| shadowing_note(env, &o)));
@@ -301,6 +330,9 @@ fn doctor(cli: &Cli, machine: Option<&Env>) -> Result<ExitCode, String> {
         if !notes.is_empty() {
             out["notes"] = serde_json::json!(notes);
         }
+        if let Some(days) = overdue {
+            out["sleep"] = serde_json::json!({ "ok": false, "overdue_days": days });
+        }
         json(&out)?;
     } else {
         match &report {
@@ -309,7 +341,10 @@ fn doctor(cli: &Cli, machine: Option<&Env>) -> Result<ExitCode, String> {
                     let mark = if c.ok { "ok  " } else { "FAIL" };
                     line(&format!("{mark} {}: {}", c.name, clean(&c.detail)));
                 }
-                line(&slept(&cli.db, machine.map(|env| env.home.as_path())));
+                line(&match overdue {
+                    Some(days) => overdue_line(days),
+                    None => slept(&cli.db, machine.map(|env| env.home.as_path())),
+                });
             }
             None => line(&format!("--   {NO_MEMORY_YET}")),
         }
@@ -417,5 +452,18 @@ pub fn refuse_overwrite(path: &std::path::Path) -> Result<(), String> {
         Ok(_) => Err(overwrite(path)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(format!("cannot check {}: {e}", path.display())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::overdue_line_on;
+
+    #[test]
+    fn the_overdue_hint_names_the_timer_of_the_platform() {
+        assert!(
+            overdue_line_on(4, false).ends_with("systemctl --user status clio-memory-sleep.timer)")
+        );
+        assert!(overdue_line_on(4, true).ends_with("launchctl list com.clio-memory.sleep)"));
     }
 }

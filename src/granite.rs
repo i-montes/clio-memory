@@ -55,11 +55,25 @@ fn runtime_lib(runtime: &Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(dylib()))
 }
 
+/// ONNX Runtime starts only with its telemetry off: `clio_memory::private_runtime()` puts the
+/// variable in the program's environment before anything is loaded.
+fn private(value: Option<&std::ffi::OsStr>) -> std::result::Result<(), String> {
+    if crate::privacy::telemetry_is_off(value) {
+        return Ok(());
+    }
+    Err(format!(
+        "{}=1 no está puesta: ONNX Runtime no se inicia con la telemetría encendida (llama a clio_memory::private_runtime() al empezar el programa)",
+        crate::privacy::ORT_TELEMETRY_VAR
+    ))
+}
+
 fn env(runtime: &Path) -> Result<&'static Environment> {
     ENV.get_or_init(|| {
+        private(std::env::var_os(crate::privacy::ORT_TELEMETRY_VAR).as_deref())?;
         let path = runtime_lib(runtime);
         ort::init_from(&path)
             .map_err(|e| format!("no se pudo cargar ONNX Runtime ({}): {e}", path.display()))?
+            .with_telemetry(false)
             .build()
             .map_err(|e| e.to_string())
     })
@@ -220,4 +234,16 @@ fn run(m: &mut Loaded, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
             cls.iter().map(|x| x / norm).collect()
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_runtime_is_refused_while_telemetry_is_on() {
+        let why = private(None).unwrap_err();
+        assert!(why.contains("ORT_DISABLE_TELEMETRY"), "{why}");
+        assert!(private(Some(std::ffi::OsStr::new("1"))).is_ok());
+    }
 }

@@ -200,6 +200,86 @@ fn doctor_exits_0_when_healthy_and_1_when_a_check_fails() {
 }
 
 #[test]
+fn doctor_fails_when_the_sleep_is_overdue() {
+    let f = populated();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let sleep = f.path.parent().unwrap().join("sleep");
+    std::fs::create_dir_all(&sleep).unwrap();
+    let state = |cursor: i64| {
+        std::fs::write(
+            sleep.join("state.json"),
+            serde_json::json!({"cursor": cursor, "rules_version": 1, "last_complete": now - 4 * 86_400 - 600})
+                .to_string(),
+        )
+        .unwrap();
+    };
+    state(0);
+    let o = run(Some(&f.path), &["doctor"]);
+    assert_eq!(code(&o), 1, "{}", out(&o));
+    assert!(
+        out(&o)
+            .lines()
+            .any(|l| l.starts_with("FAIL sueño: no corre desde hace 4 días")),
+        "{}",
+        out(&o)
+    );
+    let j: serde_json::Value =
+        serde_json::from_str(&out(&run(Some(&f.path), &["--json", "doctor"]))).unwrap();
+    assert_eq!(j["ok"], false, "{j}");
+    // Nothing unreviewed after the cursor: an old sleep is no failure.
+    state(1_000_000);
+    let o = run(Some(&f.path), &["doctor"]);
+    assert_eq!(code(&o), 0, "{}", out(&o));
+}
+
+#[test]
+fn doctor_fails_while_a_purged_memory_keeps_its_title() {
+    let f = fixture();
+    let id = f
+        .engine
+        .propose(Proposal {
+            title: Some("Viejo título".into()),
+            ..prop(f.scope, f.person, "un dato que se purgará")
+        })
+        .unwrap()
+        .memory;
+    f.engine.purge(id, f.person, "prueba").unwrap();
+    let o = run(Some(&f.path), &["doctor"]);
+    assert_eq!(code(&o), 0, "{}", out(&o));
+
+    // the file as v0.9.0 left it: the title back in the snapshot of the memory's `Add`
+    let conn = rusqlite::Connection::open(&f.path).unwrap();
+    let (op, kind): (i64, String) = conn
+        .query_row(
+            "SELECT o.id, o.kind FROM operation_memories m JOIN operations o ON o.id = m.op
+             WHERE m.memory = ?1 ORDER BY o.id LIMIT 1",
+            [id.0],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(kind, "Add");
+    conn.execute(
+        "UPDATE operations SET changes = json_set(changes, '$[0].after.title', 'Viejo título') WHERE id = ?1",
+        [op],
+    )
+    .unwrap();
+    drop(conn);
+
+    let o = run(Some(&f.path), &["doctor"]);
+    assert_eq!(code(&o), 1, "{}", out(&o));
+    assert!(
+        out(&o)
+            .lines()
+            .any(|l| l.starts_with("FAIL purged_scrubbed")),
+        "{}",
+        out(&o)
+    );
+}
+
+#[test]
 fn recall_and_context_work_without_a_model() {
     let f = populated();
     let o = run(Some(&f.path), &["recall", "main", "Medellín"]);
@@ -1703,4 +1783,36 @@ fn doctor_before_the_first_memory_is_not_a_failure() {
     let o = m.run(&["doctor"]);
     assert_eq!(code(&o), 1, "{}", out(&o));
     assert!(out(&o).contains("FAIL agente opencode"), "{}", out(&o));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_binary_runs_itself_again_with_telemetry_off() {
+    use std::io::{BufRead, BufReader, Write};
+    let t = tempfile::tempdir().unwrap();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_clio-memory"))
+        .arg("mcp")
+        .env_remove("ORT_DISABLE_TELEMETRY")
+        .env("HOME", t.path())
+        .env("CLIO_MEMORY_DATA", t.path().join("data"))
+        .current_dir(t.path())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    writeln!(stdin, r#"{{"jsonrpc":"2.0","id":1,"method":"ping"}}"#).unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let environ = std::fs::read(format!("/proc/{}/environ", child.id())).unwrap();
+    drop(stdin);
+    child.wait().unwrap();
+    assert!(
+        environ
+            .split(|b| *b == 0)
+            .any(|v| v == b"ORT_DISABLE_TELEMETRY=1"),
+        "the process serving must carry the variable"
+    );
 }

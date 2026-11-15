@@ -356,3 +356,49 @@ fn a_pinned_memory_is_never_purged_even_after_forget() {
         Err(Error::NotAllowed)
     ));
 }
+
+/// Puts a title back in the snapshot of the memory's `Add`, the way a file purged by v0.9.0 has
+/// it. The `Add` is checked to be that operation, not assumed.
+fn leave_title_in_the_add(f: &Fixture, id: MemoryId, title: &str) {
+    let conn = rusqlite::Connection::open(&f.path).unwrap();
+    let (op, kind): (i64, String) = conn
+        .query_row(
+            "SELECT o.id, o.kind FROM operation_memories m JOIN operations o ON o.id = m.op
+             WHERE m.memory = ?1 ORDER BY o.id LIMIT 1",
+            [id.0],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(kind, "Add");
+    // a snapshot without a title has no `title` key at all, so the key is set, not replaced
+    let n = conn
+        .execute(
+            "UPDATE operations SET changes = json_set(changes, '$[0].after.title', ?1) WHERE id = ?2",
+            rusqlite::params![title, op],
+        )
+        .unwrap();
+    assert_eq!(n, 1);
+}
+
+#[test]
+fn the_sleep_scrubs_what_older_purges_left() {
+    let f = fixture();
+    let id = f
+        .engine
+        .propose(Proposal {
+            title: Some("Viejo título".into()),
+            ..prop(f.scope, f.person, "un dato que se purgará")
+        })
+        .unwrap()
+        .memory;
+    f.engine.purge(id, f.person, "prueba").unwrap();
+    assert_eq!(f.engine.unscrubbed_purged().unwrap(), 0);
+    leave_title_in_the_add(&f, id, "Viejo título");
+    assert!(common::dump_all(&f.path).contains("Viejo título"));
+
+    assert_eq!(f.engine.unscrubbed_purged().unwrap(), 1);
+    assert_eq!(f.engine.sleep_rescrub_purged().unwrap(), 1);
+    assert!(!common::dump_all(&f.path).contains("Viejo título"));
+    assert_eq!(f.engine.unscrubbed_purged().unwrap(), 0);
+    assert_eq!(f.engine.sleep_rescrub_purged().unwrap(), 0);
+}

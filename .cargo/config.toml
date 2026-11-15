@@ -1,0 +1,3 @@
+# Tests, examples and benches load ONNX Runtime in their own process: never with telemetry on.
+[env]
+ORT_DISABLE_TELEMETRY = "1"

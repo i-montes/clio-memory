@@ -16,6 +16,7 @@ use std::process::ExitCode;
 use clio_memory::setup::agents::{AgentId, Env};
 
 fn main() -> ExitCode {
+    let _ = clio_memory::private_runtime();
     match args::parse(std::env::args().skip(1)) {
         Ok(args::Parsed::Help) => {
             output::line(args::USAGE);

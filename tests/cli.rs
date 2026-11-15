@@ -1704,3 +1704,35 @@ fn doctor_before_the_first_memory_is_not_a_failure() {
     assert_eq!(code(&o), 1, "{}", out(&o));
     assert!(out(&o).contains("FAIL agente opencode"), "{}", out(&o));
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_binary_runs_itself_again_with_telemetry_off() {
+    use std::io::{BufRead, BufReader, Write};
+    let t = tempfile::tempdir().unwrap();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_clio-memory"))
+        .arg("mcp")
+        .env_remove("ORT_DISABLE_TELEMETRY")
+        .env("HOME", t.path())
+        .env("CLIO_MEMORY_DATA", t.path().join("data"))
+        .current_dir(t.path())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    writeln!(stdin, r#"{{"jsonrpc":"2.0","id":1,"method":"ping"}}"#).unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let environ = std::fs::read(format!("/proc/{}/environ", child.id())).unwrap();
+    drop(stdin);
+    child.wait().unwrap();
+    assert!(
+        environ
+            .split(|b| *b == 0)
+            .any(|v| v == b"ORT_DISABLE_TELEMETRY=1"),
+        "the process serving must carry the variable"
+    );
+}

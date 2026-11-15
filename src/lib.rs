@@ -27,6 +27,7 @@ mod model;
 mod model2vec;
 mod normalize;
 mod platform;
+mod privacy;
 mod recall;
 mod rules;
 mod secrets;
@@ -56,6 +57,7 @@ pub use granite::Granite;
 pub use model::*;
 #[cfg(feature = "model2vec")]
 pub use model2vec::Model2VecEmbedder;
+pub use privacy::{ORT_TELEMETRY_VAR, private_runtime};
 #[cfg(feature = "telemetry")]
 pub use telemetry::TraceIdProvider;
 pub use token::{ApproxTokens, TokenCounter};

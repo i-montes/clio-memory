@@ -23,6 +23,12 @@ clio-memory es la **memoria propia de un agente**. Guarda lo que vale la pena re
 - **Aceptar, archivar y purgar no son herramientas del agente:** son tuyos, desde la línea de comandos.
 - **El archivo es privado** (0600, en una carpeta 0700). El escritor solo se toma durante cada llamada, así que Clio y otros clientes pueden escribir entre una y otra.
 
+## Qué sale de esta máquina
+
+- Nada sale, salvo las descargas de `setup` y `update`.
+- ONNX Runtime trae telemetría de Microsoft: clio-memory la apaga con `ORT_DISABLE_TELEMETRY=1` (el binario se vuelve a ejecutar con la variable puesta) y no carga el runtime sin ella.
+- Un programa que use la biblioteca debe llamar a `clio_memory::private_runtime()` al empezar.
+
 ## El sueño
 
 De noche, si nadie la está usando, la memoria se revisa sola. Un timer de usuario despierta `clio-memory sleep` cada media hora entre las 23:00 y las 05:30. Corre como mucho una vez por noche y solo si la memoria lleva 30 minutos quieta. Si alguien la usa mientras duerme, se detiene y sigue en el próximo turno.

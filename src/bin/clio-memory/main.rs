@@ -150,6 +150,8 @@ fn main() -> ExitCode {
 /// `clio-memory mcp`: the file must be called `memory.db` (the agent layer's name for it).
 fn mcp(db: &std::path::Path) -> Result<(), String> {
     use clio_memory::agent::memory::DB_FILE;
+    use clio_memory::daemon::Launch;
+    use clio_memory::mcp::{Backend, serve_with};
     if db.file_name().is_none_or(|n| n != DB_FILE) {
         return Err(format!(
             "mcp uses <folder>/{DB_FILE}: give --db a file called {DB_FILE}, or set CLIO_MEMORY_DATA"
@@ -160,12 +162,21 @@ fn mcp(db: &std::path::Path) -> Result<(), String> {
     let home = std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_default();
-    clio_memory::mcp::serve(
+    let backend = if std::env::var_os("CLIO_MEMORY_NO_DAEMON").is_some_and(|v| v == "1") {
+        Backend::Local
+    } else {
+        Backend::Daemon(Launch {
+            exe: std::env::current_exe().map_err(|e| e.to_string())?,
+            env: vec![],
+        })
+    };
+    serve_with(
         std::io::stdin().lock(),
         std::io::stdout().lock(),
         data,
         &cwd,
         &home,
+        backend,
     )
 }
 

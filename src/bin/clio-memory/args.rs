@@ -12,7 +12,8 @@ usage: clio-memory [--db PATH] [--actor NAME] [--model DIR] [--json] <command> [
 
 agents:
   mcp                         serve the memory tools to an agent (MCP over stdin and stdout); the
-                              file is <folder>/memory.db, the project is the current folder's
+                              file is <folder>/memory.db, the project is the current folder's;
+                              the daemon serves its calls (CLIO_MEMORY_NO_DAEMON=1: this process)
   daemon [--status|--stop]    the one process that serves the tools of every agent on a folder;
                               the first call starts it and it leaves after 10 idle minutes
                               (CLIO_MEMORY_DAEMON_IDLE seconds), so nobody runs it by hand;

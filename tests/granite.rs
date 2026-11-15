@@ -5,6 +5,8 @@
 //! library (the one `setup model` puts beside the model, `ORT_DYLIB_PATH`, or the system's);
 //! without them they say so and pass.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 
 use clio_memory::{Embedder, GRANITE_ID, GRANITE_Q8_ID, Granite};
@@ -184,22 +186,25 @@ fn a_dir_without_a_model_is_a_clear_error() {
     assert!(e.contains("tokenizer.json") || e.contains("model"), "{e}");
 }
 
-/// A session that embedded with the runtime: the process is the one `private_runtime` started, so
-/// ONNX Runtime never opened its telemetry database.
+/// A session that embedded with the runtime: the processes are the ones `private_runtime` started
+/// (the MCP server and the daemon it launched, which vectorizes), so ONNX Runtime never opened its
+/// telemetry database.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_session_that_embedded_holds_no_telemetry_database() {
     use std::io::{BufRead, BufReader, Write};
     let Some(dir) = dir() else { return };
     let Some(models) = dir.parent() else { return };
-    let home = tempfile::tempdir().unwrap();
+    let home = common::short_dir();
     std::fs::create_dir_all(home.path().join(".cache")).unwrap();
     std::os::unix::fs::symlink(models, home.path().join(".cache/clio-models")).unwrap();
+    let data = home.path().join("data");
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_clio-memory"))
         .arg("mcp")
         .env_remove("ORT_DISABLE_TELEMETRY")
         .env("HOME", home.path())
-        .env("CLIO_MEMORY_DATA", home.path().join("data"))
+        .env("CLIO_MEMORY_DATA", &data)
+        .env("CLIO_MEMORY_DAEMON_IDLE", "30")
         .current_dir(home.path())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -219,17 +224,37 @@ fn a_session_that_embedded_holds_no_telemetry_database() {
     let saved = ask(
         r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"memory_save","arguments":{"text":"Qué: prueba de vectores","kind":"semantic"}}}"#,
     );
-    let open: Vec<String> = std::fs::read_dir(format!("/proc/{}/fd", child.id()))
-        .unwrap()
-        .flatten()
-        .filter_map(|e| std::fs::read_link(e.path()).ok())
-        .map(|p| p.display().to_string())
-        .collect();
+    let open = |pid: u64| -> Vec<String> {
+        std::fs::read_dir(format!("/proc/{pid}/fd"))
+            .unwrap()
+            .flatten()
+            .filter_map(|e| std::fs::read_link(e.path()).ok())
+            .map(|p| p.display().to_string())
+            .collect()
+    };
+    let status = clio_memory::daemon::request(&data, None, &serde_json::json!({"op": "status"}));
+    let daemon = status.as_ref().ok().and_then(|s| s["pid"].as_u64());
+    let (daemon_open, environ) = daemon.map_or_else(Default::default, |pid| {
+        let environ = std::fs::read(format!("/proc/{pid}/environ")).unwrap();
+        (open(pid), environ)
+    });
+    let mcp_open = open(child.id().into());
     drop(stdin);
     child.wait().unwrap();
+    let _ = clio_memory::daemon::request(&data, None, &serde_json::json!({"op": "shutdown"}));
     assert!(!saved.contains("sin modelo de vectores"), "{saved}");
+    // The daemon served the save, so it is the one that loaded the model.
+    assert_eq!(status.as_ref().unwrap()["loaded"], true, "{status:?}");
     assert!(
-        !open.iter().any(|p| p.contains("onnxruntime.db")),
-        "{open:?}"
+        environ
+            .split(|b| *b == 0)
+            .any(|v| v == b"ORT_DISABLE_TELEMETRY=1"),
+        "the daemon must carry the variable"
     );
+    for open in [mcp_open, daemon_open] {
+        assert!(
+            !open.iter().any(|p| p.contains("onnxruntime.db")),
+            "{open:?}"
+        );
+    }
 }

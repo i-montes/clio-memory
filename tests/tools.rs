@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use clio_memory::agent::{EmbedModel, Memory};
 use clio_memory::tools::{Session, TOOLS};
-use clio_memory::{Embedder, Engine, OpenMode, SystemClock};
+use clio_memory::{Embedder, Engine, FixedClock, OpenMode, SystemClock};
 use common::HashEmbedder;
 use serde_json::json;
 
@@ -93,6 +93,72 @@ fn the_read_budget_is_20_calls() {
     }
     let e = s.call("memory_get", &json!({"id": 1})).unwrap_err();
     assert!(e.contains("budget"), "{e}");
+}
+
+#[test]
+fn the_read_budget_refills_after_half_an_hour() {
+    let t = tempfile::tempdir().unwrap();
+    let clock = Arc::new(FixedClock::new(10_000));
+    let mut s = session(&t).with_clock(clock.clone());
+    for _ in 0..20 {
+        s.call("memory_context", &json!({})).unwrap();
+    }
+    let why = s.call("memory_context", &json!({})).unwrap_err();
+    assert!(why.contains("refills in 30 minutes"), "{why}");
+    clock.set(10_000 + 1799);
+    let why = s.call("memory_context", &json!({})).unwrap_err();
+    assert!(why.contains("refills in 1 minutes"), "{why}");
+    clock.set(10_000 + 1800);
+    assert!(s.call("memory_context", &json!({})).is_ok());
+}
+
+#[test]
+fn the_save_budget_refills_too() {
+    let t = tempfile::tempdir().unwrap();
+    let clock = Arc::new(FixedClock::new(10_000));
+    let mut s = session(&t).with_clock(clock.clone());
+    for i in 0..30 {
+        save(&mut s, &format!("dato número {i}")).unwrap_or_else(|e| panic!("{i}: {e}"));
+    }
+    let why = save(&mut s, "uno de más").unwrap_err();
+    assert!(why.contains("refills in"), "{why}");
+    clock.set(10_000 + 1800);
+    save(&mut s, "uno de más").unwrap();
+}
+
+#[test]
+fn the_change_budget_refills_too() {
+    let t = tempfile::tempdir().unwrap();
+    let clock = Arc::new(FixedClock::new(10_000));
+    let mut s = session(&t).with_clock(clock.clone());
+    save(&mut s, "uno").unwrap();
+    for _ in 0..10 {
+        s.call("memory_pin", &json!({"id": 1})).unwrap();
+    }
+    let why = s.call("memory_pin", &json!({"id": 1})).unwrap_err();
+    assert!(why.contains("refills in"), "{why}");
+    clock.set(10_000 + 1800);
+    s.call("memory_pin", &json!({"id": 1})).unwrap();
+}
+
+#[test]
+fn the_text_budget_refills_too() {
+    let t = tempfile::tempdir().unwrap();
+    let clock = Arc::new(FixedClock::new(10_000));
+    let mut s = session(&t).with_clock(clock.clone());
+    for i in 0..8 {
+        save(&mut s, &format!("{} {i}", "relleno largo ".repeat(80))).unwrap();
+    }
+    let ask = json!({"query": "relleno", "limit": 8});
+    let calls = (0..20)
+        .take_while(|_| s.call("memory_search", &ask).is_ok())
+        .count();
+    assert!(
+        calls < 20,
+        "the 24 KiB cap should stop it before the 20 calls"
+    );
+    clock.set(10_000 + 1800);
+    s.call("memory_search", &ask).unwrap();
 }
 
 #[test]

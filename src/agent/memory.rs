@@ -986,6 +986,30 @@ impl Memory {
     }
 }
 
+/// `Memory::embed_queue` without holding the writer while the model runs: a read computes the
+/// vectors (64 at a time) and a short write keeps them, until nothing waits; then the queued jobs
+/// are closed (they find nothing left). How many vectors were stored; 0 with no model.
+pub fn embed_pending(data: &Path, model: &EmbedModel) -> Res<usize> {
+    let Some(read) = Memory::open_read(data, model, None, "agente")? else {
+        return Ok(0);
+    };
+    if !read.embeddings {
+        return Ok(0);
+    }
+    let m = |e: Error| explain(&e);
+    let mut stored = 0;
+    loop {
+        let computed = read.engine.compute_vectors(64).map_err(m)?;
+        if computed.examined() == 0 {
+            break;
+        }
+        let w = Memory::open_write(data, model, None, "agente")?;
+        stored += w.engine.store_vectors(computed).map_err(m)?;
+    }
+    stored += Memory::open_write(data, model, None, "agente")?.embed_queue()?;
+    Ok(stored)
+}
+
 /// The Spanish word for a kind.
 pub fn kind_label(k: MemoryType) -> &'static str {
     match k {

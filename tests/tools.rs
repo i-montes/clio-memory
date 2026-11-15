@@ -1,7 +1,16 @@
 #![allow(clippy::unwrap_used)] // tests: panicking is the failure mode
 //! The tools an agent calls: what they answer, what they refuse, and their caps.
 
+mod common;
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use clio_memory::agent::{EmbedModel, Memory};
 use clio_memory::tools::{Session, TOOLS};
+use clio_memory::{Embedder, Engine, OpenMode, SystemClock};
+use common::HashEmbedder;
 use serde_json::json;
 
 fn session(t: &tempfile::TempDir) -> Session {
@@ -344,4 +353,56 @@ fn a_bad_id_spends_no_change() {
     }
     let r = s.call("memory_pin", &json!({"id": 1})).unwrap();
     assert!(!r.contains("10"), "{r}");
+}
+
+/// Inside `embed`, tries to take the writer: it can only if the session let it go.
+struct ProbeEmbedder {
+    inner: HashEmbedder,
+    db: PathBuf,
+    free: Arc<AtomicBool>,
+}
+impl Embedder for ProbeEmbedder {
+    fn model_id(&self) -> &str {
+        self.inner.model_id()
+    }
+    fn dim(&self) -> usize {
+        self.inner.dim()
+    }
+    fn embed(&self, texts: &[&str]) -> clio_memory::Result<Vec<Vec<f32>>> {
+        if Engine::open(&self.db, OpenMode::ReadWrite, Arc::new(SystemClock)).is_ok() {
+            self.free.store(true, Ordering::SeqCst);
+        }
+        self.inner.embed(texts)
+    }
+}
+
+#[test]
+fn a_save_does_not_hold_the_writer_while_it_embeds() {
+    let t = tempfile::tempdir().unwrap();
+    let free = Arc::new(AtomicBool::new(false));
+    let model = EmbedModel::from_embedder(Arc::new(ProbeEmbedder {
+        inner: HashEmbedder::new("hash", 16),
+        db: t.path().join("memory.db"),
+        free: free.clone(),
+    }));
+    let mut s = Session::new(t.path().to_path_buf(), None, "mcp:prueba".into()).with_model(model);
+    let said = s
+        .call(
+            "memory_save",
+            &json!({"text": "Qué: una prueba", "kind": "semantic"}),
+        )
+        .unwrap();
+    assert!(said.starts_with("saved"), "{said}");
+    assert!(
+        free.load(Ordering::SeqCst),
+        "the writer was held while the model ran"
+    );
+    let m = Memory::open_read(t.path(), &EmbedModel::none(), None, "mcp:prueba")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        m.engine().stats().unwrap().vectors,
+        1,
+        "the vector is stored all the same"
+    );
 }

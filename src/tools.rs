@@ -20,7 +20,7 @@ use std::sync::Arc;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::agent::memory::{clean_text, kind_label, origin_label};
+use crate::agent::memory::{clean_text, embed_pending, kind_label, origin_label};
 use crate::agent::{Draft, EmbedModel, Memory, Place, preview};
 use crate::secrets::find_secret;
 use crate::{Category, MemoryId, MemoryRow, MemoryType, OpId, OpKind, Origin, Outcome};
@@ -308,11 +308,7 @@ impl Session {
     /// The end of the session: whatever is still waiting for a vector is computed, once more,
     /// before the model is let go. How many vectors were stored.
     pub fn finish(&self) -> Result<usize, String> {
-        if !Memory::db_path(&self.data).is_file() {
-            return Ok(0);
-        }
-        let m = self.writer()?;
-        m.embed_queue()
+        embed_pending(&self.data, &self.model)
     }
 
     fn spend_save(&mut self) -> Result<(), String> {
@@ -445,6 +441,7 @@ impl Session {
         draft: Draft,
     ) -> Result<String, String> {
         let summary = name == "memory_session_summary";
+        // The writer lives only for the save: the vectors are computed after it is let go.
         let m = self.writer()?;
         let has_project = self.project.is_some();
         let o = if name == "memory_update" {
@@ -465,10 +462,19 @@ impl Session {
             };
             m.save(&draft, &self.actor, place, false)?
         };
-        let mut said = with_vectors(told(&o), &m);
+        drop(m);
+        let mut said = self.with_vectors(told(&o));
         if !summary
             && o.kind != OpKind::Noop
-            && let Some(twin) = m.near_duplicate(o.memory)
+            && let Some(twin) = Memory::open_read(
+                &self.data,
+                &self.model,
+                self.project.as_deref(),
+                &self.actor,
+            )
+            .ok()
+            .flatten()
+            .and_then(|m| m.near_duplicate(o.memory))
         {
             // Only its number: this answer is not framed as data, so no memory text goes in it.
             said.push_str(&format!(
@@ -513,13 +519,27 @@ impl Session {
                 ));
             }
         }
-        Ok(with_vectors(
-            format!(
-                "merged into m{}: the originals are forgotten (quarantine), not erased",
-                o.memory.0
-            ),
-            &m,
-        ))
+        drop(m);
+        Ok(self.with_vectors(format!(
+            "merged into m{}: the originals are forgotten (quarantine), not erased",
+            o.memory.0
+        )))
+    }
+
+    /// After a write, once the writer is let go, the vectors of the whole queue are computed;
+    /// without a model the answer says so. A failure to compute them does not undo the save: what
+    /// is left waits for the next write, the end of the session, or `clio-memory run-jobs`.
+    fn with_vectors(&self, answer: String) -> String {
+        // `get`, not `is_present`: a model that fails to load is no model, as the writer saw it.
+        if !matches!(self.model.get(), Ok(Some(_))) {
+            return format!(
+                "{answer} · sin modelo de vectores: la búsqueda es solo por texto (`clio-memory setup model`)"
+            );
+        }
+        if let Err(why) = embed_pending(&self.data, &self.model) {
+            eprintln!("clio-memory: vectores pendientes: {why}");
+        }
+        answer
     }
 
     fn change(&mut self, name: &str, args: &Map<String, Value>) -> Result<String, String> {
@@ -678,21 +698,6 @@ fn draft_of(args: &Map<String, Value>, no_kind: bool) -> Result<Draft, String> {
         category,
         kind,
     })
-}
-
-/// After a write, the vectors of the whole queue are computed at once; without a model the answer
-/// says so. A failure to compute them does not undo the save: what is left waits for the next
-/// write, the end of the session, or `clio-memory run-jobs`.
-fn with_vectors(answer: String, m: &Memory) -> String {
-    if !m.has_embeddings() {
-        return format!(
-            "{answer} · sin modelo de vectores: la búsqueda es solo por texto (`clio-memory setup model`)"
-        );
-    }
-    if let Err(why) = m.embed_queue() {
-        eprintln!("clio-memory: vectores pendientes: {why}");
-    }
-    answer
 }
 
 /// What became of a save, in fixed words, with the change number to undo it.

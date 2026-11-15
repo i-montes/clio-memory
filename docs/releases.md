@@ -24,9 +24,9 @@ La etiqueta, sin la `v`, debe ser igual a `version` en `Cargo.toml`. Si no lo es
 - **La purga borra el título y la categoría**, no solo el texto. El sueño y la importación limpian lo purgado antes, y `doctor` lo comprueba (`purged_scrubbed`).
 - **`update`** usa el `install.sh` del último release, no el de `main`.
 - **`recall`** encuentra una palabra que solo está en el título, y calcula el vector de la consulta una sola vez para todos los lugares.
-- **El sueño corre cuando la memoria está inactiva**, a cualquier hora (el timer despierta cada 30 minutos). Las lecturas cuentan como uso, la fusión se repite cada 20 horas y `doctor` da `FAIL` si lleva demasiado sin hacerse.
+- **El sueño corre cuando la memoria está inactiva**, a cualquier hora (el timer despierta cada 30 minutos). Las lecturas cuentan como uso, la fusión se hace como mucho una vez cada 20 horas (en Clio, que es quien une) y `doctor` da `FAIL` si lleva demasiado sin hacerse.
 
-Después de fusionar y etiquetar: correr `clio-memory update`, reiniciar las sesiones de agente abiertas y, en Clio, correr `clio memory setup sleep` para que el timer tome el horario nuevo.
+Después de fusionar y etiquetar: correr `clio-memory update`, reiniciar las sesiones de agente abiertas y, en Clio, llamar a `clio_memory::private_runtime()` al empezar `main` (si no, el Granite de Clio se rechaza y vuelve al modelo estático) y correr `clio memory setup sleep` para que el timer tome el horario nuevo.
 
 ## Qué hace cada trabajo
 

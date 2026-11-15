@@ -1291,6 +1291,28 @@ fn an_export_with_a_reborn_id_is_restored() {
     assert_eq!(next.unwrap().memory.0, 3, "never 2 again");
 }
 
+#[test]
+fn the_tombstone_of_an_id_purged_twice_is_the_latest_purge() {
+    let t = tempfile::tempdir().unwrap();
+    let engine = Engine::open(
+        &t.path().join("m.db"),
+        OpenMode::ReadWrite,
+        Arc::new(SystemClock),
+    )
+    .unwrap();
+    engine.import(&mut REUSED.as_bytes()).unwrap();
+    assert_eq!(
+        engine.tombstone(MemoryId(2)).unwrap().unwrap().reason,
+        "prueba"
+    );
+    // The reborn memory 2 is purged again.
+    let actor = engine.actors().unwrap()[0].id;
+    engine.purge(MemoryId(2), actor, "otra vez").unwrap();
+    let tombstone = engine.tombstone(MemoryId(2)).unwrap().unwrap();
+    assert_eq!(tombstone.reason, "otra vez");
+    assert!(tombstone.at > 1000, "{tombstone:?}");
+}
+
 /// The last operation that carries changes, with its first change turned into a change of an
 /// existing row: `before` becomes a copy of `after`.
 fn forge_before_on_last_change(text: &str) -> String {

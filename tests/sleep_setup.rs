@@ -264,7 +264,7 @@ fn doctor_says_when_it_last_slept() {
     last_night(t.path());
     let o = cli(t.path(), &["doctor"]);
     let out = String::from_utf8_lossy(&o.stdout);
-    assert!(out.contains("sueño: última noche"), "{out}");
+    assert!(out.contains("sueño: último sueño"), "{out}");
     assert!(out.contains("completa"), "{out}");
     let o = cli(t.path(), &["sleep", "--report"]);
     assert!(String::from_utf8_lossy(&o.stdout).contains("sueño: secreto"));

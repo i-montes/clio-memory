@@ -35,12 +35,13 @@ Cuando nadie la está usando, la memoria se revisa sola, a cualquier hora. Un ti
 
 Cada sueño:
 1. chequea el archivo (`PRAGMA quick_check`); si falla, no toca nada;
-2. guarda una copia en la carpeta `sleep/` de los datos (las 3 últimas);
+2. guarda una copia en la carpeta `sleep/` de los datos (las 3 últimas; una purga no llega a ellas: conservan el título y la categoría de lo purgado hasta que rotan, 3 días como máximo);
 3. calcula los vectores que falten;
-4. manda a cuarentena lo que tiene un secreto o parece un ataque (caracteres ocultos, o dos señales juntas: frases de inyección, órdenes de exfiltración, origen externo);
-5. de dos recuerdos casi idénticos (similitud ≥ 0,97, mismo sitio y misma confianza) deja uno: el tuyo, si no el fijado, si no el más usado, si no el más nuevo;
-6. anota «para revisar» las contradicciones;
-7. purga lo que se descartó (olvidado, marcado o mandado por el sueño) hace 30 días o más (7 si era un secreto), solo si la copia salió bien.
+4. limpia el título y la categoría que purgas anteriores dejaron en los registros;
+5. manda a cuarentena lo que tiene un secreto o parece un ataque (caracteres ocultos, o dos señales juntas: frases de inyección, órdenes de exfiltración, origen externo);
+6. de dos recuerdos casi idénticos (similitud ≥ 0,97, mismo sitio y misma confianza) deja uno: el tuyo, si no el fijado, si no el más usado, si no el más nuevo;
+7. anota «para revisar» las contradicciones;
+8. purga lo que se descartó (olvidado, marcado o mandado por el sueño) hace 30 días o más (7 si era un secreto), solo si la copia salió bien.
 
 Solo mira lo que cambió desde el sueño anterior y sus vecinos: lo sólido no se repasa. Nunca toca lo tuyo ni lo fijado: si algo tuyo parece tener un secreto, solo avisa. Tiene topes por día (cuarentenas: 10 o el 10 % de lo activo; purgas: 50). Todo menos la purga se deshace con `revert`.
 

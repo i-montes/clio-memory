@@ -178,8 +178,11 @@ pub fn run(
         }
         let changed =
             foreign_after(&read, OpId(state.cursor), system).map_err(|e| e.to_string())?;
-        // Groups waiting for the model are something to do only once its turn has come.
-        let merge_waits = !state.awaiting_merge.is_empty() && now - state.last_merge >= MERGE_EVERY;
+        // Groups waiting for the model are something to do only once its turn has come, and only
+        // for a sleep that has a model: without one they stay put and wake nobody.
+        let merge_waits = merger.is_some()
+            && !state.awaiting_merge.is_empty()
+            && now - state.last_merge >= MERGE_EVERY;
         if !opts.now
             && !changed
             && !merge_waits

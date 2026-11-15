@@ -376,9 +376,9 @@ pub fn uninstall_with(
             None,
             SLEEP,
             if sleep_is_clio_memorys(&env.home) {
-                remove_sleep(&env.home, env.service).map(|()| "sueño nocturno quitado".to_owned())
+                remove_sleep(&env.home, env.service).map(|()| "sueño quitado".to_owned())
             } else {
-                Ok("hay otro sueño nocturno (de Clio u otro binario): no se tocó".to_owned())
+                Ok("hay otro sueño (de Clio u otro binario): no se tocó".to_owned())
             },
         ));
     }

@@ -264,7 +264,7 @@ fn command_line(cmd: &Command) -> String {
 /// The name of the sleep's unit (systemd) and the stem of its job (launchd), whoever installs it:
 /// the last installation decides the binary.
 pub const SLEEP_UNIT: &str = "clio-memory-sleep";
-const SLEEP_LABEL: &str = "com.clio-memory.sleep";
+pub const SLEEP_LABEL: &str = "com.clio-memory.sleep";
 
 /// The systemd user service and timer that run `exe args` every half hour, all day: the sleep
 /// decides on its own whether it is its turn (the memory quiet, something to do).
@@ -356,23 +356,21 @@ pub(crate) fn sleep_is_clio_memorys(home: &Path) -> bool {
     })
 }
 
-/// The nightly sleep for this binary: installed if it is not, re-pointed if it is an older
+/// The sleep for this binary: installed if it is not, re-pointed if it is an older
 /// `clio-memory`'s; another program's (Clio's, which also merges with the person's model) is
 /// left as it is. The `Err` says it was not installed, and how to try again.
 pub fn ensure_sleep(env: &Env) -> Result<String, String> {
     let (home, exe) = (&env.home, &env.exe);
     if sleep_installed(home, exe, &["sleep"]) {
-        return Ok("el sueño nocturno ya está instalado".into());
+        return Ok("el sueño ya está instalado".into());
     }
     if sleep_present(home) && !sleep_is_clio_memorys(home) {
-        return Ok("ya hay otro sueño nocturno instalado (de Clio u otro binario): no se cambió; `clio-memory setup sleep` lo reemplaza".into());
+        return Ok("ya hay otro sueño instalado (de Clio u otro binario): no se cambió; `clio-memory setup sleep` lo reemplaza".into());
     }
     install_sleep(home, exe, &["sleep"], env.service)
-        .map(|at| format!("sueño nocturno instalado: {}", at.display()))
+        .map(|at| format!("sueño instalado: {}", at.display()))
         .map_err(|e| {
-            format!(
-                "el sueño nocturno no se instaló ({e}); `clio-memory setup sleep` lo intenta de nuevo"
-            )
+            format!("el sueño no se instaló ({e}); `clio-memory setup sleep` lo intenta de nuevo")
         })
 }
 

@@ -314,6 +314,44 @@ fn the_merger_runs_at_most_once_in_20_hours() {
 }
 
 #[test]
+fn without_a_merger_a_waiting_group_does_not_keep_waking_the_sleep() {
+    let n = night();
+    let (a, b) = {
+        let e = open(&n.data, NOW - 3600);
+        pair(&n, &e, DOCKER)
+    };
+    // Groups left waiting by another process (Clio shares the state with the CLI).
+    let dir = n.data.join("sleep");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("state.json"),
+        serde_json::json!({
+            "cursor": i64::MAX / 2,
+            "rules_version": signals::RULES_VERSION,
+            "last_complete": NOW,
+            "last_merge": NOW - 30 * 3600,
+            "awaiting_merge": [a.0, b.0],
+        })
+        .to_string(),
+    )
+    .unwrap();
+    // Nobody here can merge them: they are no reason to wake, at 21 h or at any later wake.
+    for wake in [21 * 3600, 21 * 3600 + 1800, 22 * 3600, 23 * 3600] {
+        assert!(
+            matches!(
+                n.sleep(NOW + wake, None, false),
+                Slept::Skipped("nada cambió desde el último sueño")
+            ),
+            "woke at +{wake}"
+        );
+    }
+    // The wait is kept for a sleep that has a merger.
+    let mut waiting = ids(&n, "awaiting_merge");
+    waiting.sort_unstable();
+    assert_eq!(waiting, vec![a.0, b.0]);
+}
+
+#[test]
 fn an_interrupted_sleep_that_called_the_model_still_takes_its_turn() {
     let n = night();
     {

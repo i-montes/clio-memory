@@ -251,8 +251,21 @@ fn data_of(db: &std::path::Path) -> &std::path::Path {
 
 /// What `sleep::overdue` found (the days since the last complete sleep) as doctor's FAIL line.
 fn overdue_line(days: i64) -> String {
+    overdue_line_on(days, cfg!(target_os = "macos"))
+}
+
+/// The same line with the command that shows the timer: launchd on macOS, systemd elsewhere.
+fn overdue_line_on(days: i64, macos: bool) -> String {
+    let status = if macos {
+        format!("launchctl list {}", clio_memory::setup::SLEEP_LABEL)
+    } else {
+        format!(
+            "systemctl --user status {}.timer",
+            clio_memory::setup::SLEEP_UNIT
+        )
+    };
     format!(
-        "FAIL sueño: no corre desde hace {days} días y hay cambios sin revisar (¿está el timer? systemctl --user status clio-memory-sleep.timer)"
+        "FAIL sueño: no corre desde hace {days} días y hay cambios sin revisar (¿está el timer? {status})"
     )
 }
 
@@ -266,7 +279,7 @@ fn slept(db: &std::path::Path, home: Option<&std::path::Path>) -> String {
         None => "info sueño: todavía no durmió (clio-memory setup sleep instala el timer)".into(),
         Some(r) => {
             let mut s = format!(
-                "info sueño: última noche {} ({})",
+                "info sueño: último sueño {} ({})",
                 clio_memory::sleep::night_of(r.started),
                 if r.complete { "completa" } else { "incompleta" }
             );
@@ -439,5 +452,18 @@ pub fn refuse_overwrite(path: &std::path::Path) -> Result<(), String> {
         Ok(_) => Err(overwrite(path)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(format!("cannot check {}: {e}", path.display())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::overdue_line_on;
+
+    #[test]
+    fn the_overdue_hint_names_the_timer_of_the_platform() {
+        assert!(
+            overdue_line_on(4, false).ends_with("systemctl --user status clio-memory-sleep.timer)")
+        );
+        assert!(overdue_line_on(4, true).ends_with("launchctl list com.clio-memory.sleep)"));
     }
 }

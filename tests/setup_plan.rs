@@ -509,7 +509,7 @@ fn an_old_clio_memory_sleep_is_repointed_and_clios_is_left_alone() {
             .outcome
             .as_ref()
             .unwrap()
-            .starts_with("sueño nocturno instalado"),
+            .starts_with("sueño instalado"),
         "{steps:#?}"
     );
     assert!(sleep_installed(&r.home, &r.exe, &["sleep"]));

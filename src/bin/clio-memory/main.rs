@@ -395,11 +395,11 @@ fn setup_sleep(remove: bool) -> Result<Vec<String>, String> {
     let home = home()?;
     if remove {
         remove_sleep(&home, &service_command)?;
-        return Ok(vec!["sueño nocturno quitado".into()]);
+        return Ok(vec!["sueño quitado".into()]);
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let at = install_sleep(&home, &exe, &["sleep"], &service_command)?;
-    Ok(vec![format!("sueño nocturno instalado: {}", at.display())])
+    Ok(vec![format!("sueño instalado: {}", at.display())])
 }
 
 /// `clio-memory sleep`: one night, or with `--report` the last night's report.
@@ -457,7 +457,7 @@ fn sleep(
         |l| l.replacen("Anoche (sueño)", "sueño", 1),
     ));
     if !r.complete {
-        said.push("la noche quedó incompleta: el próximo turno la sigue".into());
+        said.push("el sueño quedó incompleto: el próximo turno lo sigue".into());
     }
     Ok(said)
 }

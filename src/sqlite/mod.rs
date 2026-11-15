@@ -1835,7 +1835,8 @@ impl Store for SqliteStore {
             .query_row(
                 "SELECT o.id, o.scope, o.actor, o.at, o.reason
                  FROM operation_memories m JOIN operations o ON o.id = m.op
-                 WHERE m.memory = ?1 AND o.kind = 'Purge'",
+                 WHERE m.memory = ?1 AND o.kind = 'Purge'
+                 ORDER BY o.id DESC LIMIT 1",
                 [id.0],
                 |r| {
                     Ok(Tombstone {
@@ -2130,7 +2131,7 @@ impl Store for SqliteStore {
                 "no purged memory carries a title or a category".into()
             } else {
                 format!(
-                    "{dirty} purged memories still carry a title or a category (the next sleep cleans them)"
+                    "{dirty} snapshots of purged memories still carry a title or a category (the next sleep cleans them)"
                 )
             },
         );

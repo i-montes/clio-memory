@@ -5,7 +5,7 @@ clio-memory se conecta a cinco agentes: Claude Code, OpenCode, Codex, Gemini CLI
 Los comandos que lo hacen:
 
 - `clio-memory setup` es el flujo completo: elige agentes, modelo y línea de instrucciones, y conecta, instala el modelo y el sueño. Es lo que `install.sh` lanza al terminar. Sus banderas están en [Modo sin terminal](#modo-sin-terminal).
-- `clio-memory setup claude-code` conecta solo Claude Code, con el sueño nocturno.
+- `clio-memory setup claude-code` conecta solo Claude Code, con el sueño.
 - `clio-memory uninstall` y `clio-memory doctor` conocen a los cinco agentes.
 
 Cómo se baja e instala el binario (`install.sh`) está en [releases.md](releases.md). `clio-memory update` corre el `install.sh` del último release (`https://github.com/i-montes/clio-memory/releases/latest/download/install.sh`), no el de `main`: es el instalador de la misma versión que el binario que baja. La línea de `curl … | sh` de abajo sigue apuntando a `main`.
@@ -126,7 +126,7 @@ Al quitar un agente, la skill se retira de las carpetas que ya no hacen falta, p
 
 Sin verificar: que cada agente lea de verdad esas carpetas. Las rutas salen de la documentación oficial de cada uno, revisada el 2026-11-05, y no de ejecutar los agentes.
 
-## El sueño nocturno
+## El sueño
 
 Al conectar al menos un agente, también se instala el timer del [sueño](../README.md#el-sueño): en Linux, `~/.config/systemd/user/clio-memory-sleep.service` y `.timer`, activados con `systemctl --user daemon-reload` y `systemctl --user enable --now clio-memory-sleep.timer`; en macOS, `~/Library/LaunchAgents/com.clio-memory.sleep.plist`, cargado con `launchctl`. Si el sueño ya es de un `clio-memory` anterior, se re-apunta a este binario. Si es de otro programa (el de Clio, por ejemplo), se deja como está y el paso lo dice; `clio-memory setup sleep` lo reemplaza. Si el sistema no tiene un administrador de servicios de usuario, ese paso queda en ✖ y lo demás se instala igual.
 

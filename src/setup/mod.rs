@@ -265,11 +265,9 @@ fn command_line(cmd: &Command) -> String {
 /// the last installation decides the binary.
 pub const SLEEP_UNIT: &str = "clio-memory-sleep";
 const SLEEP_LABEL: &str = "com.clio-memory.sleep";
-/// The nightly slots: every half hour from 23:00 to 05:30, local time.
-const SLEEP_HOURS: [u8; 7] = [23, 0, 1, 2, 3, 4, 5];
 
-/// The systemd user service and timer that run `exe args` at night. No `Persistent`: a night the
-/// machine was off is skipped, never made up by day.
+/// The systemd user service and timer that run `exe args` every half hour, all day: the sleep
+/// decides on its own whether it is its turn (the memory quiet, something to do).
 pub fn sleep_units(exe: &Path, args: &[&str]) -> (String, String) {
     let quote = |s: &str| {
         format!(
@@ -285,11 +283,11 @@ pub fn sleep_units(exe: &Path, args: &[&str]) -> (String, String) {
         "[Unit]\nDescription=clio-memory: la fase de sueño de la memoria\n\n[Service]\nType=oneshot\nExecStart={}\nNice=10\n",
         line.join(" ")
     );
-    let timer = "[Unit]\nDescription=clio-memory: despierta el sueño cada media hora de noche\n\n[Timer]\nOnCalendar=*-*-* 23,00,01,02,03,04,05:00,30:00\nAccuracySec=1min\n\n[Install]\nWantedBy=timers.target\n".to_owned();
+    let timer = "[Unit]\nDescription=clio-memory: despierta el sueño cada media hora\n\n[Timer]\nOnCalendar=*:0/30\nAccuracySec=1min\n\n[Install]\nWantedBy=timers.target\n".to_owned();
     (service, timer)
 }
 
-/// The launchd job (macOS) for the same slots.
+/// The launchd job (macOS): the same, every 1800 seconds.
 pub fn launchd_plist(exe: &Path, args: &[&str]) -> String {
     let esc = |s: &str| {
         s.replace('&', "&amp;")
@@ -300,15 +298,8 @@ pub fn launchd_plist(exe: &Path, args: &[&str]) -> String {
     for a in args {
         program.push_str(&format!("<string>{}</string>", esc(a)));
     }
-    let slots: String = SLEEP_HOURS
-        .iter()
-        .flat_map(|h| [0, 30].map(|m| (h, m)))
-        .map(|(h, m)| {
-            format!("<dict><key>Hour</key><integer>{h}</integer><key>Minute</key><integer>{m}</integer></dict>")
-        })
-        .collect();
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>Label</key><string>{SLEEP_LABEL}</string><key>ProgramArguments</key><array>{program}</array><key>StartCalendarInterval</key><array>{slots}</array><key>LowPriorityIO</key><true/><key>Nice</key><integer>10</integer></dict></plist>\n"
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>Label</key><string>{SLEEP_LABEL}</string><key>ProgramArguments</key><array>{program}</array><key>StartInterval</key><integer>1800</integer><key>LowPriorityIO</key><true/><key>Nice</key><integer>10</integer></dict></plist>\n"
     )
 }
 

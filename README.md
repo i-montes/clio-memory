@@ -31,9 +31,9 @@ clio-memory es la **memoria propia de un agente**. Guarda lo que vale la pena re
 
 ## El sueño
 
-De noche, si nadie la está usando, la memoria se revisa sola. Un timer de usuario despierta `clio-memory sleep` cada media hora entre las 23:00 y las 05:30. Corre como mucho una vez por noche y solo si la memoria lleva 30 minutos quieta. Si alguien la usa mientras duerme, se detiene y sigue en el próximo turno.
+Cuando nadie la está usando, la memoria se revisa sola, a cualquier hora. Un timer de usuario despierta `clio-memory sleep` cada media hora, todo el día. Duerme solo si nadie escribió ni leyó en 30 minutos (leer también cuenta) y además cambió algo desde el último sueño o pasó un día. Si alguien la usa mientras duerme, se detiene y sigue en el próximo turno. Los sueños de un mismo día suman en un solo informe y comparten la copia del día.
 
-Cada noche:
+Cada sueño:
 1. chequea el archivo (`PRAGMA quick_check`); si falla, no toca nada;
 2. guarda una copia en la carpeta `sleep/` de los datos (las 3 últimas);
 3. calcula los vectores que falten;
@@ -42,9 +42,9 @@ Cada noche:
 6. anota «para revisar» las contradicciones;
 7. purga lo que se descartó (olvidado, marcado o mandado por el sueño) hace 30 días o más (7 si era un secreto), solo si la copia salió bien.
 
-Solo mira lo que cambió desde la noche anterior y sus vecinos: lo sólido no se repasa. Nunca toca lo tuyo ni lo fijado: si algo tuyo parece tener un secreto, solo avisa. Tiene topes por noche (cuarentenas: 10 o el 10 % de lo activo; purgas: 50). Todo menos la purga se deshace con `revert`.
+Solo mira lo que cambió desde el sueño anterior y sus vecinos: lo sólido no se repasa. Nunca toca lo tuyo ni lo fijado: si algo tuyo parece tener un secreto, solo avisa. Tiene topes por día (cuarentenas: 10 o el 10 % de lo activo; purgas: 50). Todo menos la purga se deshace con `revert`.
 
-A la mañana siguiente, `memory_context` empieza con una línea como `Anoche (sueño): 1 a cuarentena (m12 secreto), 3 unidas en m70 · para revisar: m5 contradice a m61`, y `clio-memory doctor` dice cuándo durmió. En Clio, el sueño además une recuerdos casi iguales con el modelo que tengas configurado, y valida cada unión antes de escribirla.
+Después, `memory_context` empieza con una línea como `Anoche (sueño): 1 a cuarentena (m12 secreto), 3 unidas en m70 · para revisar: m5 contradice a m61` (dice «Anoche» aunque el sueño ya no sea de noche), y `clio-memory doctor` dice cuándo durmió; si hay cambios sin revisar y el último sueño completo tiene más de 3 días, `doctor` falla: el timer no está corriendo. En Clio, el sueño además une recuerdos casi iguales con el modelo que tengas configurado, como mucho una vez cada 20 horas, y valida cada unión antes de escribirla.
 
 ## Instalar
 
@@ -169,7 +169,7 @@ clio-memory promote 12        # devuelve uno de la cuarentena
 clio-memory purge 12          # borra su contenido para siempre (pregunta antes)
 clio-memory export copia.jsonl
 clio-memory sleep --dry-run --now   # qué haría el sueño ahora, sin cambiar nada
-clio-memory sleep --report    # el informe de la última noche
+clio-memory sleep --report    # el informe del último sueño
 clio-memory doctor           # la salud de la memoria y de cada agente que encuentra
 clio-memory uninstall        # la quita de los agentes (ver «Desinstalar»)
 clio-memory --help            # todo lo demás

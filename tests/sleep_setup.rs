@@ -15,20 +15,22 @@ use serde_json::json;
 const EXE: &str = "/opt/bin/clio-memory";
 
 #[test]
-fn the_timer_wakes_every_half_hour_from_23_to_0530() {
+fn the_timer_wakes_every_half_hour_all_day() {
     let (service, timer) = sleep_units(Path::new(EXE), &["sleep"]);
     assert!(
         service.contains("ExecStart=\"/opt/bin/clio-memory\" \"sleep\""),
         "{service}"
     );
     assert!(service.contains("Type=oneshot"), "{service}");
-    assert!(
-        timer.contains("OnCalendar=*-*-* 23,00,01,02,03,04,05:00,30:00"),
-        "{timer}"
-    );
+    assert!(timer.contains("OnCalendar=*:0/30"), "{timer}");
+    assert!(!timer.contains("23,00"), "{timer}");
     assert!(!timer.contains("Persistent"), "{timer}");
     let plist = launchd_plist(Path::new(EXE), &["sleep"]);
-    assert_eq!(plist.matches("<key>Hour</key>").count(), 14, "{plist}");
+    assert!(
+        plist.contains("<key>StartInterval</key><integer>1800</integer>"),
+        "{plist}"
+    );
+    assert!(!plist.contains("StartCalendarInterval"), "{plist}");
     assert!(
         plist.contains("<string>com.clio-memory.sleep</string>"),
         "{plist}"
@@ -206,12 +208,23 @@ fn cli_sleep_dry_run_prints_and_writes_nothing() {
     )
     .unwrap();
     let db = std::fs::read(t.path().join("memory.db")).unwrap();
+    let sleep_files = || -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(t.path().join("sleep"))
+            .into_iter()
+            .flatten()
+            .map(|f| f.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    // The session only marked the memory as used: no report, state or copy yet.
+    assert_eq!(sleep_files(), vec!["last-use".to_owned()]);
     let o = cli(t.path(), &["sleep", "--dry-run", "--now"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(out.contains("solo mirar"), "{out}");
     assert_eq!(std::fs::read(t.path().join("memory.db")).unwrap(), db);
-    assert!(!t.path().join("sleep").exists());
+    assert_eq!(sleep_files(), vec!["last-use".to_owned()]);
     // Without --now, a memory used a moment ago is left alone.
     let o = cli(t.path(), &["sleep"]);
     assert!(o.status.success());

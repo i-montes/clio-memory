@@ -200,6 +200,42 @@ fn doctor_exits_0_when_healthy_and_1_when_a_check_fails() {
 }
 
 #[test]
+fn doctor_fails_when_the_sleep_is_overdue() {
+    let f = populated();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let sleep = f.path.parent().unwrap().join("sleep");
+    std::fs::create_dir_all(&sleep).unwrap();
+    let state = |cursor: i64| {
+        std::fs::write(
+            sleep.join("state.json"),
+            serde_json::json!({"cursor": cursor, "rules_version": 1, "last_complete": now - 4 * 86_400 - 600})
+                .to_string(),
+        )
+        .unwrap();
+    };
+    state(0);
+    let o = run(Some(&f.path), &["doctor"]);
+    assert_eq!(code(&o), 1, "{}", out(&o));
+    assert!(
+        out(&o)
+            .lines()
+            .any(|l| l.starts_with("FAIL sueño: no corre desde hace 4 días")),
+        "{}",
+        out(&o)
+    );
+    let j: serde_json::Value =
+        serde_json::from_str(&out(&run(Some(&f.path), &["--json", "doctor"]))).unwrap();
+    assert_eq!(j["ok"], false, "{j}");
+    // Nothing unreviewed after the cursor: an old sleep is no failure.
+    state(1_000_000);
+    let o = run(Some(&f.path), &["doctor"]);
+    assert_eq!(code(&o), 0, "{}", out(&o));
+}
+
+#[test]
 fn doctor_fails_while_a_purged_memory_keeps_its_title() {
     let f = fixture();
     let id = f

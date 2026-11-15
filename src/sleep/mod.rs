@@ -1,8 +1,8 @@
-//! The sleep: once a night, while nobody is using the memory, it checks and copies the file,
-//! quarantines secrets and likely attacks, folds repeats, merges near-duplicates when given a
-//! model, and purges what was discarded long ago. Each night it looks only at what changed since
-//! the last one (and at its nearest neighbors): what is solid is not reviewed again. See
-//! docs/motor.md.
+//! The sleep: at any hour, once nobody has used the memory for half an hour and something changed
+//! (or a day went by), it checks and copies the file, quarantines secrets and likely attacks,
+//! folds repeats, merges near-duplicates when given a model (at most once in 20 hours), and purges
+//! what was discarded long ago. Each sleep looks only at what changed since the last one (and at
+//! its nearest neighbors): what is solid is not reviewed again. See docs/motor.md.
 
 pub mod signals;
 mod state;
@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-pub use state::{SleepState, dir as sleep_dir, last_report};
+pub use state::{SleepState, dir as sleep_dir, last_report, last_used, mark_used};
 
 use crate::agent::memory::{DB_FILE, EmbedModel};
 use crate::{
@@ -38,7 +38,8 @@ pub trait Merger {
 }
 
 pub struct Options {
-    /// Skip the waits: the last sleep and the quiet half hour (trying it by hand).
+    /// Skip the waits: the quiet half hour, the nothing-to-do and the model's 20 hours (trying it
+    /// by hand).
     pub now: bool,
     /// Look and report, change nothing: no copy, no model, no write.
     pub dry_run: bool,
@@ -51,7 +52,8 @@ pub enum Slept {
     Done(Report),
 }
 
-/// What a night did. One file a night; a night interrupted and taken up again keeps adding to it.
+/// What a day's sleeps did. One file a day (`night_of`): each sleep of it, an interrupted one
+/// taken up again too, keeps adding to it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Report {
     pub started: i64,
@@ -84,8 +86,10 @@ impl Report {
     }
 }
 
-/// A complete night less than this long ago: no other one.
-const SLEPT_WITHIN: i64 = 20 * 3600;
+/// The model step (`Merger`) at most once in this long: it spends tokens.
+const MERGE_EVERY: i64 = 20 * 3600;
+/// With nothing changed, a sleep anyway after this long: the day's copy and purge.
+const HOUSEKEEPING: i64 = 24 * 3600;
 /// The memory must have been quiet this long.
 const QUIET: i64 = 30 * 60;
 /// Similarity from which two memories are the same thing said twice (Granite).
@@ -137,16 +141,13 @@ pub fn run(
     };
     let now = opts.clock.now();
     let state = state::load(data);
-    if !opts.now && now - state.last_complete < SLEPT_WITHIN {
-        return Ok(Slept::Skipped("ya durmió esta noche"));
-    }
     let night = night_of(now);
-    let mut report = state::load_report(data, &night)
-        .filter(|r| !r.complete)
-        .unwrap_or(Report {
-            started: now,
-            ..Report::default()
-        });
+    // The sleeps of a day add up in one report, a complete one too.
+    let mut report = state::load_report(data, &night).unwrap_or(Report {
+        started: now,
+        ..Report::default()
+    });
+    report.complete = false;
     let save = |report: &mut Report| {
         report.ended = opts.clock.now();
         if !opts.dry_run {
@@ -162,19 +163,31 @@ pub fn run(
         save(&mut report)?;
         return Ok(Slept::Done(report));
     }
-    // Whether the memory is quiet, before the model loads (Granite takes seconds and 2 GB).
+    // Whether the memory is quiet and there is something to do, before the model loads (Granite
+    // takes seconds and 2 GB).
     let (system, activity) = {
         let read = Engine::open(&db, OpenMode::ReadOnly, opts.clock.clone())
             .map_err(|e| crate::agent::memory::explain(&e))?;
-        let system = read
-            .actors()
+        let system = system_of(&read).map_err(|e| e.to_string())?;
+        let activity = read
+            .last_activity(system)
             .map_err(|e| e.to_string())?
-            .into_iter()
-            .find(|a| a.kind == ActorKind::System)
-            .map_or(ActorId(0), |a| a.id);
-        let activity = read.last_activity(system).map_err(|e| e.to_string())?;
+            .max(state::last_used(data));
         if !opts.now && now - activity < QUIET {
             return Ok(Slept::Skipped("la memoria está en uso"));
+        }
+        let changed =
+            foreign_after(&read, OpId(state.cursor), system).map_err(|e| e.to_string())?;
+        // Groups waiting for the model are something to do only once its turn has come.
+        let merge_waits = !state.awaiting_merge.is_empty() && now - state.last_merge >= MERGE_EVERY;
+        if !opts.now
+            && !changed
+            && !merge_waits
+            && state.pending.is_empty()
+            && state.rules_version == RULES_VERSION
+            && now - state.last_complete < HOUSEKEEPING
+        {
+            return Ok(Slept::Skipped("nada cambió desde el último sueño"));
         }
         (system, activity)
     };
@@ -207,11 +220,24 @@ pub fn run(
         activity,
         report: &mut report,
         deferred: BTreeSet::new(),
+        awaiting: BTreeSet::new(),
+        merge_due: opts.now || now - state.last_merge >= MERGE_EVERY,
+        merged: false,
     };
     let done = night_run.sleep(&state, merger);
     let cursor = night_run.seen;
+    let merged = night_run.merged;
     let deferred = std::mem::take(&mut night_run.deferred);
+    let awaiting = std::mem::take(&mut night_run.awaiting);
     report.tokens += merger.map_or(0, |m| m.tokens());
+    // The newest wait when there are too many; the oldest are merged if they change again.
+    let dropped = awaiting.len().saturating_sub(MAX_PENDING);
+    if dropped > 0 {
+        report.alarm(format!(
+            "{dropped} recuerdos dejaron de esperar la unión (tope {MAX_PENDING}): se unen si vuelven a cambiar"
+        ));
+    }
+    let awaiting: Vec<i64> = awaiting.iter().skip(dropped).map(|i| i.0).collect();
     match done {
         Ok(()) => {
             report.complete = true;
@@ -228,18 +254,71 @@ pub fn run(
                             opts.clock.now()
                         },
                         pending: deferred.iter().take(MAX_PENDING).map(|i| i.0).collect(),
+                        last_merge: if merged { now } else { state.last_merge },
+                        awaiting_merge: awaiting,
                     },
                 )?;
             }
         }
-        Err(Stop::Disturbed) => report.complete = false,
-        Err(Stop::Failed(why)) => {
+        Err(stop) => {
             report.complete = false;
-            report.alarm(format!("el sueño se detuvo: {why}"));
+            if let Stop::Failed(why) = stop {
+                report.alarm(format!("el sueño se detuvo: {why}"));
+            }
+            // A sleep cut short keeps its place (cursor, pending), but a model it called has
+            // had its turn: the next sleep does not spend tokens again.
+            if merged && !opts.dry_run {
+                state::save(
+                    data,
+                    &SleepState {
+                        last_merge: now,
+                        ..state.clone()
+                    },
+                )?;
+            }
         }
     }
     save(&mut report)?;
     Ok(Slept::Done(report))
+}
+
+/// The system actor, read-only: `ActorId(0)` before it exists (then every operation is someone
+/// else's).
+fn system_of(read: &Engine) -> Result<ActorId, Error> {
+    Ok(read
+        .actors()?
+        .into_iter()
+        .find(|a| a.kind == ActorKind::System)
+        .map_or(ActorId(0), |a| a.id))
+}
+
+/// Is there an operation after `cursor` that the sleep did not sign?
+fn foreign_after(read: &Engine, cursor: OpId, system: ActorId) -> Result<bool, Error> {
+    Ok(read
+        .operations_after(cursor, usize::MAX)?
+        .iter()
+        .any(|op| op.actor != system))
+}
+
+/// Days since the last complete sleep, when they are more than 3 and something after its cursor
+/// is still unreviewed: the timer is not running. `None` before the first sleep (`doctor` says so
+/// on its own) or when the memory cannot be read.
+pub fn overdue(data: &Path, now: i64) -> Option<i64> {
+    const DAY: i64 = 24 * 3600;
+    let state = state::load(data);
+    if state.last_complete == 0 || now - state.last_complete <= 3 * DAY {
+        return None;
+    }
+    let read = Engine::open(
+        &data.join(DB_FILE),
+        OpenMode::ReadOnly,
+        Arc::new(crate::SystemClock),
+    )
+    .ok()?;
+    let system = system_of(&read).ok()?;
+    foreign_after(&read, OpId(state.cursor), system)
+        .ok()?
+        .then_some((now - state.last_complete) / DAY)
 }
 
 /// `<db>.sleep.lock`: two sleeps never overlap (two installations, a manual run). `None` when
@@ -290,6 +369,11 @@ struct Night<'a> {
     report: &'a mut Report,
     /// What a cap or a missing piece left for the next night: it is taken up again then.
     deferred: BTreeSet<MemoryId>,
+    /// Near-duplicate groups' seeds left for the model's next turn.
+    awaiting: BTreeSet<MemoryId>,
+    /// Whether the model step may run this time (`MERGE_EVERY`), and whether the model was called.
+    merge_due: bool,
+    merged: bool,
 }
 
 impl Night<'_> {
@@ -319,6 +403,7 @@ impl Night<'_> {
             .flat_map(|op| op.changes.iter().map(|c| c.memory))
             .collect();
         fresh.extend(state.pending.iter().map(|&id| MemoryId(id)));
+        fresh.extend(state.awaiting_merge.iter().map(|&id| MemoryId(id)));
         let mut active = Vec::new();
         for scope in self.read.scopes()? {
             active.extend(self.read.list(scope.id, Some(State::Active), None)?);
@@ -342,16 +427,33 @@ impl Night<'_> {
         let before = self.report.quarantined.len();
         self.quarantine(&checked, limit, &mut gone)?;
         let left = limit.saturating_sub(self.report.quarantined.len() - before);
+        // What waited for the model keeps waiting unless this sleep looks at it again.
+        let mut carry = true;
         if self.embedder.is_some() {
             self.repeats(&fresh, left, &mut gone)?;
             match merger {
-                Some(m) if copied && !self.dry_run => self.merge(m, &fresh, &mut gone)?,
+                Some(m) if copied && !self.dry_run && self.merge_due => {
+                    carry = false;
+                    self.merge(m, &fresh, &mut gone)?;
+                }
+                // The model already had its turn in the last 20 hours: the groups wait for the
+                // next one.
+                Some(_) if copied && !self.dry_run => {
+                    carry = false;
+                    self.await_merge(&fresh, &gone)?;
+                }
                 // A model that could not run tonight merges these another night.
-                Some(_) if !self.dry_run => self
-                    .deferred
-                    .extend(fresh.iter().map(|r| r.id).filter(|id| !gone.contains(id))),
+                Some(_) if !self.dry_run => {
+                    carry = false;
+                    self.deferred
+                        .extend(fresh.iter().map(|r| r.id).filter(|id| !gone.contains(id)));
+                }
                 _ => {}
             }
+        }
+        if carry {
+            self.awaiting
+                .extend(state.awaiting_merge.iter().map(|&id| MemoryId(id)));
         }
         self.contradictions(&fresh, &gone)?;
         if copied {
@@ -372,7 +474,7 @@ impl Night<'_> {
         state::save_report(self.data, self.night, self.report).map_err(Stop::Failed)
     }
 
-    /// Did anyone else write or use the memory since the night began?
+    /// Did anyone else write, read or use the memory since the night began?
     fn disturbed(&mut self) -> Result<bool, Stop> {
         let after = self.read.operations_after(self.seen, usize::MAX)?;
         if after.iter().any(|op| op.actor != self.system) {
@@ -381,7 +483,11 @@ impl Night<'_> {
         if let Some(last) = after.last() {
             self.seen = last.id;
         }
-        Ok(self.read.last_activity(self.system)? > self.activity)
+        Ok(self
+            .read
+            .last_activity(self.system)?
+            .max(state::last_used(self.data))
+            > self.activity)
     }
 
     /// The writer, for one short section: never while someone else is at it.
@@ -608,25 +714,9 @@ impl Night<'_> {
                 self.deferred.insert(seed.id);
                 continue;
             }
-            let mut group = vec![seed.clone()];
-            for (n, score) in self.read.neighbors(seed.id, &[seed.scope], NEIGHBORS)? {
-                if group.len() >= MAX_GROUP {
-                    break;
-                }
-                if !(NEAR..REPEAT).contains(&score)
-                    || gone.contains(&n.id)
-                    || n.kind != seed.kind
-                    || trust(&n) != trust(seed)
-                    || self.kept(&n)?
-                    || self.contradicted(n.id)?
-                {
-                    continue;
-                }
-                group.push(n);
-            }
-            if group.len() < 2 {
+            let Some(group) = self.group_of(seed, gone)? else {
                 continue;
-            }
+            };
             gone.extend(group.iter().map(|r| r.id));
             if self.disturbed()? {
                 return Err(Stop::Disturbed);
@@ -637,6 +727,8 @@ impl Night<'_> {
                 .map(|i| format!("m{}", i.0))
                 .collect::<Vec<_>>()
                 .join(" + ");
+            // The model is called: its turn is taken, whatever it answers.
+            self.merged = true;
             let Some(answer) = merger.merge(&group) else {
                 // No model tonight (down, budget spent): these and the rest wait.
                 self.deferred.extend(ids.iter().copied());
@@ -691,6 +783,48 @@ impl Night<'_> {
                         break;
                     }
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// `seed` and its near-duplicates (same scope, kind and trust, none kept or contradicted),
+    /// when they make a group of 2 to `MAX_GROUP`.
+    fn group_of(
+        &self,
+        seed: &MemoryRow,
+        gone: &HashSet<MemoryId>,
+    ) -> Result<Option<Vec<MemoryRow>>, Stop> {
+        let mut group = vec![seed.clone()];
+        for (n, score) in self.read.neighbors(seed.id, &[seed.scope], NEIGHBORS)? {
+            if group.len() >= MAX_GROUP {
+                break;
+            }
+            if !(NEAR..REPEAT).contains(&score)
+                || gone.contains(&n.id)
+                || n.kind != seed.kind
+                || trust(&n) != trust(seed)
+                || self.kept(&n)?
+                || self.contradicted(n.id)?
+            {
+                continue;
+            }
+            group.push(n);
+        }
+        Ok((group.len() >= 2).then_some(group))
+    }
+
+    /// Not the model's turn: of the new memories, the ones that form a group wait for it
+    /// (`awaiting_merge`); one without a vector yet is left pending, as `merge` does.
+    fn await_merge(&mut self, fresh: &[MemoryRow], gone: &HashSet<MemoryId>) -> Result<(), Stop> {
+        for seed in fresh {
+            if gone.contains(&seed.id) || self.kept(seed)? || self.contradicted(seed.id)? {
+                continue;
+            }
+            if !self.read.has_vector(seed.id)? {
+                self.deferred.insert(seed.id);
+            } else if self.group_of(seed, gone)?.is_some() {
+                self.awaiting.insert(seed.id);
             }
         }
         Ok(())

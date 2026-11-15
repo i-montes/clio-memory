@@ -502,6 +502,9 @@ fn import_refuses_a_file_that_contradicts_a_tombstone() {
         .find(|l| l["type"] == "operation")
         .unwrap();
     again["id"] = serde_json::json!(999);
+    // A plain re-Add after a purge is a legitimate rebirth now (v0.9.0 reused ids), so the file
+    // must show that it changes the purged memory: a `before` is the row it changes.
+    again["changes"][0]["before"] = again["changes"][0]["after"].clone();
     revived.push(again);
     let (r, _dir, engine) = import_text(&joined(&revived));
     let msg = r.unwrap_err().to_string();
@@ -600,4 +603,22 @@ fn s24_purge_cleans_stale_copies_left_by_older_writes() {
     engine.purge(m.memory, person, "x").unwrap();
     drop(engine);
     assert!(!contains(&std::fs::read(&path).unwrap(), "zafiro"));
+}
+
+#[test]
+fn a_purged_id_is_never_given_to_a_new_memory() {
+    let f = fixture();
+    f.engine.propose(prop(f.scope, f.person, "uno")).unwrap();
+    let two = f
+        .engine
+        .propose(prop(f.scope, f.person, "dos"))
+        .unwrap()
+        .memory;
+    f.engine.purge(two, f.person, "prueba").unwrap();
+    let three = f
+        .engine
+        .propose(prop(f.scope, f.person, "tres"))
+        .unwrap()
+        .memory;
+    assert_eq!(three.0, 3);
 }

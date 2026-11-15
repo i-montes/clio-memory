@@ -472,15 +472,39 @@ fn restore_record(
             )?;
         }
         ExportRecord::Operation(op) => {
-            let touched = op
+            let touched: Vec<MemoryId> = op
                 .memory
                 .into_iter()
-                .chain(op.changes.iter().map(|c| c.memory));
-            if let Some(m) = touched.into_iter().find(|m| purged.contains(&m.0)) {
-                return Err(Error::BadImport(format!(
-                    "memory {} was purged; an operation after the purge touches it",
-                    m.0
-                )));
+                .chain(op.changes.iter().map(|c| c.memory))
+                .collect();
+            // the ids an operation names feed `next_memory_id` (through `operation_memories`)
+            if touched.iter().any(|m| m.0 <= 0 || m.0 >= MAX_RESTORED_ID) {
+                return bad("a memory id is out of range");
+            }
+            let mut hit: Vec<MemoryId> = touched
+                .into_iter()
+                .filter(|m| purged.contains(&m.0))
+                .collect();
+            hit.sort_by_key(|m| m.0);
+            hit.dedup();
+            // every purged id the operation touches is judged, not only the first
+            for m in &hit {
+                // v0.9.0 gave a purged id to a new memory: that file is honest. The id is born
+                // again only by an operation that creates it: no purge, at least one change on it,
+                // and none of them with a `before`.
+                let mut on_it = op.changes.iter().filter(|c| c.memory == *m).peekable();
+                let reborn = op.kind != OpKind::Purge
+                    && on_it.peek().is_some()
+                    && on_it.all(|c| c.before.is_none());
+                if !reborn {
+                    return Err(Error::BadImport(format!(
+                        "memory {} was purged; an operation after the purge touches it",
+                        m.0
+                    )));
+                }
+            }
+            for m in &hit {
+                purged.remove(&m.0);
             }
             if op.kind == OpKind::Purge {
                 let Some(m) = op.memory.filter(|_| op.changes.is_empty()) else {
@@ -1332,9 +1356,14 @@ impl Store for SqliteStore {
 
     fn next_memory_id(&self) -> Result<MemoryId> {
         let conn = self.writer()?;
-        let max: i64 = conn.query_row("SELECT COALESCE(MAX(id), 0) FROM memories", [], |r| {
-            r.get(0)
-        })?;
+        // a purge deletes the row but `operation_memories` keeps the id: it is never given twice
+        let max: i64 = conn.query_row(
+            "SELECT MAX(m) FROM (
+               SELECT COALESCE(MAX(id), 0) AS m FROM memories
+               UNION ALL SELECT COALESCE(MAX(memory), 0) FROM operation_memories)",
+            [],
+            |r| r.get(0),
+        )?;
         Ok(MemoryId(max + 1))
     }
 

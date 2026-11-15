@@ -1266,3 +1266,174 @@ fn a_restore_refuses_user_origin_written_by_an_agent() {
     let (_d, _p, restored, _) = target();
     assert!(!bad_import(restored.import(&mut doctored.as_bytes())).is_empty());
 }
+
+// ---- ids that were purged and given again (files written by v0.9.0) ----
+
+/// Written by v0.9.0: memory 2 is purged, then a new memory is born with id 2.
+const REUSED: &str = include_str!("fixtures/export-reused-id-v0.9.0.jsonl");
+
+#[test]
+fn an_export_with_a_reborn_id_is_restored() {
+    let t = tempfile::tempdir().unwrap();
+    let engine = Engine::open(
+        &t.path().join("m.db"),
+        OpenMode::ReadWrite,
+        Arc::new(SystemClock),
+    )
+    .unwrap();
+    engine.import(&mut REUSED.as_bytes()).unwrap();
+    assert_eq!(engine.get(MemoryId(2)).unwrap().content, "tres");
+    let next = engine.propose(prop(
+        engine.scopes().unwrap()[0].id,
+        engine.actors().unwrap()[0].id,
+        "cuatro",
+    ));
+    assert_eq!(next.unwrap().memory.0, 3, "never 2 again");
+}
+
+/// The last operation that carries changes, with its first change turned into a change of an
+/// existing row: `before` becomes a copy of `after`.
+fn forge_before_on_last_change(text: &str) -> String {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let at = lines
+        .iter()
+        .rposition(|l| {
+            let v: serde_json::Value = serde_json::from_str(l).unwrap();
+            v["type"] == "operation" && v["changes"].as_array().is_some_and(|c| !c.is_empty())
+        })
+        .unwrap();
+    let mut v: serde_json::Value = serde_json::from_str(&lines[at]).unwrap();
+    v["changes"][0]["before"] = v["changes"][0]["after"].clone();
+    lines[at] = serde_json::to_string(&v).unwrap();
+    lines.join("\n") + "\n"
+}
+
+#[test]
+fn an_operation_that_changes_a_purged_memory_is_still_refused() {
+    let forged = forge_before_on_last_change(REUSED);
+    assert_ne!(forged, REUSED);
+    let t = tempfile::tempdir().unwrap();
+    let engine = Engine::open(
+        &t.path().join("m.db"),
+        OpenMode::ReadWrite,
+        Arc::new(SystemClock),
+    )
+    .unwrap();
+    assert!(bad_import(engine.import(&mut forged.as_bytes())).contains("was purged"));
+}
+
+#[test]
+fn an_operation_that_names_a_purged_memory_without_changing_it_is_refused() {
+    // After the purge, an operation names memory 2 but carries no change on it.
+    let mut lines: Vec<String> = REUSED.lines().map(str::to_string).collect();
+    let purge = lines
+        .iter()
+        .position(|l| l.contains(r#""kind":"Purge""#))
+        .unwrap();
+    let mut v: serde_json::Value = serde_json::from_str(&lines[purge]).unwrap();
+    v["kind"] = "Noop".into();
+    v["id"] = 99.into();
+    lines.insert(purge + 1, serde_json::to_string(&v).unwrap());
+    let text = lines.join("\n") + "\n";
+    let t = tempfile::tempdir().unwrap();
+    let engine = Engine::open(
+        &t.path().join("m.db"),
+        OpenMode::ReadWrite,
+        Arc::new(SystemClock),
+    )
+    .unwrap();
+    assert!(bad_import(engine.import(&mut text.as_bytes())).contains("was purged"));
+}
+
+/// An export where memories 2 and 3 were purged, plus one forged operation after the purges
+/// that carries `changes` (a `Vec` of (memory, with a `before`)): each change is the Add of that
+/// memory from the file, with its `before` set to a copy of its `after` when asked.
+fn two_purged(changes: &[(i64, bool)]) -> String {
+    let f = fixture();
+    for c in ["uno", "dos", "tres"] {
+        f.engine.propose(prop(f.scope, f.person, c)).unwrap();
+    }
+    f.engine.purge(MemoryId(2), f.person, "prueba").unwrap();
+    f.engine.purge(MemoryId(3), f.person, "prueba").unwrap();
+    let mut out = Vec::new();
+    f.engine.export(&mut out).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let rows: Vec<serde_json::Value> = text
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let add = |m: i64| {
+        rows.iter()
+            .find(|v| v["type"] == "operation" && v["kind"] == "Add" && v["memory"] == m)
+            .unwrap()
+            .clone()
+    };
+    let mut forged = add(changes[0].0);
+    forged["id"] = 100.into();
+    forged["changes"] = changes
+        .iter()
+        .map(|&(m, with_before)| {
+            let mut c = add(m)["changes"][0].clone();
+            if with_before {
+                c["before"] = c["after"].clone();
+            }
+            c
+        })
+        .collect();
+    text + &serde_json::to_string(&forged).unwrap() + "\n"
+}
+
+fn fresh() -> (tempfile::TempDir, Engine) {
+    let t = tempfile::tempdir().unwrap();
+    let engine = Engine::open(
+        &t.path().join("m.db"),
+        OpenMode::ReadWrite,
+        Arc::new(SystemClock),
+    )
+    .unwrap();
+    (t, engine)
+}
+
+#[test]
+fn every_purged_id_an_operation_touches_is_judged() {
+    // 2 is born again (no `before`), but the same operation also changes purged 3 with a `before`
+    let (_t, engine) = fresh();
+    let text = two_purged(&[(2, false), (3, true)]);
+    let msg = bad_import(engine.import(&mut text.as_bytes()));
+    assert!(msg.contains("memory 3 was purged"), "{msg}");
+
+    // two ids born again by one operation: both leave `purged`
+    let (_t, engine) = fresh();
+    let mut text = two_purged(&[(2, false), (3, false)]);
+    // ... so a later operation that changes the second one is honest
+    let mut later: serde_json::Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
+    later["id"] = 101.into();
+    later["kind"] = "Update".into();
+    later["changes"] = serde_json::json!([later["changes"][1].clone()]);
+    later["changes"][0]["before"] = later["changes"][0]["after"].clone();
+    later["memory"] = 3.into();
+    text += &(serde_json::to_string(&later).unwrap() + "\n");
+    engine.import(&mut text.as_bytes()).unwrap();
+}
+
+#[test]
+fn a_restored_operation_names_memories_in_range() {
+    let top = i64::MAX.to_string();
+    let (_t, engine) = fresh();
+    let text = REUSED.replacen(
+        r#""kind":"Purge","memory":2"#,
+        &format!(r#""kind":"Purge","memory":{top}"#),
+        1,
+    );
+    assert_ne!(text, REUSED);
+    assert!(bad_import(engine.import(&mut text.as_bytes())).contains("out of range"));
+
+    let (_t, engine) = fresh();
+    let text = REUSED.replacen(
+        r#""changes":[{"memory":1,"#,
+        &format!(r#""changes":[{{"memory":{top},"#),
+        1,
+    );
+    assert_ne!(text, REUSED);
+    assert!(bad_import(engine.import(&mut text.as_bytes())).contains("out of range"));
+}

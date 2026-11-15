@@ -7,7 +7,7 @@ mod client;
 pub mod proto;
 mod server;
 
-pub use client::{Launch, NO_DAEMON, RemoteEmbedder, request, socket_path};
+pub use client::{Launch, NO_DAEMON, RemoteEmbedder, TOO_LONG, request, socket_path};
 pub use server::serve;
 
 use std::collections::HashMap;
@@ -116,6 +116,18 @@ impl Daemon {
             let text = format!("este demonio habla el protocolo {}", proto::PROTOCOL);
             return (refused("protocol", &text), After::Continue);
         }
+        // Two folders may share one socket by mistake (one CLIO_MEMORY_SOCK for both): a request
+        // for another folder must never touch this one.
+        let Some(theirs) = req["data"].as_str() else {
+            return bad("falta la carpeta de datos (data)");
+        };
+        if !same_folder(Path::new(theirs), &self.data) {
+            let text = format!(
+                "este demonio es de la carpeta {}, no de {theirs}: cada carpeta de datos necesita su propio CLIO_MEMORY_SOCK",
+                self.data.display()
+            );
+            return (refused("folder", &text), After::Continue);
+        }
         let answer = match req["op"].as_str().unwrap_or_default() {
             "call" => self.call(&req),
             "embed" => self.embed(&req),
@@ -207,6 +219,14 @@ impl Daemon {
             )),
         }
     }
+}
+
+fn same_folder(a: &Path, b: &Path) -> bool {
+    a == b
+        || matches!(
+            (std::fs::canonicalize(a), std::fs::canonicalize(b)),
+            (Ok(a), Ok(b)) if a == b
+        )
 }
 
 fn refused(error: &str, text: &str) -> Value {

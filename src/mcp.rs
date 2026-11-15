@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use crate::agent::{EmbedModel, project};
-use crate::daemon::{Launch, request};
+use crate::daemon::{Launch, TOO_LONG, request};
 use crate::tools::{Session, TOOLS, schema};
 
 /// The protocol versions this server speaks; any other is answered with the newest.
@@ -212,6 +212,8 @@ impl State {
                     return if a["ok"] == true { Ok(text) } else { Err(text) };
                 }
                 Ok(a) => a["text"].as_str().unwrap_or_default().to_owned(),
+                // Too long for any daemon: this call's error, not a reason to leave it.
+                Err(why) if why.starts_with(TOO_LONG) => return Err(why),
                 Err(why) => why,
             };
             eprintln!("clio-memory mcp: sin demonio ({why}): atiendo en este proceso");

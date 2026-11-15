@@ -55,14 +55,20 @@ struct Mcp {
 }
 
 fn mcp(f: &Folder, extra_env: &[(&str, &str)]) -> Mcp {
-    let mut child = Command::new(EXE)
-        .arg("--db")
+    let mut cmd = Command::new(EXE);
+    cmd.arg("--db")
         .arg(f.data.join("memory.db"))
         .arg("mcp")
         .env("HOME", &f.home)
         .env("CLIO_MEMORY_DAEMON_IDLE", "30")
         .envs(extra_env.iter().copied())
-        .current_dir(&f.home)
+        .current_dir(&f.home);
+    mcp_of(cmd)
+}
+
+/// `cmd` (an `mcp`) started with pipes and initialized.
+fn mcp_of(mut cmd: Command) -> Mcp {
+    let mut child = cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -260,4 +266,108 @@ fn a_daemon_that_refuses_the_request_is_not_an_answer() {
     refuser.join().unwrap();
     assert!(!is_error && saved.starts_with("saved"), "{saved}");
     assert!(err.contains("sin demonio (otro protocolo)"), "{err}");
+}
+
+#[test]
+fn a_daemon_that_dies_mid_call_is_replaced_and_the_call_answered() {
+    use std::os::unix::net::UnixListener;
+    let f = folder();
+    std::fs::create_dir(&f.data).unwrap();
+    let listener = UnixListener::bind(f.data.join("daemon.sock")).unwrap();
+    // It reads the call and dies without answering: its socket file stays.
+    let dying = std::thread::spawn(move || {
+        let (conn, _) = listener.accept().unwrap();
+        BufReader::new(&conn).read_line(&mut String::new()).unwrap();
+        drop(listener);
+    });
+    let mut m = mcp(&f, &[]);
+    let (saved, is_error) = m.call(
+        "memory_save",
+        json!({"text": "Qué: un demonio que muere a mitad de la llamada", "kind": "semantic"}),
+    );
+    let err = m.end();
+    dying.join().unwrap();
+    assert!(!is_error && saved.starts_with("saved"), "{saved}");
+    assert!(!err.contains("sin demonio"), "{err}");
+    f.daemon_pid();
+}
+
+#[test]
+fn two_folders_on_one_socket_never_write_into_each_other() {
+    let (a, b) = (folder(), folder());
+    let sock = a.home.parent().unwrap().join("shared.sock");
+    let sock = sock.to_str().unwrap();
+    let mut ma = mcp(&a, &[("CLIO_MEMORY_SOCK", sock)]);
+    let (saved, _) = ma.call(
+        "memory_save",
+        json!({"text": "Qué: la carpeta A tiene su demonio", "kind": "semantic"}),
+    );
+    assert!(saved.starts_with("saved"), "{saved}");
+    let mut mb = mcp(&b, &[("CLIO_MEMORY_SOCK", sock)]);
+    let (saved, _) = mb.call(
+        "memory_save",
+        json!({"text": "Qué: el pingüino violeta vive en la carpeta B", "kind": "semantic"}),
+    );
+    let err_b = mb.end();
+    assert!(saved.starts_with("saved"), "{saved}");
+    assert!(
+        err_b.contains("sin demonio") && err_b.contains("CLIO_MEMORY_SOCK"),
+        "{err_b}"
+    );
+    let (found, _) = ma.call("memory_search", json!({"query": "pingüino violeta"}));
+    ma.end();
+    let stop = Command::new(EXE)
+        .arg("--db")
+        .arg(a.data.join("memory.db"))
+        .args(["daemon", "--stop"])
+        .env("HOME", &a.home)
+        .env("CLIO_MEMORY_SOCK", sock)
+        .output()
+        .unwrap();
+    assert!(stop.status.success(), "{stop:?}");
+    assert!(
+        !found.contains("pingüino"),
+        "B's memory went into A's: {found}"
+    );
+}
+
+#[test]
+fn a_call_too_long_for_the_daemon_is_the_tools_error_and_it_stays_on_the_daemon() {
+    let f = folder();
+    let mut m = mcp(&f, &[]);
+    let (saved, _) = m.call(
+        "memory_save",
+        json!({"text": "Qué: antes de la llamada larga", "kind": "semantic"}),
+    );
+    assert!(saved.starts_with("saved"), "{saved}");
+    // It fits in an MCP line, not in a request to the daemon (which adds its own fields).
+    let long = "x".repeat(clio_memory::daemon::proto::MAX_LINE - 130);
+    let (text, is_error) = m.call("memory_save", json!({"text": long, "kind": "semantic"}));
+    assert!(is_error && text.contains("demasiado larga"), "{text}");
+    let (saved, _) = m.call(
+        "memory_save",
+        json!({"text": "Qué: después de la llamada larga", "kind": "semantic"}),
+    );
+    let err = m.end();
+    assert!(saved.starts_with("saved"), "{saved}");
+    assert!(!err.contains("sin demonio"), "{err}");
+}
+
+#[test]
+fn a_relative_data_folder_reaches_its_daemon() {
+    let f = folder();
+    let mut cmd = Command::new(EXE);
+    cmd.args(["--db", "data/memory.db", "mcp"])
+        .env("HOME", &f.home)
+        .env("CLIO_MEMORY_DAEMON_IDLE", "30")
+        .current_dir(f.home.parent().unwrap());
+    let mut m = mcp_of(cmd);
+    let (saved, _) = m.call(
+        "memory_save",
+        json!({"text": "Qué: una carpeta relativa también tiene demonio", "kind": "semantic"}),
+    );
+    let err = m.end();
+    assert!(saved.starts_with("saved"), "{saved}");
+    assert!(!err.contains("sin demonio"), "{err}");
+    f.daemon_pid();
 }

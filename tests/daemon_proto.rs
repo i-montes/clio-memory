@@ -27,7 +27,10 @@ fn daemon(data: &Path) -> Daemon {
     )
 }
 
-fn ask(d: &Daemon, req: &Value) -> (Value, After) {
+/// `req` sent by a client of the data folder `data`, as `request` sends it.
+fn ask(d: &Daemon, data: &Path, req: &Value) -> (Value, After) {
+    let mut req = req.clone();
+    req["data"] = json!(data);
     let (line, after) = d.handle_line(&req.to_string());
     assert!(!line.contains('\n'), "{line}");
     (serde_json::from_str(&line).unwrap(), after)
@@ -54,6 +57,7 @@ fn a_call_answers_with_the_tools_text() {
     let d = daemon(t.path());
     let (a, _) = ask(
         &d,
+        t.path(),
         &call(
             "s",
             t.path(),
@@ -64,6 +68,7 @@ fn a_call_answers_with_the_tools_text() {
     assert_eq!(a["ok"], true, "{a}");
     let (a, after) = ask(
         &d,
+        t.path(),
         &call("s", t.path(), "memory_search", json!({"query": "socket"})),
     );
     assert_eq!(a["ok"], true, "{a}");
@@ -80,7 +85,11 @@ fn a_call_answers_with_the_tools_text() {
 fn a_tool_refusal_is_ok_false_with_its_words() {
     let t = tempfile::tempdir().unwrap();
     let d = daemon(t.path());
-    let (a, _) = ask(&d, &call("s", t.path(), "memory_get", json!({"id": 999})));
+    let (a, _) = ask(
+        &d,
+        t.path(),
+        &call("s", t.path(), "memory_get", json!({"id": 999})),
+    );
     assert_eq!(a["ok"], false, "{a}");
     assert_eq!(a["text"], "ese recuerdo no existe o no se puede leer");
     assert!(a.get("error").is_none(), "{a}");
@@ -91,12 +100,24 @@ fn each_session_has_its_own_budget() {
     let t = tempfile::tempdir().unwrap();
     let d = daemon(t.path());
     for _ in 0..20 {
-        let (a, _) = ask(&d, &call("a", t.path(), "memory_context", json!({})));
+        let (a, _) = ask(
+            &d,
+            t.path(),
+            &call("a", t.path(), "memory_context", json!({})),
+        );
         assert_eq!(a["ok"], true, "{a}");
     }
-    let (a, _) = ask(&d, &call("a", t.path(), "memory_context", json!({})));
+    let (a, _) = ask(
+        &d,
+        t.path(),
+        &call("a", t.path(), "memory_context", json!({})),
+    );
     assert_eq!(a["ok"], false, "{a}");
-    let (b, _) = ask(&d, &call("b", t.path(), "memory_context", json!({})));
+    let (b, _) = ask(
+        &d,
+        t.path(),
+        &call("b", t.path(), "memory_context", json!({})),
+    );
     assert_eq!(b["ok"], true, "{b}");
 }
 
@@ -107,10 +128,12 @@ fn the_project_comes_from_the_folder_sent() {
     let (alfa, beta) = (project_dir("alfa"), project_dir("beta"));
     let (a, _) = ask(
         &d,
+        t.path(),
         &call("1", alfa.path(), "memory_current_project", json!({})),
     );
     let (b, _) = ask(
         &d,
+        t.path(),
         &call("2", beta.path(), "memory_current_project", json!({})),
     );
     assert_eq!(a["text"], "alfa", "{a}");
@@ -124,7 +147,7 @@ fn the_clients_project_variable_names_the_project_wherever_it_is() {
     let alfa = project_dir("alfa");
     let mut req = call("1", alfa.path(), "memory_current_project", json!({}));
     req["project_env"] = json!("gamma");
-    let (a, _) = ask(&d, &req);
+    let (a, _) = ask(&d, t.path(), &req);
     assert_eq!(a["text"], "gamma", "{a}");
     // In the person's home there is no project, whatever the variable says (as `mcp` does).
     let mut req = call(
@@ -134,7 +157,7 @@ fn the_clients_project_variable_names_the_project_wherever_it_is() {
         json!({}),
     );
     req["project_env"] = json!("gamma");
-    let (a, _) = ask(&d, &req);
+    let (a, _) = ask(&d, t.path(), &req);
     assert_eq!(a["text"], "(ninguno: lo personal)", "{a}");
 }
 
@@ -149,7 +172,7 @@ fn the_actor_is_the_clients() {
         json!({"text": "uno", "kind": "semantic"}),
     );
     req["client"] = json!("Claude Code");
-    let (a, _) = ask(&d, &req);
+    let (a, _) = ask(&d, t.path(), &req);
     assert_eq!(a["ok"], true, "{a}");
     let e = Engine::open(
         &t.path().join("memory.db"),
@@ -165,7 +188,11 @@ fn the_actor_is_the_clients() {
 fn a_newer_client_makes_it_leave() {
     let t = tempfile::tempdir().unwrap();
     let d = daemon(t.path());
-    let (a, after) = ask(&d, &json!({"v": 1, "bin": "99.0.0", "op": "status"}));
+    let (a, after) = ask(
+        &d,
+        t.path(),
+        &json!({"v": 1, "bin": "99.0.0", "op": "status"}),
+    );
     assert_eq!(a["ok"], false, "{a}");
     assert_eq!(a["error"], "stale", "{a}");
     assert!(matches!(after, After::Exit));
@@ -175,7 +202,11 @@ fn a_newer_client_makes_it_leave() {
 fn an_older_client_is_served() {
     let t = tempfile::tempdir().unwrap();
     let d = daemon(t.path());
-    let (a, after) = ask(&d, &json!({"v": 1, "bin": "0.0.1", "op": "status"}));
+    let (a, after) = ask(
+        &d,
+        t.path(),
+        &json!({"v": 1, "bin": "0.0.1", "op": "status"}),
+    );
     assert_eq!(a["ok"], true, "{a}");
     assert_eq!(a["bin"], BIN);
     assert_eq!(a["pid"], std::process::id());
@@ -191,7 +222,7 @@ fn an_older_client_is_served() {
 fn a_newer_protocol_is_refused() {
     let t = tempfile::tempdir().unwrap();
     let d = daemon(t.path());
-    let (a, after) = ask(&d, &json!({"v": 2, "bin": BIN, "op": "status"}));
+    let (a, after) = ask(&d, t.path(), &json!({"v": 2, "bin": BIN, "op": "status"}));
     assert_eq!(a["ok"], false, "{a}");
     assert_eq!(a["error"], "protocol", "{a}");
     assert!(matches!(after, After::Continue));
@@ -204,7 +235,9 @@ fn garbage_gets_an_answer_and_it_goes_on() {
     // A good request, one byte too long.
     let status = op("status").to_string();
     let long = format!("{status}{}", " ".repeat(MAX_LINE + 1 - status.len()));
-    let dance = op("baila").to_string();
+    let mut dance = op("baila");
+    dance["data"] = json!(t.path());
+    let dance = dance.to_string();
     for line in ["no es json", long.as_str(), dance.as_str()] {
         let (answer, after) = d.handle_line(line);
         let a: Value = serde_json::from_str(&answer).unwrap();
@@ -220,14 +253,14 @@ fn embed_returns_one_vector_per_text() {
     let d = daemon(t.path());
     let mut req = op("embed");
     req["texts"] = json!(["a", "b"]);
-    let (a, _) = ask(&d, &req);
+    let (a, _) = ask(&d, t.path(), &req);
     assert_eq!(a["ok"], true, "{a}");
     assert_eq!(a["model"], "hash");
     assert_eq!(a["dim"], 16);
     let vectors = a["vectors"].as_array().unwrap();
     assert_eq!(vectors.len(), 2);
     assert!(vectors.iter().all(|v| v.as_array().unwrap().len() == 16));
-    let (m, _) = ask(&d, &op("model"));
+    let (m, _) = ask(&d, t.path(), &op("model"));
     assert_eq!(m, json!({"ok": true, "model": "hash", "dim": 16}));
 }
 
@@ -243,7 +276,7 @@ fn with_no_model_embed_and_model_say_so() {
     let mut req = op("embed");
     req["texts"] = json!(["a"]);
     for req in [req, op("model")] {
-        let (a, after) = ask(&d, &req);
+        let (a, after) = ask(&d, t.path(), &req);
         assert_eq!(a["ok"], false, "{a}");
         assert_eq!(a["error"], "no-model", "{a}");
         assert!(matches!(after, After::Continue));
@@ -254,7 +287,7 @@ fn with_no_model_embed_and_model_say_so() {
 fn shutdown_says_ok_and_leaves() {
     let t = tempfile::tempdir().unwrap();
     let d = daemon(t.path());
-    let (a, after) = ask(&d, &op("shutdown"));
+    let (a, after) = ask(&d, t.path(), &op("shutdown"));
     assert_eq!(a, json!({"ok": true}));
     assert!(matches!(after, After::Exit));
 }
@@ -271,6 +304,7 @@ fn idle_counts_from_the_last_request_and_old_sessions_go() {
     );
     ask(
         &d,
+        t.path(),
         &call("a", t.path(), "memory_current_project", json!({})),
     );
     clock.set(1_800_000_000 + 40);
@@ -279,9 +313,10 @@ fn idle_counts_from_the_last_request_and_old_sessions_go() {
     clock.set(1_800_000_000 + 86_400);
     ask(
         &d,
+        t.path(),
         &call("b", t.path(), "memory_current_project", json!({})),
     );
-    let (s, _) = ask(&d, &op("status"));
+    let (s, _) = ask(&d, t.path(), &op("status"));
     assert_eq!(s["sessions"], 1, "{s}");
 }
 
@@ -295,9 +330,9 @@ fn status_tells_the_idle_time_before_it_and_then_counts_as_a_request() {
         clock.clone(),
         EmbedModel::none(),
     );
-    ask(&d, &op("model"));
+    ask(&d, t.path(), &op("model"));
     clock.set(1_800_000_000 + 30);
-    let (s, _) = ask(&d, &op("status"));
+    let (s, _) = ask(&d, t.path(), &op("status"));
     assert_eq!(s["idle_secs"], 30, "{s}");
     assert_eq!(d.idle_secs(), 0, "the status itself was a request");
     // A clock that goes back never makes it negative.
@@ -344,7 +379,7 @@ fn a_request_in_progress_is_never_idle() {
     let mut req = op("embed");
     req["texts"] = json!(["a"]);
     std::thread::scope(|s| {
-        let asking = s.spawn(|| ask(&d, &req));
+        let asking = s.spawn(|| ask(&d, t.path(), &req));
         entered.recv().unwrap();
         clock.set(1_800_000_000 + 500);
         let idle = d.idle_secs();
@@ -354,4 +389,35 @@ fn a_request_in_progress_is_never_idle() {
         assert_eq!(a["ok"], true, "{a}");
     });
     assert_eq!(d.idle_secs(), 0, "it just ended");
+}
+
+#[test]
+fn a_request_for_another_folder_is_refused_and_it_goes_on() {
+    let t = tempfile::tempdir().unwrap();
+    let d = daemon(t.path());
+    let other = tempfile::tempdir().unwrap();
+    let save = call(
+        "s",
+        t.path(),
+        "memory_save",
+        json!({"text": "de la otra carpeta", "kind": "semantic"}),
+    );
+    for req in [save, op("shutdown"), op("status")] {
+        let (a, after) = ask(&d, other.path(), &req);
+        assert_eq!(a["ok"], false, "{a}");
+        assert_eq!(a["error"], "folder", "{a}");
+        assert!(
+            a["text"].as_str().unwrap().contains("CLIO_MEMORY_SOCK"),
+            "{a}"
+        );
+        assert!(matches!(after, After::Continue));
+    }
+    assert!(!t.path().join("memory.db").exists(), "nothing was written");
+    // Without a folder: refused too.
+    let (line, _) = d.handle_line(&op("status").to_string());
+    let a: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(a["error"], "bad-request", "{a}");
+    // Its own folder, spelled another way, is its own.
+    let (a, _) = ask(&d, &t.path().join("home/.."), &op("status"));
+    assert_eq!(a["ok"], true, "{a}");
 }

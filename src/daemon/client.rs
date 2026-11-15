@@ -16,6 +16,8 @@ const MAX_SOCKET_PATH: usize = 100;
 /// How an error of [`request`] starts when no daemon took the request (and, with a launch, none
 /// started): the daemon is not running, as opposed to something else going wrong.
 pub const NO_DAEMON: &str = "no hay demonio";
+/// How an error of [`request`] starts when the request is too long for any daemon.
+pub const TOO_LONG: &str = "la petición es demasiado larga";
 
 /// How to start the daemon: this binary, and what to add to its environment.
 #[derive(Clone)]
@@ -41,19 +43,22 @@ pub fn socket_path(data: &Path, sock_env: Option<&OsStr>) -> Result<PathBuf, Str
     Ok(path)
 }
 
-/// Sends `body` (with the protocol and this binary's version added) to the daemon of `data` and
-/// returns its answer. With `launch`, a daemon that is not there is started, and one older than
-/// this binary (it answers `stale` and leaves) is replaced.
+/// Sends `body` (with the protocol, this binary's version and the data folder added) to the
+/// daemon of `data` and returns its answer. With `launch`, a daemon that is not there is started,
+/// and one older than this binary (it answers `stale` and leaves) is replaced.
 pub fn request(data: &Path, launch: Option<&Launch>, body: &Value) -> Result<Value, String> {
+    // Absolute: the daemon has its own working folder, and checks the folder is its own.
+    let data = &std::path::absolute(data).map_err(|e| format!("{}: {e}", data.display()))?;
     let sock = socket_path(data, std::env::var_os("CLIO_MEMORY_SOCK").as_deref())?;
     let mut body = body.clone();
     body["v"] = proto::PROTOCOL.into();
     body["bin"] = VERSION.into();
+    body["data"] = data.to_string_lossy().into();
     let line = body.to_string();
     // The daemon would refuse it and close: never worth launching one for.
     if line.len() > proto::MAX_LINE {
         return Err(format!(
-            "la petición es demasiado larga ({} bytes; el máximo es {})",
+            "{TOO_LONG} ({} bytes; el máximo es {})",
             line.len(),
             proto::MAX_LINE
         ));
@@ -62,7 +67,7 @@ pub fn request(data: &Path, launch: Option<&Launch>, body: &Value) -> Result<Val
         return ask(&sock, &line).map_err(|e| no_daemon(&sock, &e));
     };
     let answer = match ask(&sock, &line) {
-        Err(e) if nobody(&e) => start_and_ask(launch, data, &sock, &line)?,
+        Err(e) if nobody(&e) => start_and_ask(launch, data, &sock, &line, !not_there(&e))?,
         other => other.map_err(|e| no_daemon(&sock, &e))?,
     };
     if answer["error"] != "stale" {
@@ -72,12 +77,20 @@ pub fn request(data: &Path, launch: Option<&Launch>, body: &Value) -> Result<Val
     while sock.exists() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(25));
     }
-    start_and_ask(launch, data, &sock, &line)
+    start_and_ask(launch, data, &sock, &line, false)
 }
 
 /// Starts the daemon and asks until it answers, for up to 3 seconds. It is started again every
 /// 250 ms: a daemon that is leaving may still hold the lock, and one launched then steps aside.
-fn start_and_ask(launch: &Launch, data: &Path, sock: &Path, line: &str) -> Result<Value, String> {
+/// A request that reached a daemon and got no answer (`dropped`: it already happened once) is
+/// sent again only once: that daemon may have done part of it.
+fn start_and_ask(
+    launch: &Launch,
+    data: &Path,
+    sock: &Path,
+    line: &str,
+    mut dropped: bool,
+) -> Result<Value, String> {
     crate::agent::memory::private_dir(data)?;
     let start = Instant::now();
     let mut next = start;
@@ -87,7 +100,12 @@ fn start_and_ask(launch: &Launch, data: &Path, sock: &Path, line: &str) -> Resul
             next += Duration::from_millis(250);
         }
         match ask(sock, line) {
-            Err(e) if nobody(&e) && start.elapsed() < Duration::from_secs(3) => {
+            Err(e)
+                if nobody(&e)
+                    && (not_there(&e) || !dropped)
+                    && start.elapsed() < Duration::from_secs(3) =>
+            {
+                dropped |= !not_there(&e);
                 std::thread::sleep(Duration::from_millis(25));
             }
             other => return other.map_err(|e| no_daemon(sock, &e)),
@@ -106,6 +124,11 @@ fn nobody(e: &std::io::Error) -> bool {
             | ErrorKind::ConnectionReset
             | ErrorKind::UnexpectedEof
     )
+}
+
+/// Nothing listens there: the request never left.
+fn not_there(e: &std::io::Error) -> bool {
+    matches!(e.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused)
 }
 
 fn no_daemon(sock: &Path, e: &std::io::Error) -> String {
@@ -144,6 +167,8 @@ fn spawn(launch: &Launch, data: &Path) -> Result<(), String> {
         .arg(data.join("daemon.log"))
         .envs(launch.env.iter().map(|(k, v)| (k, v)))
         .process_group(0)
+        // It outlives its client: it must not keep that client's folder (a mount) busy.
+        .current_dir("/")
         .status()
         .map_err(|e| format!("no se pudo lanzar el demonio: {e}"))?;
     status

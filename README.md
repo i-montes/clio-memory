@@ -123,7 +123,7 @@ El modelo no se lee al abrir la memoria, sino cuando hay un texto que convertir 
 
 `setup model potion` (o `--model potion` en `setup`) instala el modelo estático anterior (`potion-multilingual-128M`, 531 MB, liviano y sin ONNX Runtime). Se usa el mejor que esté instalado: Granite, si no potion, si no texto. Cada vector se guarda con el nombre de su modelo, así que al cambiar de modelo la cola calcula los que faltan y nunca se comparan vectores de dos modelos.
 
-Sin el modelo, la búsqueda es por texto (y al guardar te lo dice). Con el modelo, los vectores se calculan en cuanto se guarda algo: toda la cola pendiente, también lo que guardó otro programa sin modelo; y otra vez al cerrar la sesión, antes de soltar el modelo. `clio-memory run-jobs` queda para lo que haya quedado pendiente (por ejemplo, recuerdos de antes de esta versión). A mano, sin `setup`: `claude mcp add clio-memory -- clio-memory mcp`.
+Sin el modelo, la búsqueda es por texto (y al guardar te lo dice). Con el modelo, los vectores se calculan en cuanto se guarda algo: toda la cola pendiente, también lo que guardó otro programa sin modelo; y otra vez antes de soltar el modelo: al cerrar la sesión o, con el demonio, cuando el demonio sale. `clio-memory run-jobs` queda para lo que haya quedado pendiente (por ejemplo, recuerdos de antes de esta versión). A mano, sin `setup`: `claude mcp add clio-memory -- clio-memory mcp`.
 
 Un programa anfitrión que use la biblioteca puede tomar los vectores del demonio en vez de cargar su propia copia del modelo: `EmbedModel::from_embedder(Arc::new(RemoteEmbedder::connect(data, launch)?))`. `launch.exe` debe ser el binario de clio-memory (llama a `private_runtime()`, así que ONNX Runtime arranca sin telemetría) y el anfitrión no carga ONNX Runtime. Si `connect` falla (el demonio no tiene modelo, o no arranca), el anfitrión se queda con su modelo local. Un anfitrión que carga Granite él mismo debe llamar a `clio_memory::private_runtime()` al empezar su `main`.
 
@@ -155,7 +155,7 @@ Con varias sesiones de agente abiertas, cada una con su `clio-memory mcp`, cada 
 
 - **Lo lanza el primer cliente** que lo necesita y no hay que arrancarlo a mano. **Se va solo a los 10 minutos sin uso**; `CLIO_MEMORY_DAEMON_IDLE=<segundos>` cambia ese plazo.
 - **`clio-memory daemon --status`** dice si corre y **`clio-memory daemon --stop`** lo detiene (el próximo uso lanza otro).
-- **El socket** es `<carpeta de datos>/daemon.sock`; `CLIO_MEMORY_SOCK=/ruta/absoluta` lo cambia (hace falta si la ruta pasa de 100 bytes). El registro, `daemon.log`, y el candado, `daemon.lock`, están en la misma carpeta.
+- **El socket** es `<carpeta de datos>/daemon.sock`; `CLIO_MEMORY_SOCK=/ruta/absoluta` lo cambia (hace falta si la ruta pasa de 100 bytes). Un socket es de una sola carpeta de datos: si usas varias, cada una necesita su propio `CLIO_MEMORY_SOCK` (el demonio rechaza las peticiones de otra carpeta y ese cliente atiende por su cuenta). El registro, `daemon.log`, y el candado, `daemon.lock`, están en la misma carpeta.
 - **`CLIO_MEMORY_NO_DAEMON=1`** lo desactiva: cada proceso `mcp` atiende por su cuenta, como antes. Si el demonio no puede arrancar, el proceso `mcp` también atiende solo.
 - **Tras actualizar, reinicia las sesiones de agente abiertas.** Las que ya estaban abiertas siguen con su proceso de v0.9.x hasta que se cierran; las nuevas usan el demonio.
 

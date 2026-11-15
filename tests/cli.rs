@@ -1963,3 +1963,16 @@ fn setup_ends_by_stopping_an_older_daemon() {
     let o = m.run(&["daemon", "--status"]);
     assert!(out(&o).contains("inactivo"), "{}", out(&o));
 }
+
+// The daemon keeps the models it found at start: after `setup model` (even one that failed part
+// way, which may have left a new model or runtime) the next use starts one that sees them.
+#[test]
+fn setup_model_stops_the_daemon() {
+    let m = machine();
+    fake_failing_curl(&m.bin);
+    let d = Daemon(&m);
+    let pid = d.pid();
+    let o = m.run(&["setup", "model", "potion"]);
+    assert_eq!(code(&o), 1, "{}{}", out(&o), err(&o));
+    assert!(gone_soon(pid), "the daemon is still running");
+}

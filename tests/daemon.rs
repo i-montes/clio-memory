@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use clio_memory::Embedder;
 use clio_memory::daemon::proto::MAX_LINE;
-use clio_memory::daemon::{Launch, RemoteEmbedder, request, socket_path};
+use clio_memory::daemon::{Launch, NO_DAEMON, RemoteEmbedder, request, socket_path};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -355,4 +355,146 @@ fn a_host_whose_daemon_left_gets_a_new_one() {
     // The one that answers now is a real daemon, started for this request: it has no model.
     let err = remote.embed(&["a"]).unwrap_err().to_string();
     assert!(err.contains("no hay un modelo de vectores"), "{err}");
+}
+
+#[test]
+fn a_daemon_that_dies_mid_request_is_replaced_and_the_request_answered() {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::net::UnixListener;
+    let f = folder("30");
+    std::fs::create_dir(&f.data).unwrap();
+    let listener = UnixListener::bind(f.data.join("daemon.sock")).unwrap();
+    // It reads the request and dies without answering: its socket file stays.
+    let dying = std::thread::spawn(move || {
+        let (conn, _) = listener.accept().unwrap();
+        BufReader::new(&conn).read_line(&mut String::new()).unwrap();
+        drop(listener);
+    });
+    let a = request(&f.data, Some(&f.launch), &json!({"op": "status"})).unwrap();
+    dying.join().unwrap();
+    assert_eq!(a["ok"], true, "{a}");
+    assert!(alive(a["pid"].as_u64().unwrap()));
+}
+
+#[test]
+fn a_client_waits_for_a_stale_daemon_to_go_and_starts_its_own() {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::net::UnixListener;
+    let f = folder("30");
+    std::fs::create_dir(&f.data).unwrap();
+    let sock = f.data.join("daemon.sock");
+    let listener = UnixListener::bind(&sock).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    // An older daemon that is leaving: it answers `stale` to whatever reaches it until it is gone.
+    let older = std::thread::spawn(move || {
+        let until = Instant::now() + Duration::from_millis(400);
+        while Instant::now() < until {
+            match listener.accept() {
+                Ok((conn, _)) => {
+                    conn.set_nonblocking(false).unwrap();
+                    BufReader::new(&conn).read_line(&mut String::new()).unwrap();
+                    writeln!(&conn, r#"{{"ok":false,"error":"stale","text":"vieja"}}"#).unwrap();
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(5)),
+            }
+        }
+        let _ = std::fs::remove_file(&sock);
+    });
+    let a = request(&f.data, Some(&f.launch), &json!({"op": "status"})).unwrap();
+    older.join().unwrap();
+    assert_eq!(a["ok"], true, "{a}");
+}
+
+#[test]
+fn a_request_dropped_after_it_was_sent_is_sent_again_only_once() {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::net::{UnixListener, UnixStream};
+    for late in [false, true] {
+        let f = folder("30");
+        std::fs::create_dir(&f.data).unwrap();
+        let sock = f.data.join("daemon.sock");
+        // There from the start (the first send is dropped), or once the client waits for one.
+        let bound = (!late).then(|| UnixListener::bind(&sock).unwrap());
+        let at = sock.clone();
+        // It takes every request and closes without answering, until told to stop.
+        let taker = std::thread::spawn(move || {
+            let listener = bound.unwrap_or_else(|| {
+                std::thread::sleep(Duration::from_millis(100));
+                UnixListener::bind(&at).unwrap()
+            });
+            let mut taken = 0;
+            for conn in listener.incoming() {
+                let mut line = String::new();
+                BufReader::new(conn.unwrap()).read_line(&mut line).unwrap();
+                if line.trim() == "fin" {
+                    break;
+                }
+                taken += 1;
+            }
+            taken
+        });
+        // A launch that starts nothing: only the one on the socket ever takes the request.
+        let launch = Launch {
+            exe: "true".into(),
+            env: vec![],
+        };
+        let err = request(&f.data, Some(&launch), &json!({"op": "status"})).unwrap_err();
+        writeln!(UnixStream::connect(&sock).unwrap(), "fin").unwrap();
+        assert_eq!(
+            taker.join().unwrap(),
+            2,
+            "late {late}: sent once and again once"
+        );
+        assert!(err.starts_with(NO_DAEMON), "{err}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_daemon_keeps_no_clients_folder_busy() {
+    let f = folder("30");
+    let pid = f.status()["pid"].as_u64().unwrap();
+    let cwd = std::fs::read_link(format!("/proc/{pid}/cwd")).unwrap();
+    assert_eq!(cwd, Path::new("/"));
+}
+
+#[test]
+fn status_and_stop_never_touch_another_folders_daemon() {
+    let (a, b) = (folder("30"), folder("30"));
+    let sock = a.home.parent().unwrap().join("shared.sock");
+    // A's daemon, on a socket B is told to use too.
+    let mut daemon_a = a
+        .cli(&[])
+        .env("CLIO_MEMORY_SOCK", &sock)
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let started = Instant::now();
+    while !sock.exists() && started.elapsed() < Duration::from_secs(3) {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    for flag in ["--status", "--stop"] {
+        let out = b
+            .cli(&[flag])
+            .env("CLIO_MEMORY_SOCK", &sock)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1), "{flag}: {out:?}");
+        let err = String::from_utf8(out.stderr).unwrap();
+        assert!(err.contains("su propio CLIO_MEMORY_SOCK"), "{flag}: {err}");
+    }
+    assert!(
+        daemon_a.try_wait().unwrap().is_none(),
+        "A's daemon was stopped"
+    );
+    let out = a
+        .cli(&["--stop"])
+        .env("CLIO_MEMORY_SOCK", &sock)
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("demonio detenido"),
+        "{out:?}"
+    );
+    assert!(daemon_a.wait().unwrap().success());
 }

@@ -85,8 +85,24 @@ fn main() -> ExitCode {
         })) => done(setup_claude_code(replace, claude_md)),
         Ok(args::Parsed::Run(args::Cli {
             command: args::Command::SetupModel { potion },
+            db,
             ..
-        })) => done(setup_model(potion)),
+        })) => {
+            let said = setup_model(potion);
+            // The daemon keeps the models it found at start; also after a failure part way, which
+            // may have left a new model or runtime.
+            let stopped = stop_daemon(db.parent().unwrap_or(std::path::Path::new(".")));
+            done(said.map(|mut said| {
+                match stopped {
+                    Ok(true) => {
+                        said.push("demonio detenido: el próximo uso carga el modelo nuevo".into())
+                    }
+                    Ok(false) => {}
+                    Err(e) => said.push(format!("Ojo: no se pudo detener el demonio: {e}.")),
+                }
+                said
+            }))
+        }
         Ok(args::Parsed::Run(args::Cli {
             command: args::Command::SetupSleep { remove },
             ..

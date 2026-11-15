@@ -65,6 +65,30 @@ agents:
                               ~/.cache/clio-models/granite-embedding-311m-multilingual-r2, or with
                               potion the static fallback, potion-multilingual-128M
 
+memory (what an agent runs; see the skill):
+  m [--agent NAME] <verb>     one memory tool call, through the daemon (else this process), as
+                              NAME or the agent that runs it; the answer on stdout, exit 1 when
+                              the tool refuses; ID is 12 or m12; TEXT is the words left, or - to
+                              read it from stdin
+  m context                   what to know when starting or resuming
+  m search TEXT [--limit N]   memories about TEXT
+  m get ID                    one memory
+  m timeline ID [--before N] [--after N]
+                              the memories saved around one
+  m save [--kind semantic|procedural] [--title T] [--category C] TEXT
+                              save a memory (default kind semantic)
+  m update ID [--title T] [--category C] TEXT
+                              correct a memory
+  m consolidate IDS [--title T] [--category C] TEXT
+                              merge memories (IDS like 12,15) into one
+  m summary --goal G --accomplished A [--instructions I] [--discoveries D]
+            [--next-steps N] [--files F]
+                              save the session's summary
+  m forget ID                 send a memory to quarantine
+  m pin ID                    put a memory first in this project's context
+  m revert CHANGE             undo a change you made (the number a save gave)
+  m project                   the project of the current folder
+
 inspect (open the file read-only; never write):
   scopes                      list scopes
   stats                       sizes, counts by state, queue
@@ -120,6 +144,12 @@ pub struct UsageError(pub String);
 pub enum Command {
     /// The MCP server for an agent.
     Mcp,
+    /// `m <verb>`: one memory tool call, as an agent (`--agent`, else the one that runs it).
+    Agent {
+        agent: Option<String>,
+        tool: &'static str,
+        args: serde_json::Value,
+    },
     /// `daemon`: serve in the foreground, or say whether one runs (`status`), or stop it.
     Daemon {
         status: bool,
@@ -278,11 +308,11 @@ fn usage<T>(msg: impl Into<String>) -> Result<T, UsageError> {
 }
 
 /// The arguments after the command name: positionals and `--flags`.
-struct Rest(Vec<String>);
+pub struct Rest(pub Vec<String>);
 
 impl Rest {
     /// Removes `--name VALUE` if present.
-    fn flag(&mut self, name: &str) -> Result<Option<String>, UsageError> {
+    pub fn flag(&mut self, name: &str) -> Result<Option<String>, UsageError> {
         let Some(i) = self.0.iter().position(|a| a == name) else {
             return Ok(None);
         };
@@ -314,7 +344,7 @@ impl Rest {
     }
 
     /// Everything left must be positional.
-    fn positionals(self) -> Result<Vec<String>, UsageError> {
+    pub fn positionals(self) -> Result<Vec<String>, UsageError> {
         match self.0.iter().find(|a| a.starts_with("--")) {
             Some(bad) => usage(format!("unknown option {bad}")),
             None => Ok(self.0),
@@ -322,7 +352,7 @@ impl Rest {
     }
 
     /// No positionals at all.
-    fn none(self) -> Result<(), UsageError> {
+    pub fn none(self) -> Result<(), UsageError> {
         match self.positionals()?.first() {
             Some(extra) => usage(format!("unexpected argument {extra:?}")),
             None => Ok(()),
@@ -330,7 +360,7 @@ impl Rest {
     }
 
     /// Exactly one positional, called `name` in the error message.
-    fn one(self, name: &str) -> Result<String, UsageError> {
+    pub fn one(self, name: &str) -> Result<String, UsageError> {
         let mut args = self.positionals()?;
         if args.len() != 1 {
             return usage(format!("expected {name}"));
@@ -488,6 +518,14 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, UsageErro
         "mcp" => {
             rest.none()?;
             Command::Mcp
+        }
+        "m" => {
+            // Refused before stdin is read: the agent is named with `m --agent`.
+            if actor.is_some() || model.is_some() || json {
+                return usage("--actor, --model and --json do not apply to m; use m --agent");
+            }
+            let (agent, tool, args) = crate::agent_cli::parse(rest.0, &mut std::io::stdin())?;
+            Command::Agent { agent, tool, args }
         }
         "daemon" => {
             let status = rest.switch("--status");

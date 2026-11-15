@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+use crate::agent::caller::Caller;
 use crate::agent::{EmbedModel, project};
 use crate::daemon::{Launch, TOO_LONG, request};
 use crate::tools::{Session, TOOLS, schema};
@@ -164,6 +165,94 @@ pub fn actor_of(client: &str) -> String {
     }
 }
 
+/// What the daemon did with one tool call.
+pub enum Asked {
+    /// The tool answered (`Ok`) or refused (`Err`); with the daemon's note for the agent, clean.
+    Answered(Result<String, String>, Option<String>),
+    /// Too long for any daemon: this call's error, not a reason to serve it elsewhere.
+    TooLong(String),
+    /// The daemon could not be reached, or the protocol failed: why. The call is served here.
+    Failed(String),
+}
+
+/// One tool call to the daemon of `data` (started with `launch` if none runs), as `client` in
+/// its `session`, from `cwd` (and `CLIO_PROJECT` when set). Neither name may be empty.
+pub fn ask_daemon(
+    data: &Path,
+    launch: &Launch,
+    client: &str,
+    session: &str,
+    cwd: &str,
+    tool: &str,
+    args: &Value,
+) -> Asked {
+    let mut body = json!({
+        "op": "call",
+        "client": client,
+        "session": session,
+        "cwd": cwd,
+        "tool": tool,
+        "args": args,
+    });
+    if let Ok(env) = std::env::var(project::PROJECT_ENV) {
+        body["project_env"] = env.into();
+    }
+    match request(data, Some(launch), &body) {
+        // An answer with `error` is the protocol failing, not the tool.
+        Ok(a) if a.get("error").is_none() => {
+            let note = a["note"].as_str().map(crate::agent::memory::clean_text);
+            let text = a["text"].as_str().unwrap_or_default().to_owned();
+            Asked::Answered(if a["ok"] == true { Ok(text) } else { Err(text) }, note)
+        }
+        Ok(a) => Asked::Failed(a["text"].as_str().unwrap_or_default().to_owned()),
+        Err(why) if why.starts_with(TOO_LONG) => Asked::TooLong(why),
+        Err(why) => Asked::Failed(why),
+    }
+}
+
+/// One tool call from the command line (`clio-memory m`), by `caller`: to the daemon when
+/// `launch` is given, else (or when the daemon cannot be reached) in this process, with a
+/// session for this one call. What the agent should know goes to stderr.
+pub fn call_once(
+    data: &Path,
+    cwd: &Path,
+    home: &Path,
+    launch: Option<&Launch>,
+    caller: &Caller,
+    tool: &str,
+    args: &Value,
+) -> Result<String, String> {
+    const WHO: &str = "clio-memory m";
+    // The daemon fixes a session's project at its first call, and one agent session can run
+    // `m` in several folders: one daemon session per folder (and so one budget per folder).
+    let session = format!("{}@{}", caller.session, cwd.display());
+    // A folder whose name is not UTF-8 cannot be sent as it is: that call is served here.
+    if let (Some(launch), Some(dir)) = (launch, cwd.to_str()) {
+        match ask_daemon(data, launch, &caller.agent, &session, dir, tool, args) {
+            Asked::Answered(answer, note) => {
+                if let Some(n) = note {
+                    eprintln!("{WHO}: {n}");
+                }
+                return answer;
+            }
+            Asked::TooLong(why) => return Err(why),
+            Asked::Failed(why) => eprintln!("{WHO}: sin demonio ({why}): atiendo en este proceso"),
+        }
+    }
+    let env = std::env::var(project::PROJECT_ENV).ok();
+    let (project, note) = project_in(data, cwd, home, env.as_deref());
+    if let Some(n) = note {
+        eprintln!("{WHO}: {n}");
+    }
+    let mut s = Session::new(data.to_path_buf(), project, actor_of(&caller.agent))
+        .with_model(EmbedModel::of_home(home));
+    let answer = s.call(tool, args);
+    if let Err(why) = s.finish() {
+        eprintln!("{WHO}: vectores pendientes: {why}");
+    }
+    answer
+}
+
 struct State {
     data: PathBuf,
     cwd: PathBuf,
@@ -212,21 +301,14 @@ impl State {
         }
         // A folder whose name is not UTF-8 cannot be sent as it is: that call is served here.
         if let (Backend::Daemon(launch), Some(cwd)) = (&self.backend, self.cwd.to_str()) {
-            let mut body = json!({
-                "op": "call",
-                // The daemon refuses a call with no name: this one signs the same, `mcp:cliente`.
-                "client": if client.is_empty() { "cliente" } else { &client },
-                "session": self.id,
-                "cwd": cwd,
-                "tool": name,
-                "args": args,
-            });
-            if let Ok(env) = std::env::var(project::PROJECT_ENV) {
-                body["project_env"] = env.into();
-            }
-            // An answer with `error` is the protocol failing, not the tool.
-            let why = match request(&self.data, Some(launch), &body) {
-                Ok(a) if a.get("error").is_none() => {
+            // The daemon refuses a call with no name: this one signs the same, `mcp:cliente`.
+            let client = if client.is_empty() {
+                "cliente"
+            } else {
+                &client
+            };
+            let why = match ask_daemon(&self.data, launch, client, &self.id, cwd, name, args) {
+                Asked::Answered(answer, note) => {
                     // Back on the daemon: this process's model goes, once what it left waiting
                     // has its vectors (a model never loaded is not loaded just for that).
                     if let Some(s) = self.session.take()
@@ -235,16 +317,13 @@ impl State {
                     {
                         eprintln!("clio-memory mcp: vectores pendientes: {why}");
                     }
-                    if let Some(n) = a["note"].as_str() {
-                        eprintln!("clio-memory mcp: {}", crate::agent::memory::clean_text(n));
+                    if let Some(n) = note {
+                        eprintln!("clio-memory mcp: {n}");
                     }
-                    let text = a["text"].as_str().unwrap_or_default().to_owned();
-                    return if a["ok"] == true { Ok(text) } else { Err(text) };
+                    return answer;
                 }
-                Ok(a) => a["text"].as_str().unwrap_or_default().to_owned(),
-                // Too long for any daemon: this call's error, not a reason to leave it.
-                Err(why) if why.starts_with(TOO_LONG) => return Err(why),
-                Err(why) => why,
+                Asked::TooLong(why) => return Err(why),
+                Asked::Failed(why) => why,
             };
             eprintln!("clio-memory mcp: sin demonio ({why}): atiendo en este proceso");
             self.retry = Some((launch.clone(), Instant::now() + RETRY));

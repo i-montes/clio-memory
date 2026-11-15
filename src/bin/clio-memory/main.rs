@@ -3,6 +3,7 @@
 //! has it open and never change it; the ones that change something open it read-write and
 //! fail with a clear message if another program holds its write lock.
 
+mod agent_cli;
 mod args;
 mod commands;
 mod output;
@@ -139,6 +140,11 @@ fn main() -> ExitCode {
             db,
             ..
         })) => done(daemon(&db, status, stop)),
+        Ok(args::Parsed::Run(args::Cli {
+            command: args::Command::Agent { agent, tool, args },
+            db,
+            ..
+        })) => agent_cli::run(&db, agent.as_deref(), tool, &args),
         Ok(args::Parsed::Run(cli)) if matches!(cli.command, args::Command::Mcp) => {
             match mcp(&cli.db) {
                 Ok(()) => ExitCode::SUCCESS,
@@ -240,7 +246,7 @@ fn daemon(db: &std::path::Path, status: bool, stop: bool) -> Result<Vec<String>,
     serve(data, &home()?, std::time::Duration::from_secs(idle)).map(|()| vec![])
 }
 
-/// `CLIO_MEMORY_NO_DAEMON=1`: every `mcp` serves by itself.
+/// `CLIO_MEMORY_NO_DAEMON=1`: every `mcp` and `m` serves by itself.
 fn no_daemon() -> bool {
     std::env::var_os("CLIO_MEMORY_NO_DAEMON").is_some_and(|v| v == "1")
 }

@@ -35,7 +35,7 @@ pub fn serve(data: &Path, home: &Path, idle: Duration) -> Result<(), String> {
     }
     let listener = UnixListener::bind(&sock).map_err(fail)?;
     std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600)).map_err(fail)?;
-    let model = EmbedModel::of_home(home);
+    let model = daemon_model(home);
     let daemon = Daemon::new(
         data.to_path_buf(),
         home.to_path_buf(),
@@ -143,6 +143,12 @@ fn answer(daemon: &Daemon, conn: UnixStream, leaving: &AtomicBool) -> After {
     after
 }
 
+/// The daemon keeps its model for its whole life: its exit, not an idle release, gives the memory
+/// back (a reload peaks near 1 GB).
+fn daemon_model(home: &Path) -> Arc<EmbedModel> {
+    EmbedModel::of_home_resident(home)
+}
+
 /// The log is the daemon's stderr, opened by whoever launched it: only its owner reads it, and
 /// it does not grow without end. Its writer appends, so cutting it in place is safe.
 fn tidy_log(log: &Path) {
@@ -152,5 +158,15 @@ fn tidy_log(log: &Path) {
     let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
     if file.metadata().is_ok_and(|m| m.len() > MAX_LOG) {
         let _ = file.set_len(0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_daemon_never_releases_its_model() {
+        assert_eq!(daemon_model(Path::new("/nonexistent")).idle(), None);
     }
 }

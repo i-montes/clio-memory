@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use crate::idle::DEFAULT_IDLE;
 use crate::{
     ActorId, ActorInfo, ActorKind, Category, Engine, Error, MemoryId, MemoryRow, MemoryType, OpId,
     OpKind, OpenMode, Origin, Outcome, Proposal, Quota, RecallOpts, Relation, ScopeId, SearchOpts,
@@ -229,20 +230,21 @@ pub(crate) fn private_dir(dir: &Path) -> Res<()> {
 }
 
 /// The model in `dir`: Granite (ONNX files) or the static model (`model.safetensors`).
-fn load_embedder(dir: &Path) -> Result<Arc<dyn crate::Embedder>, String> {
+/// `idle`: how long the model stays in memory after its last use (`None`: for good).
+fn load_embedder(dir: &Path, idle: Option<Duration>) -> Result<Arc<dyn crate::Embedder>, String> {
     let onnx = ["model.onnx", "model_quint8_avx2.onnx"]
         .iter()
         .any(|f| dir.join(f).is_file());
     if onnx {
         #[cfg(feature = "granite")]
-        return crate::Granite::load(dir)
+        return crate::Granite::load_idle(dir, idle)
             .map(|e| Arc::new(e) as Arc<dyn crate::Embedder>)
             .map_err(|e| e.to_string());
         #[cfg(not(feature = "granite"))]
         return Err("clio-memory se compiló sin la característica granite".into());
     }
     #[cfg(feature = "model2vec")]
-    return crate::Model2VecEmbedder::from_dir(dir)
+    return crate::Model2VecEmbedder::from_dir_idle(dir, idle)
         .map(|e| Arc::new(e) as Arc<dyn crate::Embedder>)
         .map_err(|e| e.to_string());
     #[cfg(not(feature = "model2vec"))]
@@ -264,6 +266,8 @@ fn quota(max: u32) -> Quota {
 /// folders are tried in order: the first that loads is the model.
 pub struct EmbedModel {
     dirs: Vec<PathBuf>,
+    /// How long the loaded model stays in memory without use.
+    idle: Option<Duration>,
     cell: OnceLock<Result<Arc<dyn crate::Embedder>, String>>,
 }
 
@@ -275,8 +279,13 @@ impl EmbedModel {
 
     /// The first of `dirs` that loads.
     pub fn with_dirs(dirs: Vec<PathBuf>) -> Arc<Self> {
+        Self::with_idle(dirs, Some(DEFAULT_IDLE))
+    }
+
+    fn with_idle(dirs: Vec<PathBuf>, idle: Option<Duration>) -> Arc<Self> {
         Arc::new(Self {
             dirs,
+            idle,
             cell: OnceLock::new(),
         })
     }
@@ -285,6 +294,7 @@ impl EmbedModel {
     pub fn from_embedder(embedder: Arc<dyn crate::Embedder>) -> Arc<Self> {
         let model = Self {
             dirs: vec![PathBuf::from("<embedder>")],
+            idle: Some(DEFAULT_IDLE),
             cell: OnceLock::new(),
         };
         let _ = model.cell.set(Ok(embedder));
@@ -298,13 +308,26 @@ impl EmbedModel {
 
     /// The models installed in `home`, best first: Granite, then the static model.
     pub fn of_home(home: &Path) -> Arc<Self> {
-        Self::with_dirs(
-            [crate::setup::GRANITE.dir, crate::setup::POTION.dir]
-                .iter()
-                .map(|d| home.join(d))
-                .filter(|d| d.is_dir())
-                .collect(),
-        )
+        Self::with_idle(Self::home_dirs(home), Some(DEFAULT_IDLE))
+    }
+
+    /// Like `of_home`, but the model stays loaded for the life of the process: the daemon's exit
+    /// is what gives the memory back.
+    pub fn of_home_resident(home: &Path) -> Arc<Self> {
+        Self::with_idle(Self::home_dirs(home), None)
+    }
+
+    fn home_dirs(home: &Path) -> Vec<PathBuf> {
+        [crate::setup::GRANITE.dir, crate::setup::POTION.dir]
+            .iter()
+            .map(|d| home.join(d))
+            .filter(|d| d.is_dir())
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn idle(&self) -> Option<Duration> {
+        self.idle
     }
 
     /// The folders it tries, in order.
@@ -331,7 +354,7 @@ impl EmbedModel {
             .get_or_init(|| {
                 let mut why = Vec::new();
                 for dir in &self.dirs {
-                    match load_embedder(dir) {
+                    match load_embedder(dir, self.idle) {
                         Ok(e) => return Ok(e),
                         Err(e) => why.push(format!("{}: {e}", dir.display())),
                     }
@@ -1034,5 +1057,18 @@ pub fn origin_label(o: Origin) -> &'static str {
         Origin::User => "persona",
         Origin::Agent => "agente",
         Origin::External => "externo",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_resident_home_model_stays_in_memory() {
+        let home = Path::new("/nonexistent");
+        assert_eq!(EmbedModel::of_home(home).idle(), Some(DEFAULT_IDLE));
+        assert_eq!(EmbedModel::of_home_resident(home).idle(), None);
+        assert_eq!(EmbedModel::with_dirs(vec![]).idle(), Some(DEFAULT_IDLE));
     }
 }

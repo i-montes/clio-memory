@@ -5,11 +5,14 @@ mod common;
 
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use clio_memory::agent::memory::EmbedModel;
+use clio_memory::agent::{Draft, Memory, Place};
 use clio_memory::daemon::proto::MAX_LINE;
 use clio_memory::daemon::{After, Daemon};
-use clio_memory::{Engine, FixedClock, OpenMode, SystemClock};
+use clio_memory::{Engine, FixedClock, MemoryType, OpenMode, SystemClock};
 use common::HashEmbedder;
 use serde_json::{Value, json};
 
@@ -434,4 +437,237 @@ fn a_request_for_another_folder_is_refused_and_it_goes_on() {
     // Its own folder, spelled another way, is its own.
     let (a, _) = ask(&d, &t.path().join("home/.."), &op("status"));
     assert_eq!(a["ok"], true, "{a}");
+}
+
+/// Like `HashEmbedder`, but a batch of nothing but the backlog («viejo») waits until `open`
+/// (10 s at most): `waiting` says one is waiting.
+struct Backlog {
+    inner: HashEmbedder,
+    open: Arc<AtomicBool>,
+    waiting: Arc<AtomicBool>,
+}
+
+impl clio_memory::Embedder for Backlog {
+    fn model_id(&self) -> &str {
+        self.inner.model_id()
+    }
+    fn dim(&self) -> usize {
+        self.inner.dim()
+    }
+    fn embed(&self, texts: &[&str]) -> clio_memory::Result<Vec<Vec<f32>>> {
+        if texts.iter().all(|t| t.contains("viejo")) {
+            self.waiting.store(true, Ordering::SeqCst);
+            let start = Instant::now();
+            while !self.open.load(Ordering::SeqCst) && start.elapsed() < Duration::from_secs(10) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        self.inner.embed(texts)
+    }
+}
+
+/// Polls `f` for up to 10 s.
+fn eventually(f: impl Fn() -> bool) -> bool {
+    let start = Instant::now();
+    while !f() {
+        if start.elapsed() > Duration::from_secs(10) {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    true
+}
+
+fn vectors(data: &Path) -> u64 {
+    let m = Memory::open_read(data, &EmbedModel::none(), None, "agente")
+        .unwrap()
+        .unwrap();
+    m.engine().stats().unwrap().vectors
+}
+
+#[test]
+fn a_backlog_is_embedded_in_the_background_and_holds_up_no_session() {
+    let t = tempfile::tempdir().unwrap();
+    // 40 memories written by a program with no model: none has a vector.
+    let w = Memory::open_write(t.path(), &EmbedModel::none(), None, "agente").unwrap();
+    let words = [
+        "alfa", "bravo", "charlie", "delta", "eco", "foxtrot", "golf", "hotel",
+    ];
+    for i in 0..40 {
+        let text = format!(
+            "Qué: viejo {} {} {i}",
+            words[i % 8],
+            words[(i / 8) % 8].repeat(i % 3 + 1)
+        );
+        w.save(
+            &Draft::plain(&text, MemoryType::Semantic),
+            "agente",
+            Place::Personal,
+            false,
+        )
+        .unwrap();
+    }
+    drop(w);
+    let (open, waiting) = (
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let clock = Arc::new(FixedClock::new(1_800_000_000));
+    let home = t.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let d = Daemon::new(
+        t.path().to_path_buf(),
+        home,
+        clock.clone(),
+        EmbedModel::from_embedder(Arc::new(Backlog {
+            inner: HashEmbedder::new("hash", 16),
+            open: open.clone(),
+            waiting: waiting.clone(),
+        })),
+    );
+    std::thread::scope(|s| {
+        let (said, saved) = std::sync::mpsc::channel();
+        let (d, t) = (&d, &t);
+        s.spawn(move || {
+            let save = call(
+                "a",
+                t.path(),
+                "memory_save",
+                json!({"text": "Qué: el dato nuevo de la sesión a", "kind": "semantic"}),
+            );
+            said.send(ask(d, t.path(), &save).0).unwrap();
+        });
+        let saved = saved.recv_timeout(Duration::from_secs(5));
+        let in_background = eventually(|| waiting.load(Ordering::SeqCst));
+        let pending = vectors(t.path()) < 41;
+        clock.set(1_800_000_000 + 500);
+        let idle = d.idle_secs();
+        let (found, _) = ask(
+            d,
+            t.path(),
+            &call(
+                "b",
+                t.path(),
+                "memory_search",
+                json!({"query": "dato nuevo"}),
+            ),
+        );
+        // The background ends after this: its end is what the idle time counts from.
+        clock.set(1_800_000_000 + 550);
+        open.store(true, Ordering::SeqCst);
+        let saved = saved.expect("the save waited for the backlog");
+        assert!(
+            saved["text"].as_str().unwrap().starts_with("saved"),
+            "{saved}"
+        );
+        assert!(
+            in_background && pending,
+            "the backlog was not left to the background"
+        );
+        assert_eq!(idle, 0, "the background work counts as busy");
+        assert_eq!(found["ok"], true, "{found}");
+        assert!(
+            found["text"].as_str().unwrap().contains("dato nuevo"),
+            "{found}"
+        );
+    });
+    assert!(
+        eventually(|| vectors(t.path()) == 41 && ready_embed_jobs(t.path()) == 0),
+        "the backlog was not embedded"
+    );
+    // Its last step after closing the jobs is marking its end.
+    std::thread::sleep(Duration::from_millis(200));
+    clock.set(1_800_000_000 + 600);
+    assert_eq!(
+        d.idle_secs(),
+        50,
+        "the idle time counts from the background's end"
+    );
+}
+
+fn ready_embed_jobs(data: &Path) -> usize {
+    let m = Memory::open_read(data, &EmbedModel::none(), None, "agente")
+        .unwrap()
+        .unwrap();
+    m.engine().ready_jobs(clio_memory::JobKind::Embed).unwrap()
+}
+
+#[test]
+fn a_session_made_with_a_note_on_its_project_says_it_in_its_first_answer() {
+    let t = tempfile::tempdir().unwrap();
+    let d = daemon(t.path());
+    let dir = t.path().join("nuevo");
+    std::fs::create_dir(&dir).unwrap();
+    let key = dir.canonicalize().unwrap().display().to_string();
+    std::fs::write(
+        t.path().join("projects.json"),
+        json!({ key: "viejo" }).to_string(),
+    )
+    .unwrap();
+    let req = call("s", &dir, "memory_current_project", json!({}));
+    let (a, _) = ask(&d, t.path(), &req);
+    assert_eq!(a["text"], "nuevo", "{a}");
+    let note = a["note"].as_str().unwrap_or_default();
+    assert!(note.contains("era del proyecto viejo"), "{a}");
+    let (a, _) = ask(&d, t.path(), &req);
+    assert!(
+        a.get("note").is_none(),
+        "only when the session is made: {a}"
+    );
+}
+
+#[test]
+fn a_call_without_its_client_or_session_is_refused() {
+    let t = tempfile::tempdir().unwrap();
+    let d = daemon(t.path());
+    for (field, value) in [
+        ("client", None),
+        ("session", None),
+        ("client", Some("")),
+        ("session", Some("")),
+    ] {
+        let mut req = call("s", t.path(), "memory_current_project", json!({}));
+        match value {
+            Some(v) => req[field] = json!(v),
+            None => drop(req.as_object_mut().unwrap().remove(field)),
+        }
+        let (a, after) = ask(&d, t.path(), &req);
+        assert_eq!(a["error"], "bad-request", "{field}={value:?}: {a}");
+        assert!(matches!(after, After::Continue));
+    }
+    let (s, _) = ask(&d, t.path(), &op("status"));
+    assert_eq!(s["sessions"], 0, "{s}");
+}
+
+struct Panics;
+
+impl clio_memory::Embedder for Panics {
+    fn model_id(&self) -> &str {
+        "roto"
+    }
+    fn dim(&self) -> usize {
+        1
+    }
+    fn embed(&self, _: &[&str]) -> clio_memory::Result<Vec<Vec<f32>>> {
+        panic!("el modelo se rompió")
+    }
+}
+
+#[test]
+fn a_request_that_panics_gets_an_error_and_the_daemon_goes_on() {
+    let t = tempfile::tempdir().unwrap();
+    let d = Daemon::new(
+        t.path().to_path_buf(),
+        t.path().join("home"),
+        Arc::new(FixedClock::new(1_800_000_000)),
+        EmbedModel::from_embedder(Arc::new(Panics)),
+    );
+    let mut req = op("embed");
+    req["texts"] = json!(["a"]);
+    let (a, after) = ask(&d, t.path(), &req);
+    assert_eq!(a["ok"], false, "{a}");
+    assert_eq!(a["error"], "internal", "{a}");
+    assert!(matches!(after, After::Continue));
+    let (s, _) = ask(&d, t.path(), &op("status"));
+    assert_eq!(s["ok"], true, "{s}");
 }

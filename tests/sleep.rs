@@ -1108,10 +1108,11 @@ fn many_writers_marking_use_at_once_leave_one_whole_mark() {
                 }
             }
         });
+        // Set also when a writer panics: the reader must not spin for ever.
+        let _done = SetOnDrop(&done);
         for w in writers {
             w.join().unwrap();
         }
-        done.store(true, std::sync::atomic::Ordering::SeqCst);
     });
     let mark = std::fs::read_to_string(dir.path().join("sleep/last-use")).unwrap();
     assert!(mark.trim().parse::<i64>().is_ok(), "{mark:?}");
@@ -1121,4 +1122,42 @@ fn many_writers_marking_use_at_once_leave_one_whole_mark() {
         .filter(|n| n != "last-use")
         .collect();
     assert!(left.is_empty(), "{left:?}");
+}
+
+struct SetOnDrop<'a>(&'a std::sync::atomic::AtomicBool);
+
+impl Drop for SetOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn a_temporary_file_left_by_a_dead_writer_is_swept_after_ten_minutes() {
+    use std::time::{Duration, SystemTime};
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().to_path_buf();
+    mark_used(&data, NOW);
+    let sleep = data.join("sleep");
+    let (old, fresh, other) = (
+        sleep.join("last-use.999.0.tmp"),
+        sleep.join("state.999.1.tmp"),
+        sleep.join("notas.txt"),
+    );
+    for f in [&old, &fresh, &other] {
+        std::fs::write(f, "a medias").unwrap();
+    }
+    let long_ago = SystemTime::now() - Duration::from_secs(11 * 60);
+    for f in [&old, &other] {
+        std::fs::File::options()
+            .write(true)
+            .open(f)
+            .unwrap()
+            .set_modified(long_ago)
+            .unwrap();
+    }
+    mark_used(&data, NOW + 1);
+    assert!(!old.exists(), "an old temporary file stayed");
+    assert!(fresh.exists(), "one being written now went");
+    assert!(other.exists(), "only temporary files go");
 }

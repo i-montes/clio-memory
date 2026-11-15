@@ -2481,7 +2481,7 @@ impl Store for SqliteStore {
             "SELECT m.id, m.content FROM memories m
              WHERE m.state != 'Archived'
                AND NOT EXISTS (SELECT 1 FROM vectors v WHERE v.memory = m.id AND v.model = ?1)
-             ORDER BY m.id LIMIT ?2",
+             ORDER BY m.id DESC LIMIT ?2",
         )?;
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         let rows = stmt.query_map(params![model, limit], |r| {

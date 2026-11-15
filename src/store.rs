@@ -255,7 +255,8 @@ pub trait Store: VectorIndex + Send + Sync {
     fn operations_from(&self, from: OpId) -> Result<Vec<Operation>>;
     fn operations_by_actor(&self, actor: ActorId) -> Result<Vec<Operation>>;
 
-    /// Memories that are not archived and have no vector for `model`, oldest first, with their text.
+    /// Memories that are not archived and have no vector for `model`, newest first (what was just
+    /// written is in the first batch), with their text.
     fn pending_embeddings(&self, model: &str, limit: usize) -> Result<Vec<(MemoryId, String)>>;
     /// The stored vector of `id` for `model`, if it has a usable one.
     fn vector_of(&self, id: MemoryId, model: &str) -> Result<Option<Vec<f32>>>;

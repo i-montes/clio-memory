@@ -97,6 +97,7 @@ fn a_client_starts_the_daemon_and_the_next_one_finds_it() {
     let second = f.status();
     assert!(first["pid"].as_u64().is_some(), "{first}");
     assert_eq!(first["pid"], second["pid"]);
+    assert_eq!(first["resident"], true, "it keeps its model: {first}");
     assert!(f.data.join("daemon.sock").exists());
 }
 
@@ -546,7 +547,10 @@ fn a_relative_exe_is_found_from_the_clients_folder() {
     let f = folder("30");
     // Relative to this test's folder (the crate), where cargo puts its target.
     let cwd = std::env::current_dir().unwrap();
-    let rel = Path::new(EXE).strip_prefix(&cwd).unwrap();
+    // A target folder outside the crate (CARGO_TARGET_DIR) has no such path: nothing to check.
+    let Ok(rel) = Path::new(EXE).strip_prefix(&cwd) else {
+        return;
+    };
     let launch = Launch {
         exe: rel.into(),
         env: f.launch.env.clone(),

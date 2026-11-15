@@ -11,13 +11,15 @@ pub use client::{Launch, NO_DAEMON, RemoteEmbedder, TOO_LONG, request, socket_pa
 pub use server::serve;
 
 use std::collections::HashMap;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use serde_json::{Value, json};
 
 use crate::agent::EmbedModel;
+use crate::agent::memory::embed_pending;
 use crate::clock::Clock;
 use crate::mcp::{actor_of, project_in};
 use crate::tools::Session;
@@ -42,10 +44,14 @@ pub struct Daemon {
     model: Arc<EmbedModel>,
     /// By (client as received, session id): the session and when it was last used.
     sessions: Mutex<Sessions>,
-    /// When the last request ended.
-    last: AtomicI64,
+    /// When the last request (or the backlog's work) ended.
+    last: Arc<AtomicI64>,
     /// Requests in progress.
     busy: AtomicUsize,
+    /// Whether the backlog's thread runs.
+    embedding: Arc<AtomicBool>,
+    /// Hands the backlog to that thread (each session's writes call it).
+    backlog: Arc<dyn Fn() + Send + Sync>,
 }
 
 /// Marks the end of a request, also when it panics: the daemon must not look busy forever.
@@ -65,15 +71,19 @@ impl Daemon {
         clock: Arc<dyn Clock>,
         model: Arc<EmbedModel>,
     ) -> Self {
-        let now = clock.now();
+        let last = Arc::new(AtomicI64::new(clock.now()));
+        let embedding = Arc::new(AtomicBool::new(false));
+        let backlog = backlog(&data, &model, &clock, &last, &embedding);
         Self {
             data,
             home,
             clock,
             model,
             sessions: Mutex::new(HashMap::new()),
-            last: AtomicI64::new(now),
+            last,
             busy: AtomicUsize::new(0),
+            embedding,
+            backlog,
         }
     }
 
@@ -83,13 +93,19 @@ impl Daemon {
         let idle = self.idle_secs();
         self.busy.fetch_add(1, Ordering::SeqCst);
         let _done = Done(self);
-        let (answer, after) = self.answer(line, idle);
+        // A request that panics (its message is in the log) must not take the daemon down.
+        let (answer, after) = catch_unwind(AssertUnwindSafe(|| self.answer(line, idle)))
+            .unwrap_or_else(|_| {
+                let text = "el demonio falló al atender la petición (mira daemon.log)";
+                (refused("internal", text), After::Continue)
+            });
         (answer.to_string(), after)
     }
 
-    /// Seconds since the last request ended; 0 while one is in progress (or the clock went back).
+    /// Seconds since the last request ended; 0 while one is in progress, or the backlog is being
+    /// embedded (or the clock went back).
     pub fn idle_secs(&self) -> i64 {
-        if self.busy.load(Ordering::SeqCst) > 0 {
+        if self.busy.load(Ordering::SeqCst) > 0 || self.embedding.load(Ordering::SeqCst) {
             0
         } else {
             (self.clock.now() - self.last.load(Ordering::SeqCst)).max(0)
@@ -142,6 +158,7 @@ impl Daemon {
                 "bin": VERSION,
                 "pid": std::process::id(),
                 "loaded": self.model.is_loaded(),
+                "resident": self.model.is_resident(),
                 "sessions": self.sessions().len(),
                 "idle_secs": idle,
             }),
@@ -165,26 +182,35 @@ impl Daemon {
         else {
             return bad("call: faltan tool o cwd (una ruta absoluta)").0;
         };
-        let client = req["client"].as_str().unwrap_or_default();
-        let key = (
-            client.to_owned(),
-            req["session"].as_str().unwrap_or_default().to_owned(),
-        );
+        let named = |k: &str| req[k].as_str().filter(|v| !v.is_empty());
+        // Never one session shared by whoever leaves them out.
+        let (Some(client), Some(id)) = (named("client"), named("session")) else {
+            return bad("call: faltan client o session").0;
+        };
         let now = self.clock.now();
+        let mut note = None;
         let mut sessions = self.sessions();
+        let key = (client.to_owned(), id.to_owned());
         let (session, used) = sessions.entry(key).or_insert_with(|| {
+            // Fixed for the session's life, as for one `mcp` process.
             let env = req["project_env"].as_str();
-            let project = project_in(&self.data, cwd, &self.home, env, "daemon");
+            let project;
+            (project, note) = project_in(&self.data, cwd, &self.home, env);
             let session = Session::new(self.data.clone(), project, actor_of(client))
                 .with_model(self.model.clone())
-                .with_clock(self.clock.clone());
+                .with_clock(self.clock.clone())
+                .with_backlog(self.backlog.clone());
             (session, now)
         });
         *used = now;
-        match session.call(tool, &req["args"]) {
+        let mut answer = match session.call(tool, &req["args"]) {
             Ok(text) => json!({"ok": true, "text": text}),
             Err(why) => json!({"ok": false, "text": why}),
+        };
+        if let Some(n) = note {
+            answer["note"] = n.into();
         }
+        answer
     }
 
     fn embed(&self, req: &Value) -> Value {
@@ -221,6 +247,54 @@ impl Daemon {
             )),
         }
     }
+}
+
+/// What a session calls after a write: the vectors still waiting are computed in one thread, off
+/// the sessions' lock, one such thread at a time; a call while it runs asks it for another round.
+/// Its end counts as a request's (`last`).
+fn backlog(
+    data: &Path,
+    model: &Arc<EmbedModel>,
+    clock: &Arc<dyn Clock>,
+    last: &Arc<AtomicI64>,
+    running: &Arc<AtomicBool>,
+) -> Arc<dyn Fn() + Send + Sync> {
+    let wanted = Arc::new(AtomicBool::new(false));
+    let (data, model, clock, last, running) = (
+        data.to_path_buf(),
+        model.clone(),
+        clock.clone(),
+        last.clone(),
+        running.clone(),
+    );
+    Arc::new(move || {
+        wanted.store(true, Ordering::SeqCst);
+        if running.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let (data, model, clock, last) = (data.clone(), model.clone(), clock.clone(), last.clone());
+        let (wanted, still) = (wanted.clone(), running.clone());
+        let spawned = std::thread::Builder::new().spawn(move || {
+            loop {
+                while wanted.swap(false, Ordering::SeqCst) {
+                    // A panic is in the log already: the thread must still end as it should.
+                    let done = catch_unwind(AssertUnwindSafe(|| embed_pending(&data, &model)));
+                    if let Ok(Err(why)) = done {
+                        eprintln!("clio-memory daemon: vectores pendientes: {why}");
+                    }
+                }
+                last.store(clock.now(), Ordering::SeqCst);
+                still.store(false, Ordering::SeqCst);
+                // Asked again after its last round, while it still looked busy.
+                if !wanted.load(Ordering::SeqCst) || still.swap(true, Ordering::SeqCst) {
+                    return;
+                }
+            }
+        });
+        if spawned.is_err() {
+            running.store(false, Ordering::SeqCst);
+        }
+    })
 }
 
 fn same_folder(a: &Path, b: &Path) -> bool {

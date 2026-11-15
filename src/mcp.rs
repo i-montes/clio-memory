@@ -120,26 +120,25 @@ pub fn serve_with(
 }
 
 /// The project of a client started in `cwd`, `env` its `CLIO_PROJECT`: none when started in the
-/// person's home or anywhere above it (the person's). A note on it goes to stderr after `who`.
+/// person's home or anywhere above it (the person's). With a note on it, for the client's log
+/// (where the person reads it).
 pub(crate) fn project_in(
     data: &Path,
     cwd: &Path,
     home: &Path,
     env: Option<&str>,
-    who: &str,
-) -> Option<String> {
+) -> (Option<String>, Option<String>) {
     let at_home = home.starts_with(cwd) && !home.as_os_str().is_empty();
-    let (name, _, note) = (!at_home)
+    match (!at_home)
         .then(|| project::settle_with(data, cwd, env))
-        .flatten()?;
-    // To the client's (or the daemon's) log, where the person reads it.
-    if let Some(n) = note {
-        eprintln!(
-            "clio-memory {who}: {}",
-            crate::agent::memory::clean_text(&n)
-        );
+        .flatten()
+    {
+        Some((name, _, note)) => (
+            Some(name),
+            note.map(|n| crate::agent::memory::clean_text(&n)),
+        ),
+        None => (None, None),
     }
-    Some(name)
 }
 
 /// The actor of a client: `mcp:` and its name, lowercased, `[a-z0-9-]` only, at most 40
@@ -190,7 +189,10 @@ impl State {
         let (data, cwd, home) = (&self.data, &self.cwd, &self.home);
         self.session.get_or_insert_with(|| {
             let env = std::env::var(project::PROJECT_ENV).ok();
-            let project = project_in(data, cwd, home, env.as_deref(), "mcp");
+            let (project, note) = project_in(data, cwd, home, env.as_deref());
+            if let Some(n) = note {
+                eprintln!("clio-memory mcp: {n}");
+            }
             Session::new(data.clone(), project, actor_of(&client))
                 .with_model(EmbedModel::of_home(home))
         })
@@ -212,7 +214,8 @@ impl State {
         if let (Backend::Daemon(launch), Some(cwd)) = (&self.backend, self.cwd.to_str()) {
             let mut body = json!({
                 "op": "call",
-                "client": client,
+                // The daemon refuses a call with no name: this one signs the same, `mcp:cliente`.
+                "client": if client.is_empty() { "cliente" } else { &client },
                 "session": self.id,
                 "cwd": cwd,
                 "tool": name,
@@ -224,8 +227,16 @@ impl State {
             // An answer with `error` is the protocol failing, not the tool.
             let why = match request(&self.data, Some(launch), &body) {
                 Ok(a) if a.get("error").is_none() => {
-                    // Back on the daemon: this process's model goes.
-                    self.session = None;
+                    // Back on the daemon: this process's model goes, once what it left waiting
+                    // has its vectors.
+                    if let Some(s) = self.session.take()
+                        && let Err(why) = s.finish()
+                    {
+                        eprintln!("clio-memory mcp: vectores pendientes: {why}");
+                    }
+                    if let Some(n) = a["note"].as_str() {
+                        eprintln!("clio-memory mcp: {}", crate::agent::memory::clean_text(n));
+                    }
                     let text = a["text"].as_str().unwrap_or_default().to_owned();
                     return if a["ok"] == true { Ok(text) } else { Err(text) };
                 }
@@ -333,7 +344,13 @@ mod tests {
                 json!({"ok": true, "text": "del demonio"}),
             ] {
                 let (conn, _) = listener.accept().unwrap();
-                BufReader::new(&conn).read_line(&mut String::new()).unwrap();
+                let mut line = String::new();
+                BufReader::new(&conn).read_line(&mut line).unwrap();
+                // Never a shared session: the daemon refuses a call without both.
+                let req: Value = serde_json::from_str(&line).unwrap();
+                for field in ["client", "session"] {
+                    assert!(req[field].as_str().is_some_and(|v| !v.is_empty()), "{req}");
+                }
                 writeln!(&conn, "{answer}").unwrap();
             }
         });
@@ -354,6 +371,19 @@ mod tests {
         assert!(here.is_ok() && state.session.is_some(), "{here:?}");
         let still_here = state.call("memory_context", &json!({}));
         assert_ne!(still_here, Ok("del demonio".into()), "retried too soon");
+        // A memory waiting for its vector, and a local session with a model: going back to the
+        // daemon computes it before that model goes.
+        let none = EmbedModel::none();
+        let w = crate::agent::Memory::open_write(&data, &none, None, "agente").unwrap();
+        let draft =
+            crate::agent::Draft::plain("Qué: espera su vector", crate::MemoryType::Semantic);
+        w.save(&draft, "agente", crate::agent::Place::Personal, false)
+            .unwrap();
+        drop(w);
+        state.session = Some(
+            Session::new(data.clone(), None, "mcp:prueba".into())
+                .with_model(EmbedModel::from_embedder(std::sync::Arc::new(Ones))),
+        );
         if let Some((_, at)) = &mut state.retry {
             *at = Instant::now();
         }
@@ -361,5 +391,27 @@ mod tests {
         assert_eq!(back, Ok("del demonio".into()));
         assert!(state.session.is_none(), "the local session was kept");
         daemon.join().unwrap();
+        let m = crate::agent::Memory::open_read(&data, &none, None, "agente")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            m.engine().stats().unwrap().vectors,
+            1,
+            "its vector was not computed"
+        );
+    }
+
+    struct Ones;
+
+    impl crate::Embedder for Ones {
+        fn model_id(&self) -> &str {
+            "unos"
+        }
+        fn dim(&self) -> usize {
+            4
+        }
+        fn embed(&self, texts: &[&str]) -> crate::Result<Vec<Vec<f32>>> {
+            Ok(texts.iter().map(|_| vec![1.0; 4]).collect())
+        }
     }
 }

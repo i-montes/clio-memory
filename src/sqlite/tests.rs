@@ -486,7 +486,7 @@ fn pending_embeddings_skips_archived_and_embedded() {
             .collect()
     };
     assert_eq!(ids("a", 10), [(3, "tres".to_string())]);
-    assert_eq!(ids("b", 10).iter().map(|p| p.0).collect::<Vec<_>>(), [1, 3]);
+    assert_eq!(ids("b", 10).iter().map(|p| p.0).collect::<Vec<_>>(), [3, 1]);
     assert_eq!(ids("b", 1).len(), 1);
 }
 

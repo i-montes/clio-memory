@@ -325,9 +325,9 @@ impl EmbedModel {
             .collect()
     }
 
-    #[cfg(test)]
-    pub(crate) fn idle(&self) -> Option<Duration> {
-        self.idle
+    /// Whether it keeps the model for the life of the process (the daemon's).
+    pub fn is_resident(&self) -> bool {
+        self.idle.is_none()
     }
 
     /// The folders it tries, in order.
@@ -1011,8 +1011,19 @@ impl Memory {
 
 /// `Memory::embed_queue` without holding the writer while the model runs: a read computes the
 /// vectors (64 at a time) and a short write keeps them, until nothing waits; then the queued jobs
-/// are closed (they find nothing left). How many vectors were stored; 0 with no model.
+/// are closed under the writer, never running the model there (what was written meanwhile is
+/// computed the same way first). How many vectors were stored; 0 with no model.
 pub fn embed_pending(data: &Path, model: &EmbedModel) -> Res<usize> {
+    embed(data, model, false)
+}
+
+/// One batch of [`embed_pending`]: the newest memories (what a save just wrote) and no more. The
+/// daemon's save, which leaves the rest to its background.
+pub fn embed_newest(data: &Path, model: &EmbedModel) -> Res<usize> {
+    embed(data, model, true)
+}
+
+fn embed(data: &Path, model: &EmbedModel, once: bool) -> Res<usize> {
     let Some(read) = Memory::open_read(data, model, None, "agente")? else {
         return Ok(0);
     };
@@ -1022,15 +1033,23 @@ pub fn embed_pending(data: &Path, model: &EmbedModel) -> Res<usize> {
     let m = |e: Error| explain(&e);
     let mut stored = 0;
     loop {
-        let computed = read.engine.compute_vectors(64).map_err(m)?;
+        let computed = read
+            .engine
+            .compute_vectors(if once { 32 } else { 64 })
+            .map_err(m)?;
         if computed.examined() == 0 {
-            break;
+            let w = Memory::open_write(data, model, None, "agente")?;
+            if w.engine.close_embed_jobs().map_err(m)? {
+                return Ok(stored);
+            }
+            continue;
         }
         let w = Memory::open_write(data, model, None, "agente")?;
         stored += w.engine.store_vectors(computed).map_err(m)?;
+        if once {
+            return Ok(stored);
+        }
     }
-    stored += Memory::open_write(data, model, None, "agente")?.embed_queue()?;
-    Ok(stored)
 }
 
 /// The Spanish word for a kind.
@@ -1067,8 +1086,8 @@ mod tests {
     #[test]
     fn only_the_resident_home_model_stays_in_memory() {
         let home = Path::new("/nonexistent");
-        assert_eq!(EmbedModel::of_home(home).idle(), Some(DEFAULT_IDLE));
-        assert_eq!(EmbedModel::of_home_resident(home).idle(), None);
-        assert_eq!(EmbedModel::with_dirs(vec![]).idle(), Some(DEFAULT_IDLE));
+        assert_eq!(EmbedModel::of_home(home).idle, Some(DEFAULT_IDLE));
+        assert!(EmbedModel::of_home_resident(home).is_resident());
+        assert!(!EmbedModel::with_dirs(vec![]).is_resident());
     }
 }

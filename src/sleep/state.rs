@@ -77,7 +77,28 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if written.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
+    if let Some(d) = path.parent() {
+        sweep(d);
+    }
     written
+}
+
+/// The temporary files of a process that died mid-write: none is written for 10 minutes. Best
+/// effort.
+fn sweep(d: &Path) {
+    let stale = |f: &std::fs::DirEntry| {
+        f.file_name().to_string_lossy().ends_with(".tmp")
+            && f.metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > std::time::Duration::from_secs(600))
+    };
+    for f in std::fs::read_dir(d).into_iter().flatten().flatten() {
+        if stale(&f) {
+            let _ = std::fs::remove_file(f.path());
+        }
+    }
 }
 
 pub(crate) fn save(data: &Path, state: &SleepState) -> Result<(), String> {

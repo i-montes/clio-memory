@@ -425,3 +425,33 @@ fn a_folder_whose_name_is_not_utf8_is_served_here() {
     assert!(!f.data.join("daemon.sock").exists(), "{err}");
     assert!(!err.contains("sin demonio"), "{err}");
 }
+
+#[test]
+fn a_note_on_the_project_reaches_the_clients_log() {
+    let f = folder();
+    let dir = f.home.join("nuevo");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::create_dir(&f.data).unwrap();
+    let key = dir.canonicalize().unwrap().display().to_string();
+    std::fs::write(
+        f.data.join("projects.json"),
+        json!({ key: "viejo" }).to_string(),
+    )
+    .unwrap();
+    let mut cmd = Command::new(EXE);
+    cmd.arg("--db")
+        .arg(f.data.join("memory.db"))
+        .arg("mcp")
+        .env("HOME", &f.home)
+        .env("CLIO_MEMORY_DAEMON_IDLE", "30")
+        .current_dir(&dir);
+    let mut m = mcp_of(cmd);
+    let (project, _) = m.call("memory_current_project", json!({}));
+    let err = m.end();
+    assert_eq!(project, "nuevo");
+    assert!(
+        err.contains("clio-memory mcp: esta carpeta era del proyecto viejo"),
+        "{err}"
+    );
+    f.daemon_pid();
+}

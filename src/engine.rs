@@ -538,6 +538,29 @@ impl Engine {
         Ok(v.good.len())
     }
 
+    /// Closes the queued `Embed` jobs without running the model, once the caller stored every
+    /// vector: `false`, and nothing closed, while a memory still waits for one.
+    pub fn close_embed_jobs(&self) -> Result<bool> {
+        if self.mode == OpenMode::ReadOnly {
+            return Err(Error::ReadOnly);
+        }
+        let embedder = self.embedder.as_ref().ok_or(Error::NoEmbedder)?;
+        let _g = self.write_guard();
+        if !self
+            .store
+            .pending_embeddings(embedder.model_id(), 1)?
+            .is_empty()
+        {
+            return Ok(false);
+        }
+        let now = self.clock.now();
+        self.store.recover_leases(now)?;
+        let jobs = self.store.claim_jobs(now, JobKind::Embed, LEASE_SECS, 64)?;
+        let ids: Vec<i64> = jobs.iter().map(|j| j.id).collect();
+        self.store.finish_jobs(&ids, now)?;
+        Ok(true)
+    }
+
     /// The `Embed` job to enqueue with an operation: any operation that leaves a memory that is
     /// not archived may have created one that needs a vector. One pending job covers them all
     /// (the dedupe key), so ten updates in a row make one job. Only with an embedder.

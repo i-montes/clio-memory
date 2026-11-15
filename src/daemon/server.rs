@@ -69,13 +69,20 @@ pub fn serve(data: &Path, home: &Path, idle: Duration) -> Result<(), String> {
                     && UnixStream::connect(&sock).is_err()
                     && !done.load(Ordering::SeqCst)
                 {
-                    while in_flight.load(Ordering::SeqCst) > 0 {
-                        std::thread::sleep(Duration::from_millis(25));
+                    // Again after the vectors: a request taken meanwhile is not cut.
+                    loop {
+                        while in_flight.load(Ordering::SeqCst) > 0 {
+                            std::thread::sleep(Duration::from_millis(25));
+                        }
+                        if let Err(why) = embed_pending(data, &model) {
+                            eprintln!(
+                                "al salir, los vectores pendientes quedaron sin calcular: {why}"
+                            );
+                        }
+                        if in_flight.load(Ordering::SeqCst) == 0 {
+                            std::process::exit(0);
+                        }
                     }
-                    if let Err(why) = embed_pending(data, &model) {
-                        eprintln!("al salir, los vectores pendientes quedaron sin calcular: {why}");
-                    }
-                    std::process::exit(0);
                 }
             }
         });
@@ -196,6 +203,6 @@ mod tests {
 
     #[test]
     fn the_daemon_never_releases_its_model() {
-        assert_eq!(daemon_model(Path::new("/nonexistent")).idle(), None);
+        assert!(daemon_model(Path::new("/nonexistent")).is_resident());
     }
 }

@@ -5,11 +5,12 @@ mod common;
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use clio_memory::agent::{EmbedModel, Memory};
+use clio_memory::agent::memory::embed_pending;
+use clio_memory::agent::{Draft, EmbedModel, Memory, Place};
 use clio_memory::tools::{Session, TOOLS};
-use clio_memory::{Embedder, Engine, FixedClock, OpenMode, SystemClock};
+use clio_memory::{Embedder, Engine, FixedClock, JobKind, MemoryType, OpenMode, SystemClock};
 use common::HashEmbedder;
 use serde_json::json;
 
@@ -421,11 +422,13 @@ fn a_bad_id_spends_no_change() {
     assert!(!r.contains("10"), "{r}");
 }
 
-/// Inside `embed`, tries to take the writer: it can only if the session let it go.
+/// Inside `embed`, tries to take the writer: `held` says it once could not (someone held it while
+/// the model ran), `calls` how many times the model ran.
 struct ProbeEmbedder {
     inner: HashEmbedder,
     db: PathBuf,
-    free: Arc<AtomicBool>,
+    held: Arc<AtomicBool>,
+    calls: Arc<AtomicUsize>,
 }
 impl Embedder for ProbeEmbedder {
     fn model_id(&self) -> &str {
@@ -435,22 +438,42 @@ impl Embedder for ProbeEmbedder {
         self.inner.dim()
     }
     fn embed(&self, texts: &[&str]) -> clio_memory::Result<Vec<Vec<f32>>> {
-        if Engine::open(&self.db, OpenMode::ReadWrite, Arc::new(SystemClock)).is_ok() {
-            self.free.store(true, Ordering::SeqCst);
+        if Engine::open(&self.db, OpenMode::ReadWrite, Arc::new(SystemClock)).is_err() {
+            self.held.store(true, Ordering::SeqCst);
         }
+        self.calls.fetch_add(1, Ordering::SeqCst);
         self.inner.embed(texts)
     }
+}
+
+/// A probe over `t`'s file: the model, whether it ever ran under the writer, how often it ran.
+fn probe(t: &tempfile::TempDir) -> (Arc<EmbedModel>, Arc<AtomicBool>, Arc<AtomicUsize>) {
+    let held = Arc::new(AtomicBool::new(false));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let model = EmbedModel::from_embedder(Arc::new(ProbeEmbedder {
+        inner: HashEmbedder::new("hash", 16),
+        db: t.path().join("memory.db"),
+        held: held.clone(),
+        calls: calls.clone(),
+    }));
+    (model, held, calls)
+}
+
+fn stats(t: &tempfile::TempDir) -> (u64, usize) {
+    let m = Memory::open_read(t.path(), &EmbedModel::none(), None, "mcp:prueba")
+        .unwrap()
+        .unwrap();
+    let e = m.engine();
+    (
+        e.stats().unwrap().vectors,
+        e.ready_jobs(JobKind::Embed).unwrap(),
+    )
 }
 
 #[test]
 fn a_save_does_not_hold_the_writer_while_it_embeds() {
     let t = tempfile::tempdir().unwrap();
-    let free = Arc::new(AtomicBool::new(false));
-    let model = EmbedModel::from_embedder(Arc::new(ProbeEmbedder {
-        inner: HashEmbedder::new("hash", 16),
-        db: t.path().join("memory.db"),
-        free: free.clone(),
-    }));
+    let (model, held, calls) = probe(&t);
     let mut s = Session::new(t.path().to_path_buf(), None, "mcp:prueba".into()).with_model(model);
     let said = s
         .call(
@@ -459,16 +482,84 @@ fn a_save_does_not_hold_the_writer_while_it_embeds() {
         )
         .unwrap();
     assert!(said.starts_with("saved"), "{said}");
+    assert!(calls.load(Ordering::SeqCst) > 0);
     assert!(
-        free.load(Ordering::SeqCst),
+        !held.load(Ordering::SeqCst),
         "the writer was held while the model ran"
     );
-    let m = Memory::open_read(t.path(), &EmbedModel::none(), None, "mcp:prueba")
-        .unwrap()
-        .unwrap();
     assert_eq!(
-        m.engine().stats().unwrap().vectors,
-        1,
-        "the vector is stored all the same"
+        stats(&t),
+        (1, 0),
+        "the vector is stored all the same, and its queued job closed"
     );
+}
+
+#[test]
+fn a_merge_does_not_hold_the_writer_while_it_embeds() {
+    let t = tempfile::tempdir().unwrap();
+    let (model, held, calls) = probe(&t);
+    let mut s = Session::new(t.path().to_path_buf(), None, "mcp:prueba".into()).with_model(model);
+    for text in [
+        "Qué: el servidor de pruebas es TITAN-9",
+        "Qué: las copias se guardan en el disco B los lunes",
+    ] {
+        let said = s
+            .call("memory_save", &json!({"text": text, "kind": "semantic"}))
+            .unwrap();
+        assert!(said.starts_with("saved"), "{said}");
+    }
+    held.store(false, Ordering::SeqCst);
+    let before = calls.load(Ordering::SeqCst);
+    let said = s
+        .call(
+            "memory_consolidate",
+            &json!({"ids": "1, 2", "text": "Qué: TITAN-9 es el servidor de pruebas; copias en B los lunes"}),
+        )
+        .unwrap();
+    assert!(said.starts_with("merged into m3"), "{said}");
+    assert!(
+        calls.load(Ordering::SeqCst) > before,
+        "the merge was not embedded"
+    );
+    assert!(
+        !held.load(Ordering::SeqCst),
+        "the writer was held while the model ran"
+    );
+}
+
+#[test]
+fn what_is_written_while_the_vectors_are_stored_is_embedded_without_the_writer() {
+    let t = tempfile::tempdir().unwrap();
+    drop(Memory::open_write(t.path(), &EmbedModel::none(), None, "agente").unwrap());
+    let (model, held, _) = probe(&t);
+    let (ready, go) = std::sync::mpsc::channel();
+    // Another process holds the writer, and writes a memory (and its queued job) once the read
+    // part found nothing to compute: when the last step takes the writer, something waits.
+    let other = {
+        let data = t.path().to_path_buf();
+        std::thread::spawn(move || {
+            let hash = EmbedModel::from_embedder(Arc::new(HashEmbedder::new("hash", 16)));
+            let w = Memory::open_write(&data, &hash, None, "agente").unwrap();
+            ready.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            w.save(
+                &Draft::plain(
+                    "Qué: llegó entre la lectura y el cierre",
+                    MemoryType::Semantic,
+                ),
+                "agente",
+                Place::Personal,
+                false,
+            )
+            .unwrap();
+        })
+    };
+    go.recv().unwrap();
+    embed_pending(t.path(), &model).unwrap();
+    other.join().unwrap();
+    assert!(
+        !held.load(Ordering::SeqCst),
+        "the model ran under the writer"
+    );
+    assert_eq!(stats(&t), (1, 0), "it was embedded and its job closed");
 }

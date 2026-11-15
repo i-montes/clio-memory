@@ -20,7 +20,7 @@ use std::sync::Arc;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::agent::memory::{clean_text, embed_pending, kind_label, origin_label};
+use crate::agent::memory::{clean_text, embed_newest, embed_pending, kind_label, origin_label};
 use crate::agent::{Draft, EmbedModel, Memory, Place, preview};
 use crate::clock::{Clock, SystemClock};
 use crate::secrets::find_secret;
@@ -222,6 +222,8 @@ pub struct Session {
     window: i64,
     /// When this session last told the sleep the memory is in use (`sleep::mark_used`).
     marked: i64,
+    /// The daemon's: after a write computes its own vectors, the rest goes to this.
+    backlog: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl Session {
@@ -238,6 +240,7 @@ impl Session {
             clock: Arc::new(SystemClock),
             window: 0,
             marked: 0,
+            backlog: None,
         }
     }
 
@@ -245,6 +248,14 @@ impl Session {
     #[must_use]
     pub fn with_model(mut self, model: Arc<EmbedModel>) -> Self {
         self.model = model;
+        self
+    }
+
+    /// A write computes only its own vectors (one batch) and hands the rest to `backlog`, which
+    /// must not wait for them: one agent's save never waits for everyone's vectors.
+    #[must_use]
+    pub fn with_backlog(mut self, backlog: Arc<dyn Fn() + Send + Sync>) -> Self {
+        self.backlog = Some(backlog);
         self
     }
 
@@ -557,8 +568,9 @@ impl Session {
         )))
     }
 
-    /// After a write, once the writer is let go, the vectors of the whole queue are computed;
-    /// without a model the answer says so. A failure to compute them does not undo the save: what
+    /// After a write, once the writer is let go, the vectors of the whole queue are computed (in
+    /// the daemon: this write's, and the rest in its background); without a model the answer says
+    /// so. A failure to compute them does not undo the save: what
     /// is left waits for the next write, the end of the session, or `clio-memory run-jobs`.
     fn with_vectors(&self, answer: String) -> String {
         // `get`, not `is_present`: a model that fails to load is no model, as the writer saw it.
@@ -567,7 +579,15 @@ impl Session {
                 "{answer} · sin modelo de vectores: la búsqueda es solo por texto (`clio-memory setup model`)"
             );
         }
-        if let Err(why) = embed_pending(&self.data, &self.model) {
+        let done = match &self.backlog {
+            Some(rest) => {
+                let done = embed_newest(&self.data, &self.model);
+                rest();
+                done
+            }
+            None => embed_pending(&self.data, &self.model),
+        };
+        if let Err(why) = done {
             eprintln!("clio-memory: vectores pendientes: {why}");
         }
         answer

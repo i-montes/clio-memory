@@ -6,7 +6,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use super::{VERSION, proto};
 
@@ -18,6 +18,7 @@ const MAX_SOCKET_PATH: usize = 100;
 pub const NO_DAEMON: &str = "no hay demonio";
 
 /// How to start the daemon: this binary, and what to add to its environment.
+#[derive(Clone)]
 pub struct Launch {
     pub exe: PathBuf,
     pub env: Vec<(String, String)>,
@@ -149,4 +150,95 @@ fn spawn(launch: &Launch, data: &Path) -> Result<(), String> {
         .success()
         .then_some(())
         .ok_or_else(|| "no se pudo lanzar el demonio".to_owned())
+}
+
+/// Vectors from the daemon of a data folder, for a host program that would rather not load its
+/// own copy of the model.
+pub struct RemoteEmbedder {
+    data: PathBuf,
+    launch: Launch,
+    model: String,
+    dim: usize,
+}
+
+impl RemoteEmbedder {
+    /// Asks the daemon (starting it if needed) which model it has. An error says why not, in words
+    /// for the person: the host keeps its own model then.
+    pub fn connect(data: &Path, launch: Launch) -> Result<Self, String> {
+        let answer = request(data, Some(&launch), &json!({"op": "model"}))?;
+        if answer["error"] == "no-model" {
+            let why = answer["text"].as_str().unwrap_or_default();
+            return Err(format!("el demonio no tiene modelo de vectores: {why}"));
+        }
+        let (Some(model), Some(dim)) = (answer["model"].as_str(), answer["dim"].as_u64()) else {
+            return Err(format!("respuesta inesperada del demonio: {answer}"));
+        };
+        Ok(Self {
+            data: data.to_owned(),
+            launch,
+            model: model.to_owned(),
+            dim: dim as usize,
+        })
+    }
+
+    fn ask_embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, String> {
+        let answer = request(
+            &self.data,
+            Some(&self.launch),
+            &json!({"op": "embed", "texts": texts}),
+        )?;
+        if answer["ok"] != true {
+            return Err(answer["text"].as_str().unwrap_or("sin motivo").to_owned());
+        }
+        // A daemon replaced by another version may have another model: never mix vectors.
+        if answer["model"] != self.model || answer["dim"] != self.dim {
+            return Err(format!(
+                "el demonio ahora usa «{}» de {} números, no «{}» de {}",
+                answer["model"].as_str().unwrap_or("?"),
+                answer["dim"],
+                self.model,
+                self.dim
+            ));
+        }
+        let vectors: Vec<Vec<f32>> = answer["vectors"]
+            .as_array()
+            .map(|all| {
+                all.iter()
+                    .map(|v| {
+                        let v = v.as_array()?;
+                        v.iter().map(|x| x.as_f64().map(|x| x as f32)).collect()
+                    })
+                    .collect::<Option<_>>()
+            })
+            .unwrap_or_default()
+            .ok_or("los vectores no son números")?;
+        if vectors.len() != texts.len() {
+            return Err(format!(
+                "se pidieron {} textos, {} vectores",
+                texts.len(),
+                vectors.len()
+            ));
+        }
+        match vectors.iter().find(|v| v.len() != self.dim) {
+            Some(v) => Err(format!(
+                "un vector de {} números, no de {}",
+                v.len(),
+                self.dim
+            )),
+            None => Ok(vectors),
+        }
+    }
+}
+
+impl crate::Embedder for RemoteEmbedder {
+    fn model_id(&self) -> &str {
+        &self.model
+    }
+    fn dim(&self) -> usize {
+        self.dim
+    }
+    fn embed(&self, texts: &[&str]) -> crate::Result<Vec<Vec<f32>>> {
+        self.ask_embed(texts)
+            .map_err(|why| crate::Error::Embedding(format!("demonio: {why}")))
+    }
 }

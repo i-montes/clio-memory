@@ -12,8 +12,9 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use clio_memory::Embedder;
 use clio_memory::daemon::proto::MAX_LINE;
-use clio_memory::daemon::{Launch, request, socket_path};
+use clio_memory::daemon::{Launch, RemoteEmbedder, request, socket_path};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -271,4 +272,87 @@ fn a_daemon_that_answers_stale_is_one_that_is_leaving() {
     assert!(f.cli_out(&["--status"]).contains("demonio: inactivo"));
     assert!(f.cli_out(&["--stop"]).contains("no había demonio"));
     older.join().unwrap();
+}
+
+#[test]
+fn a_host_without_a_model_in_the_daemon_is_told() {
+    let f = folder("30");
+    let err = RemoteEmbedder::connect(&f.data, f.launch.clone()).err();
+    let err = err.expect("no model, no embedder");
+    assert!(err.contains("no tiene modelo"), "{err}");
+}
+
+/// A daemon that answers each request with the next of `answers`, then goes.
+fn fake_daemon(f: &Folder, answers: Vec<Value>) -> std::thread::JoinHandle<()> {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::net::UnixListener;
+    std::fs::create_dir(&f.data).unwrap();
+    let listener = UnixListener::bind(f.data.join("daemon.sock")).unwrap();
+    std::thread::spawn(move || {
+        for answer in answers {
+            let (conn, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(&conn).read_line(&mut line).unwrap();
+            writeln!(&conn, "{answer}").unwrap();
+        }
+    })
+}
+
+#[test]
+fn a_host_gets_the_daemons_vectors_and_only_if_they_are_right() {
+    let model = json!({"ok": true, "model": "m", "dim": 2});
+    let vectors = |model: &str, dim: u64, vectors: Value| json!({"ok": true, "model": model, "dim": dim, "vectors": vectors});
+    let cases = [
+        (vectors("m", 2, json!([[1.0, 0.0], [0.0, 1.0]])), None),
+        (
+            vectors("m", 2, json!([[1.0, 0.0]])),
+            Some("2 textos, 1 vectores"),
+        ),
+        (
+            vectors("m", 2, json!([[1.0, 0.0], [0.0]])),
+            Some("de 1 números"),
+        ),
+        (
+            vectors("m", 3, json!([[1.0, 0.0], [0.0, 1.0]])),
+            Some("de 3 números"),
+        ),
+        (
+            vectors("otro", 2, json!([[1.0, 0.0], [0.0, 1.0]])),
+            Some("«otro»"),
+        ),
+        (
+            json!({"ok": false, "text": "no se pudo"}),
+            Some("no se pudo"),
+        ),
+        (
+            json!({"ok": true, "model": "m", "dim": 2}),
+            Some("vectores"),
+        ),
+    ];
+    for (answer, wrong) in cases {
+        let f = folder("30");
+        let daemon = fake_daemon(&f, vec![model.clone(), answer]);
+        let remote = RemoteEmbedder::connect(&f.data, f.launch.clone()).unwrap();
+        assert_eq!((remote.model_id(), remote.dim()), ("m", 2));
+        let got = remote.embed(&["a", "b"]);
+        match wrong {
+            None => assert_eq!(got.unwrap(), vec![vec![1.0, 0.0], vec![0.0, 1.0]]),
+            Some(why) => {
+                let err = got.unwrap_err().to_string();
+                assert!(err.contains(why), "{why}: {err}");
+            }
+        }
+        daemon.join().unwrap();
+    }
+}
+
+#[test]
+fn a_host_whose_daemon_left_gets_a_new_one() {
+    let f = folder("30");
+    let daemon = fake_daemon(&f, vec![json!({"ok": true, "model": "m", "dim": 2})]);
+    let remote = RemoteEmbedder::connect(&f.data, f.launch.clone()).unwrap();
+    daemon.join().unwrap();
+    // The one that answers now is a real daemon, started for this request: it has no model.
+    let err = remote.embed(&["a"]).unwrap_err().to_string();
+    assert!(err.contains("no hay un modelo de vectores"), "{err}");
 }

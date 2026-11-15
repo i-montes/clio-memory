@@ -258,3 +258,36 @@ fn a_session_that_embedded_holds_no_telemetry_database() {
         );
     }
 }
+
+#[test]
+fn the_daemons_vectors_are_granites() {
+    use clio_memory::daemon::{Launch, RemoteEmbedder, request};
+    let Some(dir) = dir() else { return };
+    let Some(models) = dir.parent() else { return };
+    if !dir.join("model_quint8_avx2.onnx").is_file() {
+        eprintln!("skipped: no model_quint8_avx2.onnx");
+        return;
+    }
+    let home = common::short_dir();
+    std::fs::create_dir_all(home.path().join(".cache")).unwrap();
+    std::os::unix::fs::symlink(models, home.path().join(".cache/clio-models")).unwrap();
+    let data = home.path().join("data");
+    let launch = Launch {
+        exe: env!("CARGO_BIN_EXE_clio-memory").into(),
+        env: vec![
+            ("HOME".into(), home.path().display().to_string()),
+            ("CLIO_MEMORY_DAEMON_IDLE".into(), "30".into()),
+        ],
+    };
+    let remote = RemoteEmbedder::connect(&data, launch);
+    let text = ["el contenedor arrancaba antes que la base"];
+    let got = remote
+        .as_ref()
+        .map(|r| (r.dim(), r.model_id().to_owned(), r.embed(&text)));
+    let _ = request(&data, None, &serde_json::json!({"op": "shutdown"}));
+    let (dim, model, got) = got.unwrap();
+    assert_eq!((dim, model.as_str()), (384, GRANITE_Q8_ID));
+    let own = Granite::load(&dir).unwrap().embed(&text).unwrap();
+    let c = cosine(&own[0], &got.unwrap()[0]);
+    assert!(c >= 0.9999, "cosine {c}");
+}

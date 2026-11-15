@@ -7,7 +7,7 @@ mod client;
 pub mod proto;
 mod server;
 
-pub use client::{Launch, NO_DAEMON, request, socket_path};
+pub use client::{Launch, NO_DAEMON, RemoteEmbedder, request, socket_path};
 pub use server::serve;
 
 use std::collections::HashMap;

@@ -125,6 +125,8 @@ El modelo no se lee al abrir la memoria, sino cuando hay un texto que convertir 
 
 Sin el modelo, la búsqueda es por texto (y al guardar te lo dice). Con el modelo, los vectores se calculan en cuanto se guarda algo: toda la cola pendiente, también lo que guardó otro programa sin modelo; y otra vez al cerrar la sesión, antes de soltar el modelo. `clio-memory run-jobs` queda para lo que haya quedado pendiente (por ejemplo, recuerdos de antes de esta versión). A mano, sin `setup`: `claude mcp add clio-memory -- clio-memory mcp`.
 
+Un programa anfitrión que use la biblioteca puede tomar los vectores del demonio en vez de cargar su propia copia del modelo: `EmbedModel::from_embedder(Arc::new(RemoteEmbedder::connect(data, launch)?))`. `launch.exe` debe ser el binario de clio-memory (llama a `private_runtime()`, así que ONNX Runtime arranca sin telemetría) y el anfitrión no carga ONNX Runtime. Si `connect` falla (el demonio no tiene modelo, o no arranca), el anfitrión se queda con su modelo local. Un anfitrión que carga Granite él mismo debe llamar a `clio_memory::private_runtime()` al empezar su `main`.
+
 ### Las herramientas
 
 | Herramienta | Qué hace |

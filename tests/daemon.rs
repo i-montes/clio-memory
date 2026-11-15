@@ -6,6 +6,7 @@ mod common;
 
 use std::collections::HashSet;
 use std::ffi::OsStr;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -249,4 +250,25 @@ fn status_and_stop_say_a_bad_socket_path_as_an_error() {
         let err = String::from_utf8(out.stderr).unwrap();
         assert!(err.contains("ruta absoluta"), "{flag}: {err}");
     }
+}
+
+#[test]
+fn a_daemon_that_answers_stale_is_one_that_is_leaving() {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::net::UnixListener;
+    let f = folder("30");
+    std::fs::create_dir(&f.data).unwrap();
+    // An older daemon answers every request of a newer binary with `stale`, then goes.
+    let listener = UnixListener::bind(f.data.join("daemon.sock")).unwrap();
+    let older = std::thread::spawn(move || {
+        for _ in 0..2 {
+            let (conn, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(&conn).read_line(&mut line).unwrap();
+            writeln!(&conn, r#"{{"ok":false,"error":"stale","text":"vieja"}}"#).unwrap();
+        }
+    });
+    assert!(f.cli_out(&["--status"]).contains("demonio: inactivo"));
+    assert!(f.cli_out(&["--stop"]).contains("no había demonio"));
+    older.join().unwrap();
 }

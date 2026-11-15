@@ -37,6 +37,7 @@ fn main() -> ExitCode {
                     instructions,
                     replace,
                 },
+            db,
             ..
         })) => {
             let env = match machine() {
@@ -74,6 +75,7 @@ fn main() -> ExitCode {
                     replace,
                     terminal,
                     curl: "curl".into(),
+                    data: db.parent().map(std::path::Path::to_path_buf),
                 },
             )
         }
@@ -184,31 +186,21 @@ fn mcp(db: &std::path::Path) -> Result<(), String> {
 /// that runs.
 fn daemon(db: &std::path::Path, status: bool, stop: bool) -> Result<Vec<String>, String> {
     use clio_memory::agent::memory::DB_FILE;
-    use clio_memory::daemon::{NO_DAEMON, request, serve};
+    use clio_memory::daemon::serve;
     if db.file_name().is_none_or(|n| n != DB_FILE) {
         return Err(format!(
             "daemon uses <folder>/{DB_FILE}: give --db a file called {DB_FILE}, or set CLIO_MEMORY_DATA"
         ));
     }
     let data = db.parent().unwrap_or(std::path::Path::new("."));
-    // Only "nobody is listening" means it is not running; any other failure is said as it is.
-    let ask = |op: &str| match request(data, None, &serde_json::json!({"op": op})) {
-        Ok(a) if a["ok"] == true => Ok(Some(a)),
-        Ok(a) => Err(format!(
-            "el demonio contestó: {}",
-            a["text"].as_str().unwrap_or_default()
-        )),
-        Err(e) if e.starts_with(NO_DAEMON) => Ok(None),
-        Err(e) => Err(e),
-    };
     if stop {
-        return Ok(vec![match ask("shutdown")? {
+        return Ok(vec![match daemon_answer(data, "shutdown")? {
             Some(_) => "demonio detenido".into(),
             None => "no había demonio".into(),
         }]);
     }
     if status {
-        return Ok(vec![match ask("status")? {
+        return Ok(vec![match daemon_answer(data, "status")? {
             Some(a) => format!(
                 "demonio: activo (pid {}, v{}, modelo {}, {} sesiones)",
                 a["pid"],
@@ -228,6 +220,34 @@ fn daemon(db: &std::path::Path, status: bool, stop: bool) -> Result<Vec<String>,
         .and_then(|s| s.parse().ok())
         .unwrap_or(600);
     serve(data, &home()?, std::time::Duration::from_secs(idle)).map(|()| vec![])
+}
+
+/// Asks the daemon of `data` without launching one. `None`: it is not running, or it is an older
+/// one that answered `stale` and is leaving. Any other failure is said as it is.
+fn daemon_answer(data: &std::path::Path, op: &str) -> Result<Option<serde_json::Value>, String> {
+    use clio_memory::daemon::{NO_DAEMON, request};
+    match request(data, None, &serde_json::json!({ "op": op })) {
+        Ok(a) if a["ok"] == true => Ok(Some(a)),
+        Ok(a) if a["error"] == "stale" => Ok(None),
+        Ok(a) => Err(format!(
+            "el demonio contestó: {}",
+            a["text"].as_str().unwrap_or_default()
+        )),
+        Err(e) if e.starts_with(NO_DAEMON) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Stops the daemon of `data` and waits (up to 2 s) for its socket to go. Whether there was one.
+fn stop_daemon(data: &std::path::Path) -> Result<bool, String> {
+    let was = daemon_answer(data, "shutdown")?.is_some();
+    let sock =
+        clio_memory::daemon::socket_path(data, std::env::var_os("CLIO_MEMORY_SOCK").as_deref())?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while sock.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    Ok(was)
 }
 
 fn done(r: Result<Vec<String>, String>) -> ExitCode {
@@ -353,6 +373,8 @@ fn uninstall(
         }
         gone
     };
+    // Best effort: a daemon that cannot be reached leaves by itself when its folder is gone.
+    let _ = stop_daemon(db.parent().unwrap_or(std::path::Path::new(".")));
     let steps = plan::uninstall_with(&env, agents, &gone);
     if steps.is_empty() {
         output::line("nada que quitar");
@@ -413,7 +435,7 @@ fn memory_files(db: &std::path::Path) -> Result<MemoryFiles, String> {
                 db.display()
             )
         })?;
-    // SQLite's `-wal` and `-shm`, the writer's lock and the sleep's lock.
+    // SQLite's `-wal` and `-shm`, the writer's lock and the sleep's lock, and the daemon's own.
     let files = ["", "-wal", "-shm", ".lock", ".sleep.lock"]
         .into_iter()
         .map(|suffix| {
@@ -421,6 +443,7 @@ fn memory_files(db: &std::path::Path) -> Result<MemoryFiles, String> {
             name.push(suffix);
             std::path::PathBuf::from(name)
         })
+        .chain(["daemon.sock", "daemon.lock", "daemon.log"].map(|f| data.join(f)))
         .collect();
     Ok(MemoryFiles {
         db: db.to_path_buf(),

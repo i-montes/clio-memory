@@ -59,13 +59,25 @@ fn private_dir(data: &Path) -> Result<PathBuf, String> {
 /// Written whole or not at all: a temporary file (0600) renamed over the old one.
 fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     use std::io::Write;
-    let tmp = path.with_extension("tmp");
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static WRITES: AtomicU64 = AtomicU64::new(0);
+    // One temporary file per write: two writers (the daemon, the CLI, the sleep) never rename each
+    // other's half-written file.
+    let n = WRITES.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("{}.{n}.tmp", std::process::id()));
     let fail = |e: std::io::Error| format!("{}: {e}", path.display());
     let _ = std::fs::remove_file(&tmp);
-    let mut f = crate::platform::create_private_file(&tmp).map_err(|e| e.to_string())?;
-    f.write_all(bytes).map_err(fail)?;
-    f.sync_all().map_err(fail)?;
-    std::fs::rename(&tmp, path).map_err(fail)
+    let written = crate::platform::create_private_file(&tmp)
+        .map_err(|e| e.to_string())
+        .and_then(|mut f| {
+            f.write_all(bytes).map_err(fail)?;
+            f.sync_all().map_err(fail)?;
+            std::fs::rename(&tmp, path).map_err(fail)
+        });
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
 }
 
 pub(crate) fn save(data: &Path, state: &SleepState) -> Result<(), String> {

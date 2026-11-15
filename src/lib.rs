@@ -39,6 +39,7 @@ mod transfer;
 mod vector;
 
 pub mod agent;
+pub mod daemon;
 pub mod mcp;
 pub mod setup;
 pub mod sleep;

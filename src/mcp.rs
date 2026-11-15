@@ -31,18 +31,8 @@ pub fn serve(
     cwd: &Path,
     home: &Path,
 ) -> Result<(), String> {
-    // Started in the person's home (or anywhere above it), there is no project: the person's.
-    let at_home = home.starts_with(cwd) && !home.as_os_str().is_empty();
-    let project = (!at_home)
-        .then(|| project::settle(data, cwd))
-        .flatten()
-        .map(|(name, _, note)| {
-            // To the client's log, where the person reads it.
-            if let Some(n) = note {
-                eprintln!("clio-memory mcp: {}", crate::agent::memory::clean_text(&n));
-            }
-            name
-        });
+    let env = std::env::var(project::PROJECT_ENV).ok();
+    let project = project_in(data, cwd, home, env.as_deref(), "mcp");
     let model = EmbedModel::of_home(home);
     let mut state = State {
         data: data.to_path_buf(),
@@ -101,6 +91,29 @@ pub fn serve(
         eprintln!("clio-memory mcp: vectores pendientes: {why}");
     }
     Ok(())
+}
+
+/// The project of a client started in `cwd`, `env` its `CLIO_PROJECT`: none when started in the
+/// person's home or anywhere above it (the person's). A note on it goes to stderr after `who`.
+pub(crate) fn project_in(
+    data: &Path,
+    cwd: &Path,
+    home: &Path,
+    env: Option<&str>,
+    who: &str,
+) -> Option<String> {
+    let at_home = home.starts_with(cwd) && !home.as_os_str().is_empty();
+    let (name, _, note) = (!at_home)
+        .then(|| project::settle_with(data, cwd, env))
+        .flatten()?;
+    // To the client's (or the daemon's) log, where the person reads it.
+    if let Some(n) = note {
+        eprintln!(
+            "clio-memory {who}: {}",
+            crate::agent::memory::clean_text(&n)
+        );
+    }
+    Some(name)
 }
 
 /// The actor of a client: `mcp:` and its name, lowercased, `[a-z0-9-]` only, at most 40

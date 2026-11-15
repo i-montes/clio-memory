@@ -8,7 +8,7 @@ Los comandos que lo hacen:
 - `clio-memory setup claude-code` conecta solo Claude Code, con el sueño nocturno.
 - `clio-memory uninstall` y `clio-memory doctor` conocen a los cinco agentes.
 
-Cómo se baja e instala el binario (`install.sh`) está en [releases.md](releases.md).
+Cómo se baja e instala el binario (`install.sh`) está en [releases.md](releases.md). `clio-memory update` corre el `install.sh` del último release (`https://github.com/i-montes/clio-memory/releases/latest/download/install.sh`), no el de `main`: es el instalador de la misma versión que el binario que baja. La línea de `curl … | sh` de abajo sigue apuntando a `main`.
 
 ## En una tabla
 

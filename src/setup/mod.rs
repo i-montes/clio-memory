@@ -31,9 +31,11 @@ pub const INSTRUCTIONS_LINE: &str =
     "- Mi memoria principal es clio-memory (MCP): úsala según la skill clio-memory.";
 /// The name Claude Code's flow knew it by.
 pub const CLAUDE_MD_LINE: &str = INSTRUCTIONS_LINE;
-/// The installer of the first install, which `update` runs again.
+/// The installer `update` runs again: the one published with the latest release. A release is
+/// immutable, so this is the installer of the same release as the binary it downloads, not
+/// whatever `main` holds at that moment.
 pub const INSTALLER_URL: &str =
-    "https://raw.githubusercontent.com/i-montes/clio-memory/main/install.sh";
+    "https://github.com/i-montes/clio-memory/releases/latest/download/install.sh";
 
 /// `update`: runs the installer at `url`, which brings the latest release (its sha256 checked,
 /// and its attestation when `gh` can) and hands over to `setup --yes`: what is connected stays,

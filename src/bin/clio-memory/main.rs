@@ -180,7 +180,7 @@ fn mcp(db: &std::path::Path) -> Result<(), String> {
     let home = std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_default();
-    let backend = if std::env::var_os("CLIO_MEMORY_NO_DAEMON").is_some_and(|v| v == "1") {
+    let backend = if no_daemon() {
         Backend::Local
     } else {
         Backend::Daemon(Launch {
@@ -229,7 +229,7 @@ fn daemon(db: &std::path::Path, status: bool, stop: bool) -> Result<Vec<String>,
                 a["sessions"],
                 older(&a)
             ),
-            None => "demonio: inactivo (se inicia solo con la primera llamada)".into(),
+            None => format!("demonio: {}", not_running()),
         }]);
     }
     let idle = std::env::var("CLIO_MEMORY_DAEMON_IDLE")
@@ -237,6 +237,20 @@ fn daemon(db: &std::path::Path, status: bool, stop: bool) -> Result<Vec<String>,
         .and_then(|s| s.parse().ok())
         .unwrap_or(600);
     serve(data, &home()?, std::time::Duration::from_secs(idle)).map(|()| vec![])
+}
+
+/// `CLIO_MEMORY_NO_DAEMON=1`: every `mcp` serves by itself.
+fn no_daemon() -> bool {
+    std::env::var_os("CLIO_MEMORY_NO_DAEMON").is_some_and(|v| v == "1")
+}
+
+/// What `status` says when no daemon answers.
+fn not_running() -> &'static str {
+    if no_daemon() {
+        "desactivado (CLIO_MEMORY_NO_DAEMON=1)"
+    } else {
+        "inactivo (se inicia solo con la primera llamada)"
+    }
 }
 
 /// What `status` adds about a daemon older than this binary.
@@ -270,18 +284,18 @@ fn daemon_reply(data: &std::path::Path, op: &str) -> Result<Option<serde_json::V
 }
 
 /// Stops the daemon of `data` and waits (up to 2 s) for its socket to go, if one answered.
-/// Whether there was one.
+/// Whether there was one (an older one answers `stale`, and leaves all the same).
 fn stop_daemon(data: &std::path::Path) -> Result<bool, String> {
-    let Some(answer) = daemon_reply(data, "shutdown")? else {
+    if daemon_reply(data, "shutdown")?.is_none() {
         return Ok(false);
-    };
+    }
     let sock =
         clio_memory::daemon::socket_path(data, std::env::var_os("CLIO_MEMORY_SOCK").as_deref())?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     while sock.exists() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
-    Ok(answer["ok"] == true)
+    Ok(true)
 }
 
 fn done(r: Result<Vec<String>, String>) -> ExitCode {

@@ -224,9 +224,13 @@ impl RemoteEmbedder {
     /// for the person: the host keeps its own model then.
     pub fn connect(data: &Path, launch: Launch) -> Result<Self, String> {
         let answer = request(data, Some(&launch), &json!({"op": "model"}))?;
-        if answer["error"] == "no-model" {
-            let why = answer["text"].as_str().unwrap_or_default();
-            return Err(format!("el demonio no tiene modelo de vectores: {why}"));
+        if answer["ok"] != true {
+            let why = answer["text"].as_str().unwrap_or("sin motivo");
+            return Err(if answer["error"] == "no-model" {
+                format!("el demonio no tiene modelo de vectores: {why}")
+            } else {
+                format!("el demonio no dijo su modelo: {why}")
+            });
         }
         let (Some(model), Some(dim)) = (answer["model"].as_str(), answer["dim"].as_u64()) else {
             return Err(format!("respuesta inesperada del demonio: {answer}"));
@@ -260,15 +264,13 @@ impl RemoteEmbedder {
         }
         let vectors: Vec<Vec<f32>> = answer["vectors"]
             .as_array()
-            .map(|all| {
-                all.iter()
-                    .map(|v| {
-                        let v = v.as_array()?;
-                        v.iter().map(|x| x.as_f64().map(|x| x as f32)).collect()
-                    })
-                    .collect::<Option<_>>()
+            .ok_or("la respuesta no trae vectores")?
+            .iter()
+            .map(|v| {
+                let v = v.as_array()?;
+                v.iter().map(|x| x.as_f64().map(|x| x as f32)).collect()
             })
-            .unwrap_or_default()
+            .collect::<Option<_>>()
             .ok_or("los vectores no son números")?;
         if vectors.len() != texts.len() {
             return Err(format!(
@@ -296,7 +298,15 @@ impl crate::Embedder for RemoteEmbedder {
         self.dim
     }
     fn embed(&self, texts: &[&str]) -> crate::Result<Vec<Vec<f32>>> {
-        self.ask_embed(texts)
-            .map_err(|why| crate::Error::Embedding(format!("demonio: {why}")))
+        match self.ask_embed(texts) {
+            // Too long for one request: in halves, until each fits (one text alone may not).
+            Err(why) if why.starts_with(TOO_LONG) && texts.len() > 1 => {
+                let (a, b) = texts.split_at(texts.len() / 2);
+                let mut vectors = self.embed(a)?;
+                vectors.extend(self.embed(b)?);
+                Ok(vectors)
+            }
+            done => done.map_err(|why| crate::Error::Embedding(format!("demonio: {why}"))),
+        }
     }
 }

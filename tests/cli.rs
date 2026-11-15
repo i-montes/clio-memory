@@ -1976,6 +1976,58 @@ fn setup_ends_by_stopping_an_older_daemon() {
     assert!(out(&o).contains("inactivo"), "{}", out(&o));
 }
 
+/// An older daemon at `sock`: it answers one request `stale` and leaves. If nobody asks within
+/// 10 s, the test fails instead of waiting.
+fn stale_daemon(sock: &Path) -> std::thread::JoinHandle<()> {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::os::unix::net::UnixListener::bind(sock).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let sock = sock.to_path_buf();
+    std::thread::spawn(move || {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let conn = loop {
+            match listener.accept() {
+                Ok((conn, _)) => break conn,
+                Err(_) if std::time::Instant::now() < until => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(e) => panic!("nobody asked the daemon: {e}"),
+            }
+        };
+        conn.set_nonblocking(false).unwrap();
+        BufReader::new(&conn).read_line(&mut String::new()).unwrap();
+        writeln!(&conn, r#"{{"ok":false,"error":"stale","text":"vieja"}}"#).unwrap();
+        std::fs::remove_file(&sock).unwrap();
+    })
+}
+
+// The upgrade itself: the daemon of the version before answers `stale` (and leaves), not `ok`.
+#[test]
+fn setup_tells_of_an_older_daemon_that_answers_stale() {
+    let m = machine();
+    let claude = fakes::fake_claude_mcp(&m.home.parent().unwrap().join("claude-bin"));
+    let older = stale_daemon(&m.data.join("daemon.sock"));
+    let o = setup_on(
+        &m,
+        Some(&claude),
+        &[
+            "setup",
+            "--yes",
+            "--agents",
+            "claude-code",
+            "--model",
+            "none",
+        ],
+    );
+    older.join().unwrap();
+    assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+    assert!(
+        out(&o).contains("demonio anterior detenido: el próximo uso lanza el de esta versión"),
+        "{}",
+        out(&o)
+    );
+}
+
 // The daemon keeps the models it found at start: after `setup model` (even one that failed part
 // way, which may have left a new model or runtime) the next use starts one that sees them.
 #[test]

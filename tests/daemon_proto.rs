@@ -575,14 +575,42 @@ fn a_backlog_is_embedded_in_the_background_and_holds_up_no_session() {
         eventually(|| vectors(t.path()) == 41 && ready_embed_jobs(t.path()) == 0),
         "the backlog was not embedded"
     );
-    // Its last step after closing the jobs is marking its end.
-    std::thread::sleep(Duration::from_millis(200));
-    clock.set(1_800_000_000 + 600);
-    assert_eq!(
-        d.idle_secs(),
-        50,
-        "the idle time counts from the background's end"
+    // Its last step after closing the jobs is marking its end, with the clock's time then: 550,
+    // or later if it is slow to get there. The clock moves on until it is seen ended; the idle
+    // time then counts from 550 at most, never from the last request (500).
+    let (mut now, mut idle) = (1_800_000_550, 0);
+    while idle == 0 && now < 1_800_000_550 + 1000 {
+        now += 1;
+        clock.set(now);
+        std::thread::sleep(Duration::from_millis(10));
+        idle = d.idle_secs();
+    }
+    assert!(
+        idle > 0 && idle <= now - 1_800_000_550,
+        "the idle time counts from the background's end: {idle} s at {now}"
     );
+}
+
+#[test]
+fn a_save_with_nothing_else_waiting_starts_no_background() {
+    let t = tempfile::tempdir().unwrap();
+    let d = daemon(t.path());
+    let save = call(
+        "a",
+        t.path(),
+        "memory_save",
+        json!({"text": "Qué: el único dato", "kind": "semantic"}),
+    );
+    let (saved, _) = ask(&d, t.path(), &save);
+    assert!(
+        saved["text"].as_str().unwrap().starts_with("saved"),
+        "{saved}"
+    );
+    assert_eq!(vectors(t.path()), 1);
+    // A background would close the save's queued job (taking the writer for that alone); it is
+    // left for the next one, or the daemon's exit.
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(ready_embed_jobs(t.path()), 1, "a background ran");
 }
 
 fn ready_embed_jobs(data: &Path) -> usize {

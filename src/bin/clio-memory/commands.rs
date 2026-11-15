@@ -362,7 +362,7 @@ fn doctor(cli: &Cli, machine: Option<&Env>) -> Result<ExitCode, String> {
                 a["bin"].as_str().unwrap_or_default(),
                 crate::older(a)
             ),
-            Ok(None) => "info demonio: inactivo (se inicia solo con la primera llamada)".into(),
+            Ok(None) => format!("info demonio: {}", crate::not_running()),
             Err(e) => format!("FAIL demonio: {}", clean(e)),
         });
         if let Some(note) = &shadow {

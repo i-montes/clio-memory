@@ -108,7 +108,7 @@ fn the_read_budget_refills_after_half_an_hour() {
     assert!(why.contains("refills in 30 minutes"), "{why}");
     clock.set(10_000 + 1799);
     let why = s.call("memory_context", &json!({})).unwrap_err();
-    assert!(why.contains("refills in 1 minutes"), "{why}");
+    assert!(why.ends_with("; it refills in 1 minute"), "{why}");
     clock.set(10_000 + 1800);
     assert!(s.call("memory_context", &json!({})).is_ok());
 }
@@ -137,7 +137,11 @@ fn the_change_budget_refills_too() {
         s.call("memory_pin", &json!({"id": 1})).unwrap();
     }
     let why = s.call("memory_pin", &json!({"id": 1})).unwrap_err();
-    assert!(why.contains("refills in"), "{why}");
+    assert_eq!(
+        why,
+        "this session made its memory changes (10); it refills in 30 minutes (the person can \
+         still make changes on the command line)"
+    );
     clock.set(10_000 + 1800);
     s.call("memory_pin", &json!({"id": 1})).unwrap();
 }
@@ -541,6 +545,8 @@ fn what_is_written_while_the_vectors_are_stored_is_embedded_without_the_writer()
             let hash = EmbedModel::from_embedder(Arc::new(HashEmbedder::new("hash", 16)));
             let w = Memory::open_write(&data, &hash, None, "agente").unwrap();
             ready.send(()).unwrap();
+            // Timing: the read part takes far less. If it ever took longer, it would find this
+            // memory itself and the test would pass without reaching the closing step.
             std::thread::sleep(std::time::Duration::from_millis(300));
             w.save(
                 &Draft::plain(

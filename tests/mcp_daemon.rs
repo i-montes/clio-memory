@@ -139,8 +139,14 @@ fn the_mcp_process_never_opens_the_database() {
         .filter_map(|e| std::fs::read_link(e.path()).ok())
         .map(|p| p.display().to_string())
         .collect();
+    // Mapped, too: the database's `-shm`, or ONNX Runtime loaded for a model of its own.
+    let maps = std::fs::read_to_string(format!("/proc/{}/maps", m.child.id())).unwrap();
     m.end();
     assert!(!open.iter().any(|p| p.contains("memory.db")), "{open:?}");
+    assert!(
+        !maps.contains("memory.db") && !maps.contains("onnxruntime"),
+        "{maps}"
+    );
     assert!(f.data.join("daemon.sock").exists());
 }
 

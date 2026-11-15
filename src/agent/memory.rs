@@ -1014,40 +1014,43 @@ impl Memory {
 /// are closed under the writer, never running the model there (what was written meanwhile is
 /// computed the same way first). How many vectors were stored; 0 with no model.
 pub fn embed_pending(data: &Path, model: &EmbedModel) -> Res<usize> {
-    embed(data, model, false)
+    embed(data, model, false).map(|(stored, _)| stored)
 }
 
 /// One batch of [`embed_pending`]: the newest memories (what a save just wrote) and no more. The
-/// daemon's save, which leaves the rest to its background.
-pub fn embed_newest(data: &Path, model: &EmbedModel) -> Res<usize> {
-    embed(data, model, true)
+/// daemon's save, which leaves the rest to its background. Whether more may wait (the batch was
+/// full). It never takes the writer to close the queued jobs: the background or the exit does.
+pub fn embed_newest(data: &Path, model: &EmbedModel) -> Res<bool> {
+    embed(data, model, true).map(|(_, more)| more)
 }
 
-fn embed(data: &Path, model: &EmbedModel, once: bool) -> Res<usize> {
+fn embed(data: &Path, model: &EmbedModel, once: bool) -> Res<(usize, bool)> {
     let Some(read) = Memory::open_read(data, model, None, "agente")? else {
-        return Ok(0);
+        return Ok((0, false));
     };
     if !read.embeddings {
-        return Ok(0);
+        return Ok((0, false));
     }
     let m = |e: Error| explain(&e);
+    let batch = if once { 32 } else { 64 };
     let mut stored = 0;
     loop {
-        let computed = read
-            .engine
-            .compute_vectors(if once { 32 } else { 64 })
-            .map_err(m)?;
-        if computed.examined() == 0 {
+        let computed = read.engine.compute_vectors(batch).map_err(m)?;
+        let examined = computed.examined();
+        if examined == 0 {
+            if once {
+                return Ok((stored, false));
+            }
             let w = Memory::open_write(data, model, None, "agente")?;
             if w.engine.close_embed_jobs().map_err(m)? {
-                return Ok(stored);
+                return Ok((stored, false));
             }
             continue;
         }
         let w = Memory::open_write(data, model, None, "agente")?;
         stored += w.engine.store_vectors(computed).map_err(m)?;
         if once {
-            return Ok(stored);
+            return Ok((stored, examined == batch));
         }
     }
 }

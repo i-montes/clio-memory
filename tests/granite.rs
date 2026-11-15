@@ -239,10 +239,16 @@ fn a_session_that_embedded_holds_no_telemetry_database() {
         (open(pid), environ)
     });
     let mcp_open = open(child.id().into());
+    let mcp_maps = std::fs::read_to_string(format!("/proc/{}/maps", child.id())).unwrap();
     drop(stdin);
     child.wait().unwrap();
     let _ = clio_memory::daemon::request(&data, None, &serde_json::json!({"op": "shutdown"}));
     assert!(!saved.contains("sin modelo de vectores"), "{saved}");
+    // The `mcp` process never loads ONNX Runtime nor maps the database: the daemon does that.
+    assert!(
+        !mcp_maps.contains("onnxruntime") && !mcp_maps.contains("memory.db"),
+        "{mcp_maps}"
+    );
     // The daemon served the save, so it is the one that loaded the model.
     assert_eq!(status.as_ref().unwrap()["loaded"], true, "{status:?}");
     assert!(

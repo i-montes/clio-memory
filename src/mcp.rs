@@ -228,8 +228,9 @@ impl State {
             let why = match request(&self.data, Some(launch), &body) {
                 Ok(a) if a.get("error").is_none() => {
                     // Back on the daemon: this process's model goes, once what it left waiting
-                    // has its vectors.
+                    // has its vectors (a model never loaded is not loaded just for that).
                     if let Some(s) = self.session.take()
+                        && s.model_loaded()
                         && let Err(why) = s.finish()
                     {
                         eprintln!("clio-memory mcp: vectores pendientes: {why}");
@@ -339,10 +340,9 @@ mod tests {
         let listener = UnixListener::bind(data.join("daemon.sock")).unwrap();
         // A refusal (the call falls back), then an answer: the retry's.
         let daemon = std::thread::spawn(move || {
-            for answer in [
-                json!({"ok": false, "error": "protocol", "text": "otro protocolo"}),
-                json!({"ok": true, "text": "del demonio"}),
-            ] {
+            let refused = json!({"ok": false, "error": "protocol", "text": "otro protocolo"});
+            let answered = json!({"ok": true, "text": "del demonio"});
+            for answer in [refused.clone(), answered.clone(), refused, answered] {
                 let (conn, _) = listener.accept().unwrap();
                 let mut line = String::new();
                 BufReader::new(&conn).read_line(&mut line).unwrap();
@@ -390,7 +390,6 @@ mod tests {
         let back = state.call("memory_context", &json!({}));
         assert_eq!(back, Ok("del demonio".into()));
         assert!(state.session.is_none(), "the local session was kept");
-        daemon.join().unwrap();
         let m = crate::agent::Memory::open_read(&data, &none, None, "agente")
             .unwrap()
             .unwrap();
@@ -399,6 +398,22 @@ mod tests {
             1,
             "its vector was not computed"
         );
+        // Again, now with a local session that never loaded its model: it is not loaded just to
+        // be let go.
+        assert!(state.call("memory_context", &json!({})).is_ok());
+        let unloaded = EmbedModel::with_dirs(vec![data.join("modelo")]);
+        state.session = Some(
+            Session::new(data.clone(), None, "mcp:prueba".into()).with_model(unloaded.clone()),
+        );
+        if let Some((_, at)) = &mut state.retry {
+            *at = Instant::now();
+        }
+        assert_eq!(
+            state.call("memory_context", &json!({})),
+            Ok("del demonio".into())
+        );
+        assert!(!unloaded.is_loaded(), "the model was loaded to be let go");
+        daemon.join().unwrap();
     }
 
     struct Ones;

@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use clio_memory::Embedder;
 use clio_memory::daemon::proto::MAX_LINE;
-use clio_memory::daemon::{Launch, NO_DAEMON, RemoteEmbedder, request, socket_path};
+use clio_memory::daemon::{Launch, NO_DAEMON, RemoteEmbedder, TOO_LONG, request, socket_path};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -258,23 +258,41 @@ fn status_and_stop_say_a_bad_socket_path_as_an_error() {
 
 #[test]
 fn a_daemon_that_answers_stale_is_one_that_is_leaving() {
-    use std::io::{BufRead, BufReader};
-    use std::os::unix::net::UnixListener;
     let f = folder("30");
-    std::fs::create_dir(&f.data).unwrap();
     // An older daemon answers every request of a newer binary with `stale`, then goes.
-    let listener = UnixListener::bind(f.data.join("daemon.sock")).unwrap();
-    let older = std::thread::spawn(move || {
-        for _ in 0..2 {
-            let (conn, _) = listener.accept().unwrap();
-            let mut line = String::new();
-            BufReader::new(&conn).read_line(&mut line).unwrap();
-            writeln!(&conn, r#"{{"ok":false,"error":"stale","text":"vieja"}}"#).unwrap();
-        }
-    });
+    let stale = json!({"ok": false, "error": "stale", "text": "vieja"});
+    let older = fake_daemon(&f, vec![stale.clone(), stale]);
     assert!(f.cli_out(&["--status"]).contains("demonio: inactivo"));
     assert!(f.cli_out(&["--stop"]).contains("no había demonio"));
     older.join().unwrap();
+}
+
+#[test]
+fn with_the_daemon_turned_off_status_and_doctor_say_so() {
+    let f = folder("30");
+    let out = f
+        .cli(&["--status"])
+        .env("CLIO_MEMORY_NO_DAEMON", "1")
+        .output()
+        .unwrap();
+    let said = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        said.contains("demonio: desactivado (CLIO_MEMORY_NO_DAEMON=1)"),
+        "{said}"
+    );
+    let out = Command::new(EXE)
+        .arg("--db")
+        .arg(f.data.join("memory.db"))
+        .arg("doctor")
+        .env("HOME", &f.home)
+        .env("CLIO_MEMORY_NO_DAEMON", "1")
+        .output()
+        .unwrap();
+    let said = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        said.contains("info demonio: desactivado (CLIO_MEMORY_NO_DAEMON=1)"),
+        "{said}"
+    );
 }
 
 #[test]
@@ -287,16 +305,41 @@ fn a_host_without_a_model_in_the_daemon_is_told() {
 
 /// A daemon that answers each request with the next of `answers`, then goes.
 fn fake_daemon(f: &Folder, answers: Vec<Value>) -> std::thread::JoinHandle<()> {
-    use std::io::{BufRead, BufReader};
+    let n = answers.len();
+    let answers = std::sync::Mutex::new(answers.into_iter());
+    fake_daemon_with(f, n, move |_| answers.lock().unwrap().next().unwrap())
+}
+
+/// A daemon that answers `n` requests with `answer(request)`, then goes. Fewer requests in 10 s
+/// fail the test instead of leaving it waiting.
+fn fake_daemon_with(
+    f: &Folder,
+    n: usize,
+    answer: impl Fn(&Value) -> Value + Send + 'static,
+) -> std::thread::JoinHandle<()> {
+    use std::io::{BufRead, BufReader, ErrorKind};
     use std::os::unix::net::UnixListener;
     std::fs::create_dir(&f.data).unwrap();
     let listener = UnixListener::bind(f.data.join("daemon.sock")).unwrap();
+    listener.set_nonblocking(true).unwrap();
     std::thread::spawn(move || {
-        for answer in answers {
-            let (conn, _) = listener.accept().unwrap();
+        let until = Instant::now() + Duration::from_secs(10);
+        for i in 0..n {
+            let conn = loop {
+                match listener.accept() {
+                    Ok((conn, _)) => break conn,
+                    Err(e) if e.kind() == ErrorKind::WouldBlock && Instant::now() < until => {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(e) => panic!("request {} of {n} never came: {e}", i + 1),
+                }
+            };
+            // macOS hands the listener's non-blocking mode to the connection.
+            conn.set_nonblocking(false).unwrap();
             let mut line = String::new();
             BufReader::new(&conn).read_line(&mut line).unwrap();
-            writeln!(&conn, "{answer}").unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            writeln!(&conn, "{}", answer(&request)).unwrap();
         }
     })
 }
@@ -329,7 +372,11 @@ fn a_host_gets_the_daemons_vectors_and_only_if_they_are_right() {
         ),
         (
             json!({"ok": true, "model": "m", "dim": 2}),
-            Some("vectores"),
+            Some("demonio: la respuesta no trae vectores"),
+        ),
+        (
+            vectors("m", 2, json!([[1.0, "x"], [0.0, 1.0]])),
+            Some("demonio: los vectores no son números"),
         ),
     ];
     for (answer, wrong) in cases {
@@ -347,6 +394,51 @@ fn a_host_gets_the_daemons_vectors_and_only_if_they_are_right() {
         }
         daemon.join().unwrap();
     }
+}
+
+#[test]
+fn a_host_is_told_the_daemons_reason_when_it_refuses() {
+    let f = folder("30");
+    let why = "el demonio falló al atender la petición (mira daemon.log)";
+    let daemon = fake_daemon(
+        &f,
+        vec![json!({"ok": false, "error": "internal", "text": why})],
+    );
+    let err = RemoteEmbedder::connect(&f.data, f.launch.clone()).err();
+    daemon.join().unwrap();
+    assert_eq!(
+        err.as_deref(),
+        Some(format!("el demonio no dijo su modelo: {why}").as_str())
+    );
+}
+
+#[test]
+fn a_host_batch_too_long_for_one_request_is_sent_in_parts() {
+    let f = folder("30");
+    let model = json!({"ok": true, "model": "m", "dim": 2});
+    // Each vector is its text's length: the order is seen.
+    let daemon = fake_daemon_with(&f, 3, move |req| {
+        let Some(texts) = req["texts"].as_array() else {
+            return model.clone();
+        };
+        let vectors: Vec<Value> = texts
+            .iter()
+            .map(|t| json!([t.as_str().unwrap().len(), 0]))
+            .collect();
+        json!({"ok": true, "model": "m", "dim": 2, "vectors": vectors})
+    });
+    let remote = RemoteEmbedder::connect(&f.data, f.launch.clone()).unwrap();
+    // Two fit in one request, three do not.
+    let texts: Vec<String> = (0..3).map(|i| "a".repeat(MAX_LINE * 2 / 5 + i)).collect();
+    let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+    let got = remote.embed(&refs);
+    daemon.join().unwrap();
+    let want: Vec<Vec<f32>> = texts.iter().map(|t| vec![t.len() as f32, 0.0]).collect();
+    assert_eq!(got.unwrap(), want);
+    // One text that does not fit by itself is said, and nothing is sent.
+    let one = "a".repeat(MAX_LINE);
+    let err = remote.embed(&[&one]).unwrap_err().to_string();
+    assert!(err.contains(TOO_LONG), "{err}");
 }
 
 #[test]

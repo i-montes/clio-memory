@@ -8,11 +8,11 @@
 //! What comes back is text somebody wrote, maybe long ago, maybe hostile: it is cleaned, kept to
 //! one line per memory (a memory cannot forge another's line), cut after cleaning and wrapped as
 //! data. A session (one agent's conversation) has caps per 30-minute window: 20 reads and 24 KiB of
-//! returned text, 30 saves, 10 changes; they refill when the window ends. A call that is malformed (an argument of the wrong kind, a text or title too long once
-//! clean) is refused before it is counted: it tells nothing. Then it is counted, refused calls
-//! included, and a text or title that looks like a secret is not saved: what the secret check says
-//! must cost a try. The writer is taken for one call and let go, so Clio and
-//! other clients can write between calls.
+//! returned text, 30 saves, 10 changes; they refill when the window ends. A call that is malformed
+//! (an argument of the wrong kind, a text or title too long once clean) is refused before it is
+//! counted: it tells nothing. Then it is counted, refused calls included, and a text or title that
+//! looks like a secret is not saved: what the secret check says must cost a try. The writer is
+//! taken for one call and let go, so Clio and other clients can write between calls.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -341,9 +341,17 @@ impl Session {
         embed_pending(&self.data, &self.model)
     }
 
+    /// Whether its model was loaded (or tried to): then `finish` loads nothing.
+    pub fn model_loaded(&self) -> bool {
+        self.model.is_loaded()
+    }
+
     fn refill(&self) -> String {
         let left = self.window + WINDOW_SECS - self.clock.now();
-        format!("it refills in {} minutes", (left + 59) / 60)
+        match (left + 59) / 60 {
+            1 => "it refills in 1 minute".into(),
+            n => format!("it refills in {n} minutes"),
+        }
     }
 
     fn spend_save(&mut self) -> Result<(), String> {
@@ -360,7 +368,7 @@ impl Session {
     fn spend_change(&mut self) -> Result<(), String> {
         if self.changes >= MAX_CHANGES {
             return Err(format!(
-                "this session made its memory changes ({MAX_CHANGES}); the person can use the command line; {}",
+                "this session made its memory changes ({MAX_CHANGES}); {} (the person can still make changes on the command line)",
                 self.refill()
             ));
         }
@@ -581,11 +589,14 @@ impl Session {
         }
         let done = match &self.backlog {
             Some(rest) => {
-                let done = embed_newest(&self.data, &self.model);
-                rest();
-                done
+                let more = embed_newest(&self.data, &self.model);
+                // Nothing else waits: no thread takes the writer just to close this save's job.
+                if !matches!(more, Ok(false)) {
+                    rest();
+                }
+                more.map(|_| ())
             }
-            None => embed_pending(&self.data, &self.model),
+            None => embed_pending(&self.data, &self.model).map(|_| ()),
         };
         if let Err(why) = done {
             eprintln!("clio-memory: vectores pendientes: {why}");

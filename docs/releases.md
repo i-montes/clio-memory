@@ -17,6 +17,12 @@ La etiqueta, sin la `v`, debe ser igual a `version` en `Cargo.toml`. Si no lo es
 
 ## Notas de versiones
 
+### v0.10.0
+
+- **Un solo proceso con el modelo.** `clio-memory mcp` ya no carga modelo ni base de datos: pasa cada llamada al **demonio**, un proceso por carpeta de datos que lanza el primer cliente y que se va a los 10 minutos sin uso. Con 5 sesiones, la memoria de los procesos baja de 2.480 MB a unos 560 MB (36 MB los `mcp` y unos 520 MB el demonio) y ya no hay guardados rechazados por el candado de escritor. Ver [bench/sessions/results.md](../bench/sessions/results.md).
+- `clio-memory daemon --status|--stop`, `CLIO_MEMORY_NO_DAEMON=1`, `CLIO_MEMORY_SOCK` y `CLIO_MEMORY_DAEMON_IDLE`. `setup` detiene el demonio de una versión anterior; `doctor` lo menciona.
+- Después de fusionar y etiquetar: correr `clio-memory update` y **reiniciar las sesiones de agente abiertas** (las viejas siguen con su proceso de v0.9.x hasta cerrarse).
+
 ### v0.9.1
 
 - **Sin telemetría.** ONNX Runtime nunca arranca con su telemetría encendida: el proceso se relanza con `ORT_DISABLE_TELEMETRY` puesta.

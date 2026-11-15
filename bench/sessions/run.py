@@ -5,7 +5,7 @@ what several sessions at once cost in memory and time. See results.md.
 usage:
   run.py conc N [K]   N sessions at once, K searches each (default 15)
   run.py cold N       N sessions that never used the model save at the same moment
-  run.py idle         one session: memory before, after a search, and for 110 s without use
+  run.py idle         one session: memory before, after a search, 110 s without use, then until the daemon leaves
 
 CLIO_BENCH_BIN picks the binary (default: ~/.local/bin/clio-memory). The model is the one
 installed in ~/.cache/clio-models; the memories and questions are those of bench/recall.
@@ -18,7 +18,7 @@ import tempfile
 import threading
 import time
 
-BIN = os.environ.get("CLIO_BENCH_BIN") or os.path.expanduser("~/.local/bin/clio-memory")
+BIN = os.path.abspath(os.environ.get("CLIO_BENCH_BIN") or os.path.expanduser("~/.local/bin/clio-memory"))
 RECALL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "recall")
 
 
@@ -34,7 +34,7 @@ def status(pid):
 
 def daemons(data):
     """The pids of the daemons serving `data` (none before v0.10)."""
-    out = subprocess.run(["pgrep", "-f", f"--db {data}/memory.db daemon"], capture_output=True, text=True).stdout
+    out = subprocess.run(["pgrep", "-f", "--", f"--db {data}/memory.db daemon"], capture_output=True, text=True).stdout
     return [int(p) for p in out.split()]
 
 
@@ -92,7 +92,10 @@ def memory_line(data, sessions):
     per = [status(s.p.pid) for s in sessions]
     line = f"mcp processes: {sum(p['VmRSS'] for p in per) // 1024} MB in all (high-water {max(p['VmHWM'] for p in per) // 1024} MB each)"
     for pid in daemons(data):
-        d = status(pid)
+        try:
+            d = status(pid)
+        except OSError:  # it left between pgrep and the read
+            continue
         line += f" · daemon {pid}: {d['VmRSS'] // 1024} MB (high-water {d['VmHWM'] // 1024} MB)"
     return line
 
@@ -169,6 +172,16 @@ def idle():
     ms, _, _ = m.call("memory_search", {"query": "¿quién es la persona?"})
     show(f"search after {ms:5.0f} ms")
     m.close()
+    # v0.10: the daemon leaves by itself after 600 s without requests; watch it go (12 min at most)
+    t0 = time.time()
+    while daemons(data) and time.time() - t0 < 720:
+        time.sleep(15)
+        for pid in daemons(data):
+            try:
+                print(f"session closed +{time.time() - t0:3.0f} s: daemon {pid}: {status(pid)['VmRSS'] // 1024} MB", flush=True)
+            except OSError:  # it left between pgrep and the read
+                pass
+    print(f"daemons left after {time.time() - t0:.0f} s without sessions: {len(daemons(data))}")
 
 
 if __name__ == "__main__":

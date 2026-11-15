@@ -119,7 +119,7 @@ Granite tiene su propio umbral de relevancia (0,83 de coseno el cuantizado, 0,84
 
 Corre en el procesador, nunca en la GPU: una búsqueda convierte un texto corto en vector en unos 26 ms, y en la GPU cada sesión de cada agente guardaba su propia copia del modelo. No hay que instalar nada más: `setup model` baja también ONNX Runtime para el procesador, fijado por sha256, en `~/.cache/clio-models/onnxruntime/`, y quita lo que dejaron las versiones anteriores (el modelo completo y las bibliotecas de CUDA, unos 3,4 GB).
 
-El modelo no se lee al abrir la memoria, sino cuando hay un texto que convertir en vector (una búsqueda o un recuerdo nuevo): leer el contexto o un recuerdo no lo carga. Cargado ocupa unos 500 MB de memoria, tarda unos 2 s en leerse y se suelta tras un minuto sin uso; parte de esa memoria (unos 300 MB) solo vuelve al sistema cuando termina la sesión del agente.
+El modelo no se lee al abrir la memoria, sino cuando hay un texto que convertir en vector (una búsqueda o un recuerdo nuevo): leer el contexto o un recuerdo no lo carga. Cargado ocupa unos 500 MB de memoria y tarda unos 2 s en leerse; lo carga el [demonio](#un-solo-proceso-el-demonio), una sola vez para todos los agentes, y el demonio lo conserva hasta que sale a los 10 minutos sin uso (ahí se devuelve toda la memoria). La línea de comandos, el `mcp` sin demonio y los programas anfitriones lo sueltan tras un minuto sin uso.
 
 `setup model potion` (o `--model potion` en `setup`) instala el modelo estático anterior (`potion-multilingual-128M`, 531 MB, liviano y sin ONNX Runtime). Se usa el mejor que esté instalado: Granite, si no potion, si no texto. Cada vector se guarda con el nombre de su modelo, así que al cambiar de modelo la cola calcula los que faltan y nunca se comparan vectores de dos modelos.
 
@@ -148,6 +148,18 @@ Un programa anfitrión que use la biblioteca puede tomar los vectores del demoni
   - Los cercanos se calculan al leer, por significado; sin vectores, por texto. No se guardan, así que ningún recuerdo queda suelto y nada se desactualiza.
 - **Aviso al guardar.** Si lo guardado es casi igual a un recuerdo que ya existe (similitud ≥ 0,87 con Granite), la respuesta lo dice con su número, para corregir en vez de duplicar o dejar una contradicción. Solo el número: esa respuesta no va marcada como datos, así que no lleva texto de otro recuerdo.
 - **Relaciones.** Las relaciones con tipo («contradice», «caso concreto»…) las pone un juez, como Jev en Clio. Pasan al recuerdo nuevo cuando uno se corrige o se une con otro; «contradice» no pasa, porque corregir suele resolverla.
+
+## Un solo proceso: el demonio
+
+Con varias sesiones de agente abiertas, cada una con su `clio-memory mcp`, cada proceso cargaba su propia copia del modelo (unos 500 MB). Ahora hay **un demonio por carpeta de datos** y el proceso `mcp` de cada agente solo le pasa las llamadas: no guarda ni modelo ni base de datos (unos 7 MB). Los agentes que atiende comparten el modelo cargado y un solo escritor de la memoria (la línea de comandos y Clio escriben por su cuenta, y el candado de escritor los ordena).
+
+- **Lo lanza el primer cliente** que lo necesita y no hay que arrancarlo a mano. **Se va solo a los 10 minutos sin uso**; `CLIO_MEMORY_DAEMON_IDLE=<segundos>` cambia ese plazo.
+- **`clio-memory daemon --status`** dice si corre y **`clio-memory daemon --stop`** lo detiene (el próximo uso lanza otro).
+- **El socket** es `<carpeta de datos>/daemon.sock`; `CLIO_MEMORY_SOCK=/ruta/absoluta` lo cambia (hace falta si la ruta pasa de 100 bytes). El registro, `daemon.log`, y el candado, `daemon.lock`, están en la misma carpeta.
+- **`CLIO_MEMORY_NO_DAEMON=1`** lo desactiva: cada proceso `mcp` atiende por su cuenta, como antes. Si el demonio no puede arrancar, el proceso `mcp` también atiende solo.
+- **Tras actualizar, reinicia las sesiones de agente abiertas.** Las que ya estaban abiertas siguen con su proceso de v0.9.x hasta que se cierran; las nuevas usan el demonio.
+
+Medido con 5 sesiones a la vez y el modelo real: los cinco procesos `mcp` suman 36 MB y el demonio ocupa unos 520 MB, frente a los 2.480 MB de antes. Las cifras completas están en [bench/sessions/results.md](bench/sessions/results.md).
 
 ## El archivo compartido
 

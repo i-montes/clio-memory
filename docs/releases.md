@@ -15,6 +15,19 @@ Publicar una versión es empujar una etiqueta. No hay PR de sumas que fusionar, 
 
 La etiqueta, sin la `v`, debe ser igual a `version` en `Cargo.toml`. Si no lo es, el workflow falla antes de compilar nada.
 
+## Notas de versiones
+
+### v0.9.1
+
+- **Sin telemetría.** ONNX Runtime nunca arranca con su telemetría encendida: el proceso se relanza con `ORT_DISABLE_TELEMETRY` puesta.
+- **Ids purgados.** Un id purgado no se reutiliza nunca, y la importación acepta un id que renació después de la purga.
+- **La purga borra el título y la categoría**, no solo el texto. El sueño y la importación limpian lo purgado antes, y `doctor` lo comprueba (`purged_scrubbed`).
+- **`update`** usa el `install.sh` del último release, no el de `main`.
+- **`recall`** encuentra una palabra que solo está en el título, y calcula el vector de la consulta una sola vez para todos los lugares.
+- **El sueño corre cuando la memoria está inactiva**, a cualquier hora (el timer despierta cada 30 minutos). Las lecturas cuentan como uso, la fusión se repite cada 20 horas y `doctor` da `FAIL` si lleva demasiado sin hacerse.
+
+Después de fusionar y etiquetar: correr `clio-memory update`, reiniciar las sesiones de agente abiertas y, en Clio, correr `clio memory setup sleep` para que el timer tome el horario nuevo.
+
 ## Qué hace cada trabajo
 
 El workflow corre al empujar una etiqueta `v*`. Cada trabajo espera al anterior, así que si uno falla, los siguientes no corren.

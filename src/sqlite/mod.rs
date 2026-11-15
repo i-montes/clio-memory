@@ -1144,6 +1144,8 @@ fn scrub(row: &mut MemoryRow) {
     row.session = None;
     row.episode = None;
     row.source = None;
+    row.title = None;
+    row.category = None;
 }
 
 /// One memory's purge, in its own transaction (see `Store::purge`); the caller rewrites the file.
@@ -1221,6 +1223,55 @@ fn redact_operations(tx: &Connection, memory: MemoryId) -> Result<()> {
         )?;
     }
     Ok(())
+}
+
+/// Scrubs, in every purge of the log, the snapshots of its memory that older purges left dirty
+/// (the title and the category were not erased before v0.9.1). Only operations before the purge:
+/// a later one may belong to a memory born again under the same id. With `write` false it only
+/// counts. Returns how many snapshots (a change's `before` or `after`) were dirty.
+fn rescrub_in(tx: &Connection, write: bool) -> Result<usize> {
+    let purges = tx
+        .prepare("SELECT id, memory FROM operations WHERE kind = 'Purge' AND memory IS NOT NULL")?
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut dirty = 0;
+    for (purge, memory) in purges {
+        let found = tx
+            .prepare(
+                "SELECT o.id, o.changes FROM operation_memories m JOIN operations o ON o.id = m.op
+                 WHERE m.memory = ?1 AND o.id < ?2",
+            )?
+            .query_map([memory, purge], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        for (id, text) in found {
+            let mut changes: Vec<Change> = serde_json::from_str(&text)?;
+            let mut here = 0;
+            for c in changes.iter_mut().filter(|c| c.memory.0 == memory) {
+                let mut clean = |row: &mut MemoryRow| {
+                    let mut scrubbed = row.clone();
+                    scrub(&mut scrubbed);
+                    if scrubbed != *row {
+                        *row = scrubbed;
+                        here += 1;
+                    }
+                };
+                clean(&mut c.after);
+                if let Some(b) = c.before.as_mut() {
+                    clean(b);
+                }
+            }
+            if write && here > 0 {
+                tx.execute(
+                    "UPDATE operations SET changes = ?1 WHERE id = ?2",
+                    params![serde_json::to_string(&changes)?, id],
+                )?;
+            }
+            dirty += here;
+        }
+    }
+    Ok(dirty)
 }
 
 fn spend_wrong_in(conn: &Connection, memory: MemoryId) -> Result<()> {
@@ -1751,6 +1802,25 @@ impl Store for SqliteStore {
         }
     }
 
+    fn unscrubbed_purged(&self) -> Result<usize> {
+        rescrub_in(&self.reader()?, false)
+    }
+
+    fn rescrub_purged(&self) -> Result<usize> {
+        let mut conn = self.writer()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let cleaned = rescrub_in(&tx, true)?;
+        tx.commit()?;
+        if cleaned > 0 {
+            // like a purge: the old versions of the rows are still in freed pages and the log
+            conn.execute_batch("VACUUM")?;
+            conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+                r.get::<_, i64>(0)
+            })?;
+        }
+        Ok(cleaned)
+    }
+
     fn is_pinned(&self, memory: MemoryId) -> Result<bool> {
         Ok(self.reader()?.query_row(
             "SELECT EXISTS(SELECT 1 FROM pins WHERE memory = ?1)",
@@ -2052,6 +2122,18 @@ impl Store for SqliteStore {
         let count = |sql: &str| -> Result<i64> { Ok(conn.query_row(sql, [], |r| r.get(0))?) };
         let orphan_vectors =
             count("SELECT COUNT(*) FROM vectors WHERE memory NOT IN (SELECT id FROM memories)")?;
+        let dirty = rescrub_in(&conn, false)?;
+        check(
+            "purged_scrubbed",
+            dirty == 0,
+            if dirty == 0 {
+                "no purged memory carries a title or a category".into()
+            } else {
+                format!(
+                    "{dirty} purged memories still carry a title or a category (the next sleep cleans them)"
+                )
+            },
+        );
         check(
             "no_orphan_vectors",
             orphan_vectors == 0,
@@ -2174,10 +2256,18 @@ impl Store for SqliteStore {
             Error::Sqlite(e) => Error::BadImport(format!("the file is inconsistent: {e}")),
             other => other,
         })?;
+        // an export from before v0.9.1 can carry the title of a purged memory: clean, not reject
+        let cleaned = rescrub_in(&tx, true)?;
         if let Some(job) = &embed_job {
             insert_job(&tx, job)?;
         }
         tx.commit()?;
+        if cleaned > 0 {
+            conn.execute_batch("VACUUM")?;
+            conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+                r.get::<_, i64>(0)
+            })?;
+        }
         Ok(summary)
     }
 

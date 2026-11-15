@@ -1783,6 +1783,23 @@ impl Engine {
         Ok(PurgeOutcome { op, wal_truncated })
     }
 
+    /// How many snapshots of purged memories still carry a title or a category (purges before
+    /// v0.9.1 left them). Reads only.
+    pub fn unscrubbed_purged(&self) -> Result<usize> {
+        self.store.unscrubbed_purged()
+    }
+
+    /// The sleep erases the title and the category that older purges left in the log. It adds no
+    /// operation: it rewrites snapshots, as `purge` does. How many snapshots were cleaned.
+    pub fn sleep_rescrub_purged(&self) -> Result<usize> {
+        let _g = self.write_guard();
+        let cleaned = self.store.rescrub_purged()?;
+        if cleaned > 0 {
+            event!(INFO, "rescrubbed", count = cleaned);
+        }
+        Ok(cleaned)
+    }
+
     /// The internal actor that signs background operations and the sleep's.
     pub fn system_actor(&self) -> Result<ActorId> {
         self.store.system_actor()

@@ -770,3 +770,57 @@ fn a_manual_run_does_not_take_the_night() {
     ));
     assert!(matches!(n.sleep(NOW, None, false), Slept::Done(_)));
 }
+
+#[test]
+fn a_night_scrubs_what_older_purges_left() {
+    let n = night();
+    let gone = {
+        let e = open(&n.data, NOW - 40 * DAY);
+        let id = e
+            .propose(Proposal {
+                title: Some("Viejo título".into()),
+                ..prop(n.scope, n.person, "un dato que se purgará")
+            })
+            .unwrap()
+            .memory;
+        e.purge(id, n.person, "prueba").unwrap();
+        id
+    };
+    // the file as v0.9.0 left it: the title back in the snapshot of the memory's `Add`
+    let conn = rusqlite::Connection::open(db(&n.data)).unwrap();
+    let (op, kind): (i64, String) = conn
+        .query_row(
+            "SELECT o.id, o.kind FROM operation_memories m JOIN operations o ON o.id = m.op
+             WHERE m.memory = ?1 ORDER BY o.id LIMIT 1",
+            [gone.0],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(kind, "Add");
+    conn.execute(
+        "UPDATE operations SET changes = json_set(changes, '$[0].after.title', 'Viejo título') WHERE id = ?1",
+        [op],
+    )
+    .unwrap();
+    drop(conn);
+
+    // a dry run changes nothing
+    let dry = run(
+        &n.data,
+        &n.model,
+        None,
+        &Options {
+            now: true,
+            dry_run: true,
+            clock: Arc::new(FixedClock::new(NOW)),
+        },
+    )
+    .unwrap();
+    assert!(matches!(dry, Slept::Done(_)));
+    assert!(dump_all(&db(&n.data)).contains("Viejo título"));
+
+    let r = n.report(NOW, None);
+    assert!(r.alarms.is_empty(), "{:?}", r.alarms);
+    assert!(!dump_all(&db(&n.data)).contains("Viejo título"));
+    assert_eq!(open(&n.data, NOW).unscrubbed_purged().unwrap(), 0);
+}

@@ -312,6 +312,7 @@ impl Night<'_> {
                 }
             };
         self.vectors()?;
+        self.rescrub()?;
 
         let mut fresh: BTreeSet<MemoryId> = changed
             .iter()
@@ -418,6 +419,19 @@ impl Night<'_> {
                 self.report.alarm(format!("los vectores fallaron: {e}"));
                 break;
             }
+        }
+        Ok(())
+    }
+
+    /// Purges before v0.9.1 left the title and the category in the log: clean them once. A failure
+    /// is an alarm and the night goes on.
+    fn rescrub(&mut self) -> Result<(), Stop> {
+        if self.dry_run || self.read.unscrubbed_purged()? == 0 {
+            return Ok(());
+        }
+        if let Err(e) = self.writer()?.sleep_rescrub_purged() {
+            self.report
+                .alarm(format!("la limpieza de purgados falló: {e}"));
         }
         Ok(())
     }

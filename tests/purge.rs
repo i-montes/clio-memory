@@ -622,3 +622,23 @@ fn a_purged_id_is_never_given_to_a_new_memory() {
         .memory;
     assert_eq!(three.0, 3);
 }
+
+#[test]
+fn purge_erases_the_title_and_the_category_from_every_snapshot() {
+    let f = fixture();
+    let id = f
+        .engine
+        .propose(Proposal {
+            title: Some("Clave del banco".into()),
+            category: Some(Category::Config),
+            ..prop(f.scope, f.person, "el contenido")
+        })
+        .unwrap()
+        .memory;
+    f.engine.purge(id, f.person, "prueba").unwrap();
+    let dump = common::dump_all(&f.path);
+    assert!(!dump.contains("Clave del banco"), "{dump}");
+    // a snapshot with no category has no `category` key at all
+    assert!(!dump.contains("\"category\""), "{dump}");
+    assert_eq!(f.engine.unscrubbed_purged().unwrap(), 0);
+}

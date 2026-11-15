@@ -1437,3 +1437,26 @@ fn a_restored_operation_names_memories_in_range() {
     assert_ne!(text, REUSED);
     assert!(bad_import(engine.import(&mut text.as_bytes())).contains("out of range"));
 }
+
+#[test]
+fn an_import_scrubs_what_an_older_purge_left() {
+    let t = tempfile::tempdir().unwrap();
+    let path = t.path().join("m.db");
+    let engine = Engine::open(&path, OpenMode::ReadWrite, Arc::new(SystemClock)).unwrap();
+    assert!(
+        REUSED.contains("Título de dos"),
+        "the fixture carries the purged title"
+    );
+    engine.import(&mut REUSED.as_bytes()).unwrap();
+    assert!(!common::dump_all(&path).contains("Título de dos"));
+    assert_eq!(engine.unscrubbed_purged().unwrap(), 0);
+    // what came after the purge belongs to the memory born again under that id
+    assert_eq!(engine.get(MemoryId(2)).unwrap().content, "tres");
+    assert!(
+        engine
+            .history(MemoryId(2))
+            .unwrap()
+            .iter()
+            .any(|op| op.changes.iter().any(|c| c.after.content == "tres"))
+    );
+}

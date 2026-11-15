@@ -200,6 +200,50 @@ fn doctor_exits_0_when_healthy_and_1_when_a_check_fails() {
 }
 
 #[test]
+fn doctor_fails_while_a_purged_memory_keeps_its_title() {
+    let f = fixture();
+    let id = f
+        .engine
+        .propose(Proposal {
+            title: Some("Viejo título".into()),
+            ..prop(f.scope, f.person, "un dato que se purgará")
+        })
+        .unwrap()
+        .memory;
+    f.engine.purge(id, f.person, "prueba").unwrap();
+    let o = run(Some(&f.path), &["doctor"]);
+    assert_eq!(code(&o), 0, "{}", out(&o));
+
+    // the file as v0.9.0 left it: the title back in the snapshot of the memory's `Add`
+    let conn = rusqlite::Connection::open(&f.path).unwrap();
+    let (op, kind): (i64, String) = conn
+        .query_row(
+            "SELECT o.id, o.kind FROM operation_memories m JOIN operations o ON o.id = m.op
+             WHERE m.memory = ?1 ORDER BY o.id LIMIT 1",
+            [id.0],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(kind, "Add");
+    conn.execute(
+        "UPDATE operations SET changes = json_set(changes, '$[0].after.title', 'Viejo título') WHERE id = ?1",
+        [op],
+    )
+    .unwrap();
+    drop(conn);
+
+    let o = run(Some(&f.path), &["doctor"]);
+    assert_eq!(code(&o), 1, "{}", out(&o));
+    assert!(
+        out(&o)
+            .lines()
+            .any(|l| l.starts_with("FAIL purged_scrubbed")),
+        "{}",
+        out(&o)
+    );
+}
+
+#[test]
 fn recall_and_context_work_without_a_model() {
     let f = populated();
     let o = run(Some(&f.path), &["recall", "main", "Medellín"]);

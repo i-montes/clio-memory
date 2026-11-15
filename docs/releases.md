@@ -17,6 +17,19 @@ La etiqueta, sin la `v`, debe ser igual a `version` en `Cargo.toml`. Si no lo es
 
 ## Notas de versiones
 
+### v0.10.1
+
+Cierra lo que quedó pendiente de v0.10.0.
+
+- **El agente nunca se queda esperando.** Un demonio que no contesta en 2 minutos (`CLIO_MEMORY_DAEMON_TIMEOUT`) es un error: esa llamada la atiende el proceso `mcp`, que vuelve a probar el demonio un minuto después y, si contesta, suelta su modelo.
+- **Un guardado no frena a los demás agentes.** En el demonio, un guardado calcula solo su propio vector; el resto de la cola la calcula un solo hilo aparte, sin retener a nadie (los pendientes van del más nuevo al más viejo). En el demonio y en las sesiones de agente, el modelo ya no corre con el candado de escritor tomado (`run-jobs --model` y el `embed_queue` de Clio todavía sí).
+- **El demonio dice lo que el agente necesita saber**: la nota del proyecto llega al registro del agente (`note`), `status` dice si guarda el modelo (`resident`) y una petición que falla por dentro se contesta con un error en vez de tumbarlo.
+- **`status` no hace salir a un demonio anterior**; `daemon --status` y `doctor` dicen cuándo es de una versión anterior y, con `CLIO_MEMORY_NO_DAEMON=1`, que está `desactivado`. `setup`, `setup model` y `daemon --stop` avisan también cuando el demonio que detienen es de la versión anterior.
+- **Ciclo de vida**: `--db memory.db` sin carpeta, un `exe` relativo, un demonio que no arranca (dice dónde está su `daemon.log`), el socket privado desde que se crea, un demonio tardío no recrea una carpeta borrada, una carpeta con nombre no UTF-8 y `uninstall` sin esperas de más.
+- **Programas anfitriones**: `RemoteEmbedder` parte en varias peticiones un lote demasiado largo y explica mejor un rechazo del demonio.
+- Los textos de los límites para el agente (`1 minute`) y los archivos temporales que deja un proceso muerto en `sleep/`.
+- Después de etiquetar: correr `clio-memory update` (el `setup` final detiene el demonio de v0.10.0) y reiniciar las sesiones de agente abiertas.
+
 ### v0.10.0
 
 - **Un solo proceso con el modelo.** `clio-memory mcp` ya no carga modelo ni base de datos: pasa cada llamada al **demonio**, un proceso por carpeta de datos que lanza el primer cliente y que se va a los 10 minutos sin uso. Con 5 sesiones, la memoria de los procesos baja de 2.480 MB a unos 560 MB (36 MB los `mcp` y unos 520 MB el demonio) y entre los agentes que atiende el demonio ya no hay guardados rechazados por el candado de escritor (la línea de comandos, Clio o el sueño todavía pueden tenerlo un momento). Ver [bench/sessions/results.md](../bench/sessions/results.md).

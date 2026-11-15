@@ -49,7 +49,7 @@ Mismo equipo y mismo modelo que la línea base. Cada proceso `mcp` solo pasa las
 - El rendimiento total sube de ~13 a ~42 búsquedas por segundo, y el tiempo crece con las sesiones porque el demonio atiende las llamadas de una en una.
 - **«Primera búsqueda» no es comparable con v0.9.0:** `seed` (que guarda los recuerdos antes de medir) ya había cargado el modelo en el demonio, así que aquí la primera búsqueda no paga la carga. En v0.9.0 cada sesión la pagaba (1,5 a 3,8 s). La carga la paga la primera llamada de todas al demonio (~1,4 s).
 - **Guardados en frío a la vez** (`cold 5`): 5 guardados, 0 rechazados (ms: 25, 47, 78, 109, 138; procesos `mcp` 36 MB; demonio 503 MB, pico 641 MB). En v0.9.0 solo se guardaban 2 de 5.
-- **Sin uso** (`idle`, una sesión): el demonio se queda en 498-499 MB (pico 639 MB) a los 30, 60, 75 y 110 s sin uso: ya no suelta el modelo. La búsqueda tras esa pausa tarda 19 ms (antes recargaba: 1,4 s y 867 MB). El proceso `mcp` se queda en 6-7 MB. Cerrada la sesión, el demonio siguió en 499 MB y salió solo a los 603 s.
+- **Sin uso** (`idle`, una sesión): el demonio se queda en 498-499 MB (pico 639 MB) a los 30, 60, 75 y 110 s sin uso: ya no suelta el modelo. La búsqueda tras esa pausa tarda 19 ms (antes recargaba: 1,4 s y 867 MB). El proceso `mcp` se queda en 6-7 MB. Cerrada la sesión, el demonio siguió en 499 MB y en el control de los 603 s ya no quedaba ningún demonio.
 
 ### Aceptación para v0.10
 

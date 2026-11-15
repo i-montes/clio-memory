@@ -90,6 +90,7 @@ The engine keeps the rules, whoever calls: `sleep_quarantine` (an active memory,
 - It listens on `<data>/daemon.sock`, or on `CLIO_MEMORY_SOCK` (an absolute path; the socket path may be at most 100 bytes). One socket per data folder: every request carries its client's data folder, and the daemon refuses one for another folder (`folder`), so a client sharing a `CLIO_MEMORY_SOCK` with another folder serves by itself and `daemon --stop` never stops another folder's daemon. `<data>/daemon.lock` (exclusive `flock`) keeps it to one process per folder; `<data>/daemon.log` (0600, truncated at start when over 1 MiB) is its log.
 - `CLIO_MEMORY_NO_DAEMON=1` turns it off: each `mcp` process serves by itself, with its own model. The same happens when the daemon cannot start.
 - A host program that links the library can take its vectors from the daemon instead of loading a model of its own: `EmbedModel::from_embedder(Arc::new(RemoteEmbedder::connect(data, launch)?))`.
+- `setup model` stops only the daemon of the current data folder; the daemon of another folder takes the new model when it leaves (at most 10 minutes without requests).
 - After updating, open agent sessions keep their v0.9.x process until they are closed; restart them.
 
 Measured with the real model (`bench/sessions`): with 5 sessions the `mcp` processes add up to 36 MB and the daemon holds about 520 MB, against 2 480 MB with a model per process.

@@ -1934,6 +1934,18 @@ fn uninstall_data_stops_the_daemon_and_takes_its_files() {
 }
 
 #[test]
+fn uninstall_does_not_wait_for_a_socket_nobody_answers() {
+    let m = machine();
+    // What a daemon killed with -9 leaves: the socket file, nobody behind it.
+    drop(std::os::unix::net::UnixListener::bind(m.data.join("daemon.sock")).unwrap());
+    let started = std::time::Instant::now();
+    let o = m.run(&["uninstall", "--data", "--yes"]);
+    let took = started.elapsed();
+    assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+    assert!(took < std::time::Duration::from_millis(1500), "{took:?}");
+}
+
+#[test]
 fn setup_ends_by_stopping_an_older_daemon() {
     let m = machine();
     let fakes_dir = m.home.parent().unwrap().join("claude-bin");

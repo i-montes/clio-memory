@@ -75,7 +75,7 @@ fn main() -> ExitCode {
                     replace,
                     terminal,
                     curl: "curl".into(),
-                    data: db.parent().map(std::path::Path::to_path_buf),
+                    data: Some(commands::data_of(&db).to_path_buf()),
                 },
             )
         }
@@ -91,7 +91,7 @@ fn main() -> ExitCode {
             let said = setup_model(potion);
             // The daemon keeps the models it found at start; also after a failure part way, which
             // may have left a new model or runtime.
-            let stopped = stop_daemon(db.parent().unwrap_or(std::path::Path::new(".")));
+            let stopped = stop_daemon(commands::data_of(&db));
             done(said.map(|mut said| {
                 match stopped {
                     Ok(true) => {
@@ -175,7 +175,7 @@ fn mcp(db: &std::path::Path) -> Result<(), String> {
             "mcp uses <folder>/{DB_FILE}: give --db a file called {DB_FILE}, or set CLIO_MEMORY_DATA"
         ));
     }
-    let data = db.parent().unwrap_or(std::path::Path::new("."));
+    let data = commands::data_of(db);
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let home = std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
@@ -208,7 +208,7 @@ fn daemon(db: &std::path::Path, status: bool, stop: bool) -> Result<Vec<String>,
             "daemon uses <folder>/{DB_FILE}: give --db a file called {DB_FILE}, or set CLIO_MEMORY_DATA"
         ));
     }
-    let data = db.parent().unwrap_or(std::path::Path::new("."));
+    let data = commands::data_of(db);
     if stop {
         return Ok(vec![match daemon_answer(data, "shutdown")? {
             Some(_) => "demonio detenido".into(),
@@ -218,7 +218,7 @@ fn daemon(db: &std::path::Path, status: bool, stop: bool) -> Result<Vec<String>,
     if status {
         return Ok(vec![match daemon_answer(data, "status")? {
             Some(a) => format!(
-                "demonio: activo (pid {}, v{}, modelo {}, {} sesiones)",
+                "demonio: activo (pid {}, v{}, modelo {}, {} sesiones){}",
                 a["pid"],
                 a["bin"].as_str().unwrap_or_default(),
                 if a["loaded"] == true {
@@ -226,7 +226,8 @@ fn daemon(db: &std::path::Path, status: bool, stop: bool) -> Result<Vec<String>,
                 } else {
                     "sin cargar"
                 },
-                a["sessions"]
+                a["sessions"],
+                older(&a)
             ),
             None => "demonio: inactivo (se inicia solo con la primera llamada)".into(),
         }]);
@@ -238,13 +239,27 @@ fn daemon(db: &std::path::Path, status: bool, stop: bool) -> Result<Vec<String>,
     serve(data, &home()?, std::time::Duration::from_secs(idle)).map(|()| vec![])
 }
 
+/// What `status` adds about a daemon older than this binary.
+fn older(status: &serde_json::Value) -> &'static str {
+    let bin = status["bin"].as_str().unwrap_or_default();
+    if clio_memory::daemon::proto::newer(env!("CARGO_PKG_VERSION"), bin) {
+        " — versión anterior: sale con la próxima llamada"
+    } else {
+        ""
+    }
+}
+
 /// Asks the daemon of `data` without launching one. `None`: it is not running, or it is an older
 /// one that answered `stale` and is leaving. Any other failure is said as it is.
 fn daemon_answer(data: &std::path::Path, op: &str) -> Result<Option<serde_json::Value>, String> {
+    Ok(daemon_reply(data, op)?.filter(|a| a["ok"] == true))
+}
+
+/// [`daemon_answer`], with the `stale` answer of an older daemon that is leaving.
+fn daemon_reply(data: &std::path::Path, op: &str) -> Result<Option<serde_json::Value>, String> {
     use clio_memory::daemon::{NO_DAEMON, request};
     match request(data, None, &serde_json::json!({ "op": op })) {
-        Ok(a) if a["ok"] == true => Ok(Some(a)),
-        Ok(a) if a["error"] == "stale" => Ok(None),
+        Ok(a) if a["ok"] == true || a["error"] == "stale" => Ok(Some(a)),
         Ok(a) => Err(format!(
             "el demonio contestó: {}",
             a["text"].as_str().unwrap_or_default()
@@ -254,16 +269,19 @@ fn daemon_answer(data: &std::path::Path, op: &str) -> Result<Option<serde_json::
     }
 }
 
-/// Stops the daemon of `data` and waits (up to 2 s) for its socket to go. Whether there was one.
+/// Stops the daemon of `data` and waits (up to 2 s) for its socket to go, if one answered.
+/// Whether there was one.
 fn stop_daemon(data: &std::path::Path) -> Result<bool, String> {
-    let was = daemon_answer(data, "shutdown")?.is_some();
+    let Some(answer) = daemon_reply(data, "shutdown")? else {
+        return Ok(false);
+    };
     let sock =
         clio_memory::daemon::socket_path(data, std::env::var_os("CLIO_MEMORY_SOCK").as_deref())?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     while sock.exists() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
-    Ok(was)
+    Ok(answer["ok"] == true)
 }
 
 fn done(r: Result<Vec<String>, String>) -> ExitCode {
@@ -390,7 +408,7 @@ fn uninstall(
         gone
     };
     // Best effort: a daemon that cannot be reached leaves by itself when its folder is gone.
-    let _ = stop_daemon(db.parent().unwrap_or(std::path::Path::new(".")));
+    let _ = stop_daemon(commands::data_of(db));
     let steps = plan::uninstall_with(&env, agents, &gone);
     if steps.is_empty() {
         output::line("nada que quitar");
@@ -442,8 +460,7 @@ impl MemoryFiles {
 /// only that file's beside it).
 fn memory_files(db: &std::path::Path) -> Result<MemoryFiles, String> {
     use clio_memory::agent::memory::DB_FILE;
-    let data = db
-        .parent()
+    let data = Some(commands::data_of(db))
         .filter(|_| db.file_name().is_some_and(|n| n == DB_FILE))
         .ok_or_else(|| {
             format!(
@@ -523,7 +540,7 @@ fn sleep(
             "sleep uses <folder>/{DB_FILE}: give --db a file called {DB_FILE}"
         ));
     }
-    let data = db.parent().unwrap_or(std::path::Path::new("."));
+    let data = commands::data_of(db);
     if report {
         return Ok(vec![match last_report(data) {
             Some(r) => serde_json::to_string_pretty(&r).map_err(|e| e.to_string())?,

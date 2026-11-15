@@ -244,9 +244,11 @@ pub fn run(cli: &Cli, machine: Option<&Env>) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// The sleep's folder is beside the memory file.
-fn data_of(db: &std::path::Path) -> &std::path::Path {
-    db.parent().unwrap_or(std::path::Path::new("."))
+/// The memory file's folder (the sleep's, the daemon's): `--db memory.db` is in this one.
+pub(crate) fn data_of(db: &std::path::Path) -> &std::path::Path {
+    db.parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(std::path::Path::new("."))
 }
 
 /// What `sleep::overdue` found (the days since the last complete sleep) as doctor's FAIL line.
@@ -355,9 +357,10 @@ fn doctor(cli: &Cli, machine: Option<&Env>) -> Result<ExitCode, String> {
         }
         line(&match &daemon {
             Ok(Some(a)) => format!(
-                "info demonio: activo (pid {}, v{})",
+                "info demonio: activo (pid {}, v{}){}",
                 a["pid"],
-                a["bin"].as_str().unwrap_or_default()
+                a["bin"].as_str().unwrap_or_default(),
+                crate::older(a)
             ),
             Ok(None) => "info demonio: inactivo (se inicia solo con la primera llamada)".into(),
             Err(e) => format!("FAIL demonio: {}", clean(e)),

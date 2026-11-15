@@ -371,3 +371,57 @@ fn a_relative_data_folder_reaches_its_daemon() {
     assert!(!err.contains("sin demonio"), "{err}");
     f.daemon_pid();
 }
+
+#[test]
+fn a_daemon_that_hangs_is_not_waited_for() {
+    use std::os::unix::net::UnixListener;
+    use std::time::{Duration, Instant};
+    let f = folder();
+    std::fs::create_dir(&f.data).unwrap();
+    let listener = UnixListener::bind(f.data.join("daemon.sock")).unwrap();
+    let (bye, wait) = std::sync::mpsc::channel::<()>();
+    // It takes the call and never answers, nor dies.
+    let hung = std::thread::spawn(move || {
+        let (conn, _) = listener.accept().unwrap();
+        BufReader::new(&conn).read_line(&mut String::new()).unwrap();
+        let _ = wait.recv();
+    });
+    let mut m = mcp(&f, &[("CLIO_MEMORY_DAEMON_TIMEOUT", "1")]);
+    let started = Instant::now();
+    let (saved, is_error) = m.call(
+        "memory_save",
+        json!({"text": "Qué: un demonio colgado no deja esperando", "kind": "semantic"}),
+    );
+    let took = started.elapsed();
+    let err = m.end();
+    bye.send(()).unwrap();
+    hung.join().unwrap();
+    assert!(!is_error && saved.starts_with("saved"), "{saved}");
+    assert!(took < Duration::from_secs(5), "{took:?}");
+    assert!(err.contains("sin demonio"), "{err}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_folder_whose_name_is_not_utf8_is_served_here() {
+    use std::os::unix::ffi::OsStrExt;
+    let f = folder();
+    let odd = f.home.join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
+    std::fs::create_dir(&odd).unwrap();
+    let mut cmd = Command::new(EXE);
+    cmd.arg("--db")
+        .arg(f.data.join("memory.db"))
+        .arg("mcp")
+        .env("HOME", &f.home)
+        .env("CLIO_MEMORY_DAEMON_IDLE", "30")
+        .current_dir(&odd);
+    let mut m = mcp_of(cmd);
+    let (saved, is_error) = m.call(
+        "memory_save",
+        json!({"text": "Qué: una carpeta con un nombre raro", "kind": "semantic"}),
+    );
+    let err = m.end();
+    assert!(!is_error && saved.starts_with("saved"), "{saved}");
+    assert!(!f.data.join("daemon.sock").exists(), "{err}");
+    assert!(!err.contains("sin demonio"), "{err}");
+}

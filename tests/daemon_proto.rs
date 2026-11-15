@@ -191,11 +191,25 @@ fn a_newer_client_makes_it_leave() {
     let (a, after) = ask(
         &d,
         t.path(),
-        &json!({"v": 1, "bin": "99.0.0", "op": "status"}),
+        &json!({"v": 1, "bin": "99.0.0", "op": "model"}),
     );
     assert_eq!(a["ok"], false, "{a}");
     assert_eq!(a["error"], "stale", "{a}");
     assert!(matches!(after, After::Exit));
+}
+
+#[test]
+fn a_newer_clients_status_is_answered_and_it_stays() {
+    let t = tempfile::tempdir().unwrap();
+    let d = daemon(t.path());
+    let (a, after) = ask(
+        &d,
+        t.path(),
+        &json!({"v": 1, "bin": "99.0.0", "op": "status"}),
+    );
+    assert_eq!(a["ok"], true, "{a}");
+    assert_eq!(a["bin"], BIN, "{a}");
+    assert!(matches!(after, After::Continue));
 }
 
 #[test]

@@ -280,5 +280,6 @@ curl -fsSL https://raw.githubusercontent.com/i-montes/clio-memory/main/install.s
 | `CLIO_MEMORY_HAND_OVER` | `install.sh`, gancho de prueba: con `0` instala el binario sin correr `setup` (la prueba de humo del release) |
 | `CLIO_MEMORY_TTY` | `install.sh`, gancho de prueba: el archivo que se lee como terminal, por defecto `/dev/tty` |
 | `CLIO_MEMORY_NO_DAEMON` | con `1`, no se usa el demonio |
+| `CLIO_MEMORY_DAEMON_TIMEOUT` | gancho de prueba: los segundos que se espera la respuesta del demonio (por defecto 120); pasados, esa llamada se atiende en el proceso del agente |
 | `NO_COLOR` | sin colores, en `install.sh` y en la TUI |
 | `SHELL` | `setup --from-installer`: para qué shell es la línea que agrega la carpeta del binario al `PATH` |

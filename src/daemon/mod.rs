@@ -106,8 +106,10 @@ impl Daemon {
         let Some(bin) = req["bin"].as_str() else {
             return bad("falta la versión del programa (bin)");
         };
-        // The newest binary wins: this one leaves so the client can start its own.
-        if proto::newer(bin, VERSION) {
+        // The newest binary wins: this one leaves so the client can start its own. Before the
+        // folder check, so a newer client of any folder replaces it (leaving writes into no other
+        // folder). `status` only reads: it is answered, and changes nothing.
+        if proto::newer(bin, VERSION) && req["op"] != "status" {
             let text =
                 format!("este demonio ({VERSION}) es más viejo que el cliente ({bin}): sale");
             return (refused("stale", &text), After::Exit);

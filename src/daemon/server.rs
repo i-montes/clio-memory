@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use super::{After, Daemon, proto, socket_path};
 use crate::SystemClock;
-use crate::agent::memory::{EmbedModel, embed_pending, private_dir};
+use crate::agent::memory::{EmbedModel, embed_pending};
 
 /// The log is cut back to nothing at start when it grows past this.
 const MAX_LOG: u64 = 1 << 20;
@@ -20,7 +20,14 @@ const IO_TIMEOUT: Duration = Duration::from_secs(10);
 /// Serves the data folder `data` until it is idle for `idle`, is asked to leave (`shutdown`, or
 /// a newer client: `stale`), or its folder is gone. Returns at once if another daemon has it.
 pub fn serve(data: &Path, home: &Path, idle: Duration) -> Result<(), String> {
-    private_dir(data)?;
+    // Its client made it: a daemon that arrives after it was deleted must not bring it back.
+    if !data.is_dir() {
+        eprintln!(
+            "clio-memory daemon: {} no existe: no hay nada que atender",
+            data.display()
+        );
+        return Ok(());
+    }
     let lock = crate::platform::try_lock(&data.join("daemon.lock"))
         .map_err(|e| format!("{}: {e}", data.join("daemon.lock").display()))?;
     let Some(lock) = lock else {
@@ -28,13 +35,7 @@ pub fn serve(data: &Path, home: &Path, idle: Duration) -> Result<(), String> {
     };
     tidy_log(&data.join("daemon.log"));
     let sock = socket_path(data, std::env::var_os("CLIO_MEMORY_SOCK").as_deref())?;
-    let fail = |e: std::io::Error| format!("{}: {e}", sock.display());
-    match std::fs::remove_file(&sock) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(fail(e)),
-        _ => {}
-    }
-    let listener = UnixListener::bind(&sock).map_err(fail)?;
-    std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600)).map_err(fail)?;
+    let listener = bind_private(&sock).map_err(|e| format!("{}: {e}", sock.display()))?;
     let model = daemon_model(home);
     let daemon = Daemon::new(
         data.to_path_buf(),
@@ -70,6 +71,9 @@ pub fn serve(data: &Path, home: &Path, idle: Duration) -> Result<(), String> {
                 {
                     while in_flight.load(Ordering::SeqCst) > 0 {
                         std::thread::sleep(Duration::from_millis(25));
+                    }
+                    if let Err(why) = embed_pending(data, &model) {
+                        eprintln!("al salir, los vectores pendientes quedaron sin calcular: {why}");
                     }
                     std::process::exit(0);
                 }
@@ -108,6 +112,31 @@ pub fn serve(data: &Path, home: &Path, idle: Duration) -> Result<(), String> {
         eprintln!("al salir, los vectores pendientes quedaron sin calcular: {why}");
     }
     Ok(())
+}
+
+/// Listens on `sock`, never open to others: bound in a fresh private folder beside it, made 0600
+/// and moved into place (over a leftover file).
+/// shortcut: the temporary path is up to 10 bytes longer than `sock` for a short file name; a
+/// path near the limit with one may not bind, then name the socket longer.
+fn bind_private(sock: &Path) -> std::io::Result<UnixListener> {
+    use std::os::unix::fs::DirBuilderExt;
+    let dir = sock
+        .parent()
+        .unwrap_or(Path::new("/"))
+        .join(format!(".s{}", std::process::id()));
+    // Ours, left by a crash of a process with this pid; another's is not removed, and then
+    // `create` fails.
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
+    let bound = (|| {
+        let tmp = dir.join("s");
+        let listener = UnixListener::bind(&tmp)?;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+        std::fs::rename(&tmp, sock)?;
+        Ok(listener)
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    bound
 }
 
 /// A request in progress, counted until its thread ends (also when it panics).

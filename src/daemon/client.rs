@@ -18,6 +18,8 @@ const MAX_SOCKET_PATH: usize = 100;
 pub const NO_DAEMON: &str = "no hay demonio";
 /// How an error of [`request`] starts when the request is too long for any daemon.
 pub const TOO_LONG: &str = "la petición es demasiado larga";
+/// How long a daemon may take to answer: one that hangs must not leave its client waiting.
+const ANSWER_TIMEOUT: u64 = 120;
 
 /// How to start the daemon: this binary, and what to add to its environment.
 #[derive(Clone)]
@@ -47,6 +49,12 @@ pub fn socket_path(data: &Path, sock_env: Option<&OsStr>) -> Result<PathBuf, Str
 /// daemon of `data` and returns its answer. With `launch`, a daemon that is not there is started,
 /// and one older than this binary (it answers `stale` and leaves) is replaced.
 pub fn request(data: &Path, launch: Option<&Launch>, body: &Value) -> Result<Value, String> {
+    // `--db memory.db` gives a folder of "": this one.
+    let data = if data.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        data
+    };
     // Absolute: the daemon has its own working folder, and checks the folder is its own.
     let data = &std::path::absolute(data).map_err(|e| format!("{}: {e}", data.display()))?;
     let sock = socket_path(data, std::env::var_os("CLIO_MEMORY_SOCK").as_deref())?;
@@ -108,7 +116,12 @@ fn start_and_ask(
                 dropped |= !not_there(&e);
                 std::thread::sleep(Duration::from_millis(25));
             }
-            other => return other.map_err(|e| no_daemon(sock, &e)),
+            other => {
+                return other.map_err(|e| {
+                    let log = data.join("daemon.log");
+                    format!("{} (mira {})", no_daemon(sock, &e), log.display())
+                });
+            }
         }
     }
 }
@@ -152,6 +165,13 @@ fn ask(sock: &Path, line: &str) -> std::io::Result<Value> {
             _ => e,
         }
     })?;
+    let secs = std::env::var("CLIO_MEMORY_DAEMON_TIMEOUT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&s| s > 0)
+        .unwrap_or(ANSWER_TIMEOUT);
+    stream.set_read_timeout(Some(Duration::from_secs(secs)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(secs)))?;
     stream.write_all(line.as_bytes())?;
     stream.write_all(b"\n")?;
     let mut answer = String::new();
@@ -166,10 +186,16 @@ fn ask(sock: &Path, line: &str) -> std::io::Result<Value> {
 /// group from taking it down.
 fn spawn(launch: &Launch, data: &Path) -> Result<(), String> {
     use std::os::unix::process::CommandExt;
+    // A relative path is the client's, not "/"'s; a bare name is still looked up in the `PATH`.
+    let exe = match launch.exe.parent() {
+        Some(p) if !p.as_os_str().is_empty() => std::path::absolute(&launch.exe)
+            .map_err(|e| format!("{}: {e}", launch.exe.display()))?,
+        _ => launch.exe.clone(),
+    };
     let status = std::process::Command::new("sh")
         .arg("-c")
         .arg(r#""$0" --db "$1" daemon </dev/null >/dev/null 2>>"$2" &"#)
-        .arg(&launch.exe)
+        .arg(&exe)
         .arg(data.join(crate::agent::memory::DB_FILE))
         .arg(data.join("daemon.log"))
         .envs(launch.env.iter().map(|(k, v)| (k, v)))

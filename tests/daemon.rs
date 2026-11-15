@@ -189,7 +189,9 @@ fn stop_and_status_from_the_command_line() {
     let pid = f.status()["pid"].as_u64().unwrap();
     let said = f.cli_out(&["--status"]);
     assert!(
-        said.contains("demonio: activo") && said.contains(&format!("pid {pid}")),
+        said.contains("demonio: activo")
+            && said.contains(&format!("pid {pid}"))
+            && !said.contains("versión anterior"),
         "{said}"
     );
     assert!(f.cli_out(&["--stop"]).contains("demonio detenido"));
@@ -462,7 +464,8 @@ fn the_daemon_keeps_no_clients_folder_busy() {
 fn status_and_stop_never_touch_another_folders_daemon() {
     let (a, b) = (folder("30"), folder("30"));
     let sock = a.home.parent().unwrap().join("shared.sock");
-    // A's daemon, on a socket B is told to use too.
+    // A's daemon, on a socket B is told to use too (it serves only a folder that is there).
+    std::fs::create_dir(&a.data).unwrap();
     let mut daemon_a = a
         .cli(&[])
         .env("CLIO_MEMORY_SOCK", &sock)
@@ -497,4 +500,156 @@ fn status_and_stop_never_touch_another_folders_daemon() {
         "{out:?}"
     );
     assert!(daemon_a.wait().unwrap().success());
+}
+
+#[test]
+fn a_bare_db_file_name_is_the_current_folder() {
+    let dir = common::short_dir();
+    let home = dir.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let out = Command::new(EXE)
+        .args(["--db", "memory.db", "daemon", "--status"])
+        .current_dir(dir.path())
+        .env("HOME", &home)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let said = String::from_utf8(out.stdout).unwrap();
+    assert!(said.contains("inactivo"), "{said}");
+    // A daemon in the foreground serves this folder too.
+    let mut daemon = Command::new(EXE)
+        .args(["--db", "memory.db", "daemon"])
+        .current_dir(dir.path())
+        .env("HOME", &home)
+        .env("CLIO_MEMORY_DAEMON_IDLE", "30")
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let started = Instant::now();
+    while !dir.path().join("daemon.sock").exists() && started.elapsed() < Duration::from_secs(3) {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let bye = request(dir.path(), None, &json!({"op": "shutdown"}));
+    let _ = daemon.kill();
+    daemon.wait().unwrap();
+    assert_eq!(bye.unwrap()["ok"], true);
+}
+
+#[test]
+fn a_request_for_an_empty_folder_is_for_this_one() {
+    let err = request(Path::new(""), None, &json!({"op": "status"})).unwrap_err();
+    assert!(err.starts_with(NO_DAEMON), "{err}");
+}
+
+#[test]
+fn a_relative_exe_is_found_from_the_clients_folder() {
+    let f = folder("30");
+    // Relative to this test's folder (the crate), where cargo puts its target.
+    let cwd = std::env::current_dir().unwrap();
+    let rel = Path::new(EXE).strip_prefix(&cwd).unwrap();
+    let launch = Launch {
+        exe: rel.into(),
+        env: f.launch.env.clone(),
+    };
+    let a = request(&f.data, Some(&launch), &json!({"op": "status"})).unwrap();
+    assert_eq!(a["ok"], true, "{a}");
+}
+
+#[test]
+fn a_daemon_that_cannot_start_points_at_its_log() {
+    let f = folder("30");
+    let launch = Launch {
+        exe: "/nonexistent/clio-memory".into(),
+        env: vec![],
+    };
+    let err = request(&f.data, Some(&launch), &json!({"op": "status"})).unwrap_err();
+    let log = f.data.join("daemon.log");
+    assert!(err.contains(&format!("mira {}", log.display())), "{err}");
+}
+
+#[test]
+fn the_socket_is_private_from_the_start_and_leaves_nothing_behind() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = folder("30");
+    std::fs::create_dir(&f.data).unwrap();
+    let place = common::short_dir();
+    let sock = place.path().join("s.sock");
+    let mut daemon = f
+        .cli(&[])
+        .env("CLIO_MEMORY_SOCK", &sock)
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let started = Instant::now();
+    while !sock.exists() && started.elapsed() < Duration::from_secs(3) {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let mode = std::fs::symlink_metadata(&sock)
+        .unwrap()
+        .permissions()
+        .mode();
+    let there: Vec<_> = std::fs::read_dir(place.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    let out = f
+        .cli(&["--stop"])
+        .env("CLIO_MEMORY_SOCK", &sock)
+        .output()
+        .unwrap();
+    assert!(daemon.wait().unwrap().success(), "{out:?}");
+    assert_eq!(mode & 0o777, 0o600, "{mode:o}");
+    assert_eq!(there, vec![OsStr::new("s.sock")]);
+}
+
+#[test]
+fn a_daemon_for_a_missing_folder_leaves_without_making_it() {
+    let f = folder("30");
+    let mut daemon = f
+        .cli(&[])
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let started = Instant::now();
+    let code = loop {
+        if let Some(code) = daemon.try_wait().unwrap() {
+            break code;
+        }
+        if started.elapsed() > Duration::from_secs(3) {
+            daemon.kill().unwrap();
+            daemon.wait().unwrap();
+            panic!("the daemon of a missing folder is still running");
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    assert!(code.success(), "{code}");
+    assert!(!f.data.exists());
+}
+
+#[test]
+fn status_says_when_the_daemon_is_older_and_leaves_with_the_next_call() {
+    let f = folder("30");
+    let older = json!({"ok": true, "bin": "0.0.1", "pid": 1, "loaded": false, "sessions": 0});
+    let daemon = fake_daemon(&f, vec![older.clone(), older]);
+    let said = f.cli_out(&["--status"]);
+    assert!(
+        said.contains("v0.0.1")
+            && said.contains(" — versión anterior: sale con la próxima llamada"),
+        "{said}"
+    );
+    let out = Command::new(EXE)
+        .arg("--db")
+        .arg(f.data.join("memory.db"))
+        .arg("doctor")
+        .env("HOME", &f.home)
+        .output()
+        .unwrap();
+    let said = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        said.contains(
+            "info demonio: activo (pid 1, v0.0.1) — versión anterior: sale con la próxima llamada"
+        ),
+        "{said}"
+    );
+    daemon.join().unwrap();
 }

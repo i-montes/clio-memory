@@ -144,7 +144,14 @@ fn no_daemon(sock: &Path, e: &std::io::Error) -> String {
 
 /// One request line out, one answer line back.
 fn ask(sock: &Path, line: &str) -> std::io::Result<Value> {
-    let mut stream = UnixStream::connect(sock)?;
+    let mut stream = UnixStream::connect(sock).map_err(|e| {
+        // A leftover file that is not a socket: Linux says ECONNREFUSED, macOS ENOTSOCK.
+        use std::os::unix::fs::FileTypeExt;
+        match std::fs::symlink_metadata(sock) {
+            Ok(m) if !m.file_type().is_socket() => ErrorKind::ConnectionRefused.into(),
+            _ => e,
+        }
+    })?;
     stream.write_all(line.as_bytes())?;
     stream.write_all(b"\n")?;
     let mut answer = String::new();

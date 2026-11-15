@@ -12,7 +12,13 @@ usage: clio-memory [--db PATH] [--actor NAME] [--model DIR] [--json] <command> [
 
 agents:
   mcp                         serve the memory tools to an agent (MCP over stdin and stdout); the
-                              file is <folder>/memory.db, the project is the current folder's
+                              file is <folder>/memory.db, the project is the current folder's;
+                              the daemon serves its calls (CLIO_MEMORY_NO_DAEMON=1: this process)
+  daemon [--status|--stop]    the one process that serves the tools of every agent on a folder;
+                              the first call starts it and it leaves after 10 idle minutes
+                              (CLIO_MEMORY_DAEMON_IDLE seconds), so nobody runs it by hand;
+                              alone it serves in the foreground, --status says whether it runs,
+                              --stop stops it
   setup [--yes] [--agents LIST|all] [--model granite|potion|none]
         [--instructions|--no-instructions] [--replace] [--from-installer]
                               connect clio-memory to the agents on this machine and install the
@@ -114,6 +120,11 @@ pub struct UsageError(pub String);
 pub enum Command {
     /// The MCP server for an agent.
     Mcp,
+    /// `daemon`: serve in the foreground, or say whether one runs (`status`), or stop it.
+    Daemon {
+        status: bool,
+        stop: bool,
+    },
     /// `setup` with no subcommand: the agents (`all`: every one found), the model and the
     /// instructions line, each `None` when not given (asked, or the default without a terminal).
     Setup {
@@ -477,6 +488,15 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, UsageErro
         "mcp" => {
             rest.none()?;
             Command::Mcp
+        }
+        "daemon" => {
+            let status = rest.switch("--status");
+            let stop = rest.switch("--stop");
+            rest.none()?;
+            if status && stop {
+                return usage("--status or --stop, not both");
+            }
+            Command::Daemon { status, stop }
         }
         "setup" => {
             let replace = rest.switch("--replace");

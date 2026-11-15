@@ -306,6 +306,8 @@ fn doctor(cli: &Cli, machine: Option<&Env>) -> Result<ExitCode, String> {
         .as_ref()
         .and_then(|_| clio_memory::sleep::overdue(data_of(&cli.db), SystemClock.now()));
     let checks_ok = checks_ok && overdue.is_none();
+    let daemon = crate::daemon_answer(data_of(&cli.db), "status");
+    let checks_ok = checks_ok && daemon.is_ok();
     let agents = machine.map(agent_report).unwrap_or_default();
     let agents_ok = agents.iter().all(|(_, h, _)| *h != Health::Fail);
     let shadow = machine.and_then(|env| shadowing(env).map(|o| shadowing_note(env, &o)));
@@ -333,6 +335,9 @@ fn doctor(cli: &Cli, machine: Option<&Env>) -> Result<ExitCode, String> {
         if let Some(days) = overdue {
             out["sleep"] = serde_json::json!({ "ok": false, "overdue_days": days });
         }
+        if let Err(e) = &daemon {
+            out["daemon"] = serde_json::json!({ "ok": false, "detail": e });
+        }
         json(&out)?;
     } else {
         match &report {
@@ -348,6 +353,15 @@ fn doctor(cli: &Cli, machine: Option<&Env>) -> Result<ExitCode, String> {
             }
             None => line(&format!("--   {NO_MEMORY_YET}")),
         }
+        line(&match &daemon {
+            Ok(Some(a)) => format!(
+                "info demonio: activo (pid {}, v{})",
+                a["pid"],
+                a["bin"].as_str().unwrap_or_default()
+            ),
+            Ok(None) => "info demonio: inactivo (se inicia solo con la primera llamada)".into(),
+            Err(e) => format!("FAIL demonio: {}", clean(e)),
+        });
         if let Some(note) = &shadow {
             line(&format!("--   {}", clean(note)));
         }

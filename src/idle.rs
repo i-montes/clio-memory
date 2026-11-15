@@ -31,12 +31,12 @@ impl<T: Send + 'static> IdleCache<T> {
         Self::with_value(Some(first), idle, load)
     }
 
-    /// Nothing loaded yet: `load` runs on the first use.
+    /// Nothing loaded yet: `load` runs on the first use. `idle: None` keeps it for good.
     pub(crate) fn empty(
-        idle: Duration,
+        idle: Option<Duration>,
         load: impl Fn() -> Result<T> + Send + Sync + 'static,
     ) -> Self {
-        Self::with_value(None, Some(idle), load)
+        Self::with_value(None, idle, load)
     }
 
     fn with_value(
@@ -114,7 +114,7 @@ mod tests {
     fn an_empty_cache_loads_on_first_use_only() {
         let loads = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&loads);
-        let cache = IdleCache::empty(Duration::from_secs(60), move || {
+        let cache = IdleCache::empty(Some(Duration::from_secs(60)), move || {
             Ok(counter.fetch_add(1, Ordering::SeqCst) + 7)
         });
         assert!(!cache.loaded(), "nothing is read before it is needed");
@@ -128,7 +128,7 @@ mod tests {
     fn a_failed_first_load_is_an_error_and_is_tried_again() {
         let loads = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&loads);
-        let cache = IdleCache::empty(Duration::from_secs(60), move || {
+        let cache = IdleCache::empty(Some(Duration::from_secs(60)), move || {
             match counter.fetch_add(1, Ordering::SeqCst) {
                 0 => Err(Error::Embedding("not yet".into())),
                 n => Ok(n),
@@ -143,6 +143,18 @@ mod tests {
         let cache = IdleCache::new(1, None, || Ok(2));
         std::thread::sleep(Duration::from_millis(50));
         assert!(cache.loaded());
+    }
+
+    #[test]
+    fn an_empty_cache_without_an_idle_time_keeps_what_it_loaded() {
+        let loads = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&loads);
+        let cache = IdleCache::empty(None, move || Ok(counter.fetch_add(1, Ordering::SeqCst) + 7));
+        assert_eq!(cache.with(|v| *v).unwrap(), 7);
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(cache.loaded(), "no idle time: it never leaves");
+        assert_eq!(cache.with(|v| *v).unwrap(), 7);
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
     }
 
     #[test]

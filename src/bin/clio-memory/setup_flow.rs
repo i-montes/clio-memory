@@ -36,6 +36,8 @@ pub struct SetupArgs {
     pub terminal: bool,
     /// The `curl` that downloads the model (`curl` on the `PATH`; a fake in tests).
     pub curl: PathBuf,
+    /// The memory's folder: where a running daemon is stopped (`None`: none is looked for).
+    pub data: Option<PathBuf>,
 }
 
 /// How the flow shows itself and asks. Every `choose_*` and `confirm` returns `None` when the
@@ -446,6 +448,16 @@ pub fn run(screen: &mut dyn Screen, env: &Env, args: SetupArgs) -> ExitCode {
         match take_away_shadow(env, &other) {
             Ok(said) => screen.note(&format!("{said}.")),
             Err(note) => screen.note(&format!("Ojo: {note}.")),
+        }
+    }
+    // The last step: a daemon of an older version would keep serving its code.
+    if let Some(data) = &args.data {
+        match crate::stop_daemon(data) {
+            Ok(true) => {
+                screen.note("demonio anterior detenido: el próximo uso lanza el de esta versión")
+            }
+            Ok(false) => {}
+            Err(e) => screen.note(&format!("Ojo: no se pudo detener el demonio: {e}.")),
         }
     }
     // Only the agents that are here: a config left by an uninstalled one opens nothing.

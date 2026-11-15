@@ -7,8 +7,8 @@
 //!
 //! What comes back is text somebody wrote, maybe long ago, maybe hostile: it is cleaned, kept to
 //! one line per memory (a memory cannot forge another's line), cut after cleaning and wrapped as
-//! data. A session (one MCP process) has caps: 20 reads and 24 KiB of returned text, 30 saves, 10
-//! changes. A call that is malformed (an argument of the wrong kind, a text or title too long once
+//! data. A session (one agent's conversation) has caps per 30-minute window: 20 reads and 24 KiB of
+//! returned text, 30 saves, 10 changes; they refill when the window ends. A call that is malformed (an argument of the wrong kind, a text or title too long once
 //! clean) is refused before it is counted: it tells nothing. Then it is counted, refused calls
 //! included, and a text or title that looks like a secret is not saved: what the secret check says
 //! must cost a try. The writer is taken for one call and let go, so Clio and
@@ -20,8 +20,9 @@ use std::sync::Arc;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::agent::memory::{clean_text, kind_label, origin_label};
+use crate::agent::memory::{clean_text, embed_pending, kind_label, origin_label};
 use crate::agent::{Draft, EmbedModel, Memory, Place, preview};
+use crate::clock::{Clock, SystemClock};
 use crate::secrets::find_secret;
 use crate::{Category, MemoryId, MemoryRow, MemoryType, OpId, OpKind, Origin, Outcome};
 
@@ -101,6 +102,8 @@ const SUMMARY_PARTS: [(&str, &str); 6] = [
     ("files", "Archivos"),
 ];
 
+/// How long the caps last before they refill.
+const WINDOW_SECS: i64 = 1800;
 const MAX_CALLS: u32 = 20;
 const MAX_BUDGET_BYTES: usize = 24 * 1024;
 /// With less than this left the read budget counts as spent.
@@ -203,7 +206,7 @@ fn args_of(name: &str) -> Option<Args> {
     })
 }
 
-/// One agent's session with the memory (one MCP process): where the file is, the project it
+/// One agent's session with the memory: where the file is, the project it
 /// writes to, who signs, and what it has spent.
 pub struct Session {
     data: PathBuf,
@@ -214,6 +217,9 @@ pub struct Session {
     bytes: usize,
     saves: u32,
     changes: u32,
+    clock: Arc<dyn Clock>,
+    /// When the current cap window began (0 before the first call).
+    window: i64,
     /// When this session last told the sleep the memory is in use (`sleep::mark_used`).
     marked: i64,
 }
@@ -229,6 +235,8 @@ impl Session {
             bytes: 0,
             saves: 0,
             changes: 0,
+            clock: Arc::new(SystemClock),
+            window: 0,
             marked: 0,
         }
     }
@@ -240,10 +248,21 @@ impl Session {
         self
     }
 
+    /// With another clock (tests).
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
+        self
+    }
+
     /// Runs tool `name` with `args`: the answer for the model, or why not (also for the model).
     pub fn call(&mut self, name: &str, args: &Value) -> Result<String, String> {
         // A read is a use too: the sleep waits for it (at most one mark a minute).
-        let now = now_secs();
+        let now = self.clock.now();
+        if now - self.window >= WINDOW_SECS {
+            (self.reads, self.bytes, self.saves, self.changes) = (0, 0, 0, 0);
+            self.window = now;
+        }
         if now - self.marked >= 60 {
             crate::sleep::mark_used(&self.data, now);
             self.marked = now;
@@ -291,7 +310,7 @@ impl Session {
             }
             _ => {
                 let draft = if name == "memory_session_summary" {
-                    summary_of(&args)?
+                    summary_of(&args, now)?
                 } else {
                     if name == "memory_update" {
                         positive(&args, "id")?;
@@ -308,16 +327,20 @@ impl Session {
     /// The end of the session: whatever is still waiting for a vector is computed, once more,
     /// before the model is let go. How many vectors were stored.
     pub fn finish(&self) -> Result<usize, String> {
-        if !Memory::db_path(&self.data).is_file() {
-            return Ok(0);
-        }
-        let m = self.writer()?;
-        m.embed_queue()
+        embed_pending(&self.data, &self.model)
+    }
+
+    fn refill(&self) -> String {
+        let left = self.window + WINDOW_SECS - self.clock.now();
+        format!("it refills in {} minutes", (left + 59) / 60)
     }
 
     fn spend_save(&mut self) -> Result<(), String> {
         if self.saves >= MAX_SAVES {
-            return Err(format!("this session made its memory saves ({MAX_SAVES})"));
+            return Err(format!(
+                "this session made its memory saves ({MAX_SAVES}); {}",
+                self.refill()
+            ));
         }
         self.saves += 1;
         Ok(())
@@ -326,7 +349,8 @@ impl Session {
     fn spend_change(&mut self) -> Result<(), String> {
         if self.changes >= MAX_CHANGES {
             return Err(format!(
-                "this session made its memory changes ({MAX_CHANGES}); the person can use the command line"
+                "this session made its memory changes ({MAX_CHANGES}); the person can use the command line; {}",
+                self.refill()
             ));
         }
         self.changes += 1;
@@ -345,7 +369,10 @@ impl Session {
     fn read(&mut self, name: &str, args: &Map<String, Value>) -> Result<String, String> {
         let left = MAX_BUDGET_BYTES.saturating_sub(self.bytes);
         if self.reads >= MAX_CALLS || left < MIN_ROOM {
-            return Err("this session spent its memory budget (20 calls or 24 KiB of text)".into());
+            return Err(format!(
+                "this session spent its memory budget (20 calls or 24 KiB of text); {}",
+                self.refill()
+            ));
         }
         // Counted before the memory is asked: failed calls spend it too.
         self.reads += 1;
@@ -429,7 +456,7 @@ impl Session {
         let morning = (name == "memory_context")
             .then(|| crate::sleep::last_report(&self.data))
             .flatten()
-            .and_then(|r| crate::sleep::morning_line(&r, now_secs()));
+            .and_then(|r| crate::sleep::morning_line(&r, self.clock.now()));
         let answer = match morning {
             Some(line) => format!("{}\n{answer}", cut(&line, 600)),
             None => answer,
@@ -445,6 +472,7 @@ impl Session {
         draft: Draft,
     ) -> Result<String, String> {
         let summary = name == "memory_session_summary";
+        // The writer lives only for the save: the vectors are computed after it is let go.
         let m = self.writer()?;
         let has_project = self.project.is_some();
         let o = if name == "memory_update" {
@@ -465,10 +493,19 @@ impl Session {
             };
             m.save(&draft, &self.actor, place, false)?
         };
-        let mut said = with_vectors(told(&o), &m);
+        drop(m);
+        let mut said = self.with_vectors(told(&o));
         if !summary
             && o.kind != OpKind::Noop
-            && let Some(twin) = m.near_duplicate(o.memory)
+            && let Some(twin) = Memory::open_read(
+                &self.data,
+                &self.model,
+                self.project.as_deref(),
+                &self.actor,
+            )
+            .ok()
+            .flatten()
+            .and_then(|m| m.near_duplicate(o.memory))
         {
             // Only its number: this answer is not framed as data, so no memory text goes in it.
             said.push_str(&format!(
@@ -513,13 +550,27 @@ impl Session {
                 ));
             }
         }
-        Ok(with_vectors(
-            format!(
-                "merged into m{}: the originals are forgotten (quarantine), not erased",
-                o.memory.0
-            ),
-            &m,
-        ))
+        drop(m);
+        Ok(self.with_vectors(format!(
+            "merged into m{}: the originals are forgotten (quarantine), not erased",
+            o.memory.0
+        )))
+    }
+
+    /// After a write, once the writer is let go, the vectors of the whole queue are computed;
+    /// without a model the answer says so. A failure to compute them does not undo the save: what
+    /// is left waits for the next write, the end of the session, or `clio-memory run-jobs`.
+    fn with_vectors(&self, answer: String) -> String {
+        // `get`, not `is_present`: a model that fails to load is no model, as the writer saw it.
+        if !matches!(self.model.get(), Ok(Some(_))) {
+            return format!(
+                "{answer} · sin modelo de vectores: la búsqueda es solo por texto (`clio-memory setup model`)"
+            );
+        }
+        if let Err(why) = embed_pending(&self.data, &self.model) {
+            eprintln!("clio-memory: vectores pendientes: {why}");
+        }
+        answer
     }
 
     fn change(&mut self, name: &str, args: &Map<String, Value>) -> Result<String, String> {
@@ -612,7 +663,7 @@ fn fitted_text(typed: &str) -> Result<String, String> {
 
 /// A session summary: each part at most 600 characters, the parts joined with their labels at
 /// most 1200.
-fn summary_of(args: &Map<String, Value>) -> Result<Draft, String> {
+fn summary_of(args: &Map<String, Value>, now: i64) -> Result<Draft, String> {
     let mut parts = Vec::new();
     for (k, label) in SUMMARY_PARTS {
         let part = clean_text(args.get(k).and_then(Value::as_str).unwrap_or_default());
@@ -635,7 +686,7 @@ fn summary_of(args: &Map<String, Value>) -> Result<Draft, String> {
     }
     Ok(Draft {
         text: fitted_text(&joined)?,
-        title: Some(format!("Sesión {}", civil_date(now_secs()))),
+        title: Some(format!("Sesión {}", civil_date(now))),
         category: None,
         kind: MemoryType::Episodic,
     })
@@ -678,21 +729,6 @@ fn draft_of(args: &Map<String, Value>, no_kind: bool) -> Result<Draft, String> {
         category,
         kind,
     })
-}
-
-/// After a write, the vectors of the whole queue are computed at once; without a model the answer
-/// says so. A failure to compute them does not undo the save: what is left waits for the next
-/// write, the end of the session, or `clio-memory run-jobs`.
-fn with_vectors(answer: String, m: &Memory) -> String {
-    if !m.has_embeddings() {
-        return format!(
-            "{answer} · sin modelo de vectores: la búsqueda es solo por texto (`clio-memory setup model`)"
-        );
-    }
-    if let Err(why) = m.embed_queue() {
-        eprintln!("clio-memory: vectores pendientes: {why}");
-    }
-    answer
 }
 
 /// What became of a save, in fixed words, with the change number to undo it.
@@ -874,12 +910,6 @@ fn cut(s: &str, max: usize) -> String {
     let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
     out.push('…');
     out
-}
-
-fn now_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
 }
 
 /// `YYYY-MM-DD` (UTC) of seconds since the epoch (H. Hinnant's `civil_from_days`).

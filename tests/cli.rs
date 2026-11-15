@@ -988,7 +988,7 @@ struct Machine {
 
 fn machine() -> Machine {
     use std::os::unix::fs::PermissionsExt;
-    let t = tempfile::tempdir().unwrap();
+    let t = short_dir();
     let home = t.path().join("home");
     let bin = t.path().join("bin");
     let data = t.path().join("data");
@@ -1815,4 +1815,164 @@ fn the_binary_runs_itself_again_with_telemetry_off() {
             .any(|v| v == b"ORT_DISABLE_TELEMETRY=1"),
         "the process serving must carry the variable"
     );
+}
+
+// ---- the daemon: `doctor`, `uninstall` and `setup` know it ----
+
+/// The daemon of `m`'s folder, started the way a client does and told to leave when dropped.
+struct Daemon<'a>(&'a Machine);
+
+impl Daemon<'_> {
+    fn pid(&self) -> u64 {
+        let launch = clio_memory::daemon::Launch {
+            exe: env!("CARGO_BIN_EXE_clio-memory").into(),
+            env: vec![
+                ("HOME".into(), self.0.home.display().to_string()),
+                ("CLIO_MEMORY_DAEMON_IDLE".into(), "60".into()),
+            ],
+        };
+        let a = clio_memory::daemon::request(
+            &self.0.data,
+            Some(&launch),
+            &serde_json::json!({"op": "status"}),
+        )
+        .unwrap();
+        a["pid"].as_u64().unwrap()
+    }
+}
+
+impl Drop for Daemon<'_> {
+    fn drop(&mut self) {
+        let _ = clio_memory::daemon::request(
+            &self.0.data,
+            None,
+            &serde_json::json!({"op": "shutdown"}),
+        );
+    }
+}
+
+fn alive(pid: u64) -> bool {
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap()
+        .success()
+}
+
+fn gone_soon(pid: u64) -> bool {
+    let start = std::time::Instant::now();
+    while alive(pid) && start.elapsed() < std::time::Duration::from_secs(3) {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    !alive(pid)
+}
+
+#[test]
+fn doctor_says_whether_the_daemon_runs() {
+    let m = machine();
+    let o = m.run(&["doctor"]);
+    assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+    assert!(
+        out(&o).contains("info demonio: inactivo (se inicia solo con la primera llamada)"),
+        "{}",
+        out(&o)
+    );
+    let d = Daemon(&m);
+    let pid = d.pid();
+    let o = m.run(&["doctor"]);
+    assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+    assert!(
+        out(&o).contains(&format!("info demonio: activo (pid {pid}, ")),
+        "{}",
+        out(&o)
+    );
+}
+
+#[test]
+fn doctor_fails_on_a_socket_path_too_long() {
+    let m = machine();
+    let sock = format!("/tmp/{}", "x".repeat(120));
+    let run = |extra: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_clio-memory"))
+            .env("HOME", &m.home)
+            .env("PATH", &m.bin)
+            .env("CLIO_MEMORY_DATA", &m.data)
+            .env("CLIO_MEMORY_SOCK", &sock)
+            .env_remove("CLIO_MEMORY_CLAUDE")
+            .env_remove("CODEX_HOME")
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    let o = run(&["doctor"]);
+    assert_eq!(code(&o), 1, "{}{}", out(&o), err(&o));
+    assert!(
+        out(&o).contains("FAIL demonio: la ruta del socket es demasiado larga"),
+        "{}",
+        out(&o)
+    );
+    let o = run(&["--json", "doctor"]);
+    assert_eq!(code(&o), 1, "{}{}", out(&o), err(&o));
+    let report: serde_json::Value = serde_json::from_str(&out(&o)).unwrap();
+    assert_eq!(report["ok"], false);
+    assert_eq!(report["daemon"]["ok"], false, "{report}");
+}
+
+#[test]
+fn uninstall_data_stops_the_daemon_and_takes_its_files() {
+    let m = machine();
+    let d = Daemon(&m);
+    let pid = d.pid();
+    assert!(m.data.join("daemon.sock").exists());
+    let o = m.run(&["uninstall", "--data", "--yes"]);
+    assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+    for f in ["daemon.sock", "daemon.lock", "daemon.log", "memory.db"] {
+        assert!(!m.data.join(f).exists(), "{f} is still there");
+    }
+    assert!(gone_soon(pid), "the daemon is still running");
+}
+
+#[test]
+fn setup_ends_by_stopping_an_older_daemon() {
+    let m = machine();
+    let fakes_dir = m.home.parent().unwrap().join("claude-bin");
+    let claude = fakes::fake_claude_mcp(&fakes_dir);
+    let args = &[
+        "setup",
+        "--yes",
+        "--agents",
+        "claude-code",
+        "--model",
+        "none",
+    ];
+    // None running: nothing is said about it.
+    let o = setup_on(&m, Some(&claude), args);
+    assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+    assert!(!out(&o).contains("demonio"), "{}", out(&o));
+    let d = Daemon(&m);
+    let pid = d.pid();
+    let o = setup_on(&m, Some(&claude), args);
+    assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+    assert!(
+        out(&o).contains("demonio anterior detenido: el próximo uso lanza el de esta versión"),
+        "{}",
+        out(&o)
+    );
+    assert!(gone_soon(pid), "the daemon is still running");
+    let o = m.run(&["daemon", "--status"]);
+    assert!(out(&o).contains("inactivo"), "{}", out(&o));
+}
+
+// The daemon keeps the models it found at start: after `setup model` (even one that failed part
+// way, which may have left a new model or runtime) the next use starts one that sees them.
+#[test]
+fn setup_model_stops_the_daemon() {
+    let m = machine();
+    fake_failing_curl(&m.bin);
+    let d = Daemon(&m);
+    let pid = d.pid();
+    let o = m.run(&["setup", "model", "potion"]);
+    assert_eq!(code(&o), 1, "{}{}", out(&o), err(&o));
+    assert!(gone_soon(pid), "the daemon is still running");
 }

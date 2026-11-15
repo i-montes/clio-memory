@@ -194,6 +194,10 @@ El resto de esa carpeta se queda. Importa porque es la carpeta de Clio, que guar
 
 Cada paso imprime una línea, `✔` o `✖`. Si alguno falló, el código de salida es 1. Si no había nada que quitar, dice `nada que quitar`.
 
+## El demonio
+
+Es un proceso por carpeta de datos que atiende a todos los agentes: así comparten el modelo cargado y un solo escritor de la memoria. Se inicia solo con la primera llamada y se va a los 10 minutos sin uso. `clio-memory daemon --status` dice si corre y `clio-memory daemon --stop` lo detiene; `doctor` lo menciona en una línea. `setup` termina deteniendo uno de una versión anterior (el próximo uso lanza el de la versión nueva), `setup model` también lo detiene (el próximo uso carga el modelo nuevo) y `uninstall` lo detiene antes de quitar nada; con `--data` también borra `daemon.sock`, `daemon.lock` y `daemon.log`. `CLIO_MEMORY_NO_DAEMON=1` lo desactiva: cada agente atiende por su cuenta. Un socket es de una sola carpeta de datos: con varias, cada una necesita su propio `CLIO_MEMORY_SOCK`; ninguno de estos comandos detiene el demonio de otra carpeta (lo dicen como error).
+
 ## El `PATH`
 
 `install.sh` deja el binario en `~/.local/bin` (o en `$CLIO_MEMORY_BIN_DIR`) y **no edita ningún archivo de tu shell**. Si esa carpeta no está en tu `PATH`, `clio-memory` no se encuentra con ese nombre hasta que la agregues:
@@ -275,5 +279,6 @@ curl -fsSL https://raw.githubusercontent.com/i-montes/clio-memory/main/install.s
 | `CLIO_MEMORY_SKIP_ATTESTATION` | `install.sh`: con cualquier valor no vacío, no intenta `gh attestation verify` |
 | `CLIO_MEMORY_HAND_OVER` | `install.sh`, gancho de prueba: con `0` instala el binario sin correr `setup` (la prueba de humo del release) |
 | `CLIO_MEMORY_TTY` | `install.sh`, gancho de prueba: el archivo que se lee como terminal, por defecto `/dev/tty` |
+| `CLIO_MEMORY_NO_DAEMON` | con `1`, no se usa el demonio |
 | `NO_COLOR` | sin colores, en `install.sh` y en la TUI |
 | `SHELL` | `setup --from-installer`: para qué shell es la línea que agrega la carpeta del binario al `PATH` |

@@ -13,6 +13,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use ort::environment::Environment;
 use ort::session::Session;
@@ -101,15 +102,25 @@ impl Granite {
     /// quantized model when it is there, else the full one. Checks the files and loads the runtime
     /// library; the model itself is read on the first text.
     pub fn load(dir: &Path) -> Result<Self> {
+        Self::load_idle(dir, Some(DEFAULT_IDLE))
+    }
+
+    /// Like `load`, with the idle time after which the model leaves memory (`None`: never).
+    pub fn load_idle(dir: &Path, idle: Option<Duration>) -> Result<Self> {
         let file = [QUANTIZED, FULL]
             .into_iter()
             .find(|f| dir.join(f).is_file())
             .ok_or_else(|| err(format!("no {QUANTIZED} or {FULL} in {}", dir.display())))?;
-        Self::load_file(dir, file)
+        Self::load_file_idle(dir, file, idle)
     }
 
     /// From `dir`, with this model file (`model_quint8_avx2.onnx` or `model.onnx`).
     pub fn load_file(dir: &Path, file: &str) -> Result<Self> {
+        Self::load_file_idle(dir, file, Some(DEFAULT_IDLE))
+    }
+
+    /// Like `load_file`, with the idle time after which the model leaves memory (`None`: never).
+    pub fn load_file_idle(dir: &Path, file: &str, idle: Option<Duration>) -> Result<Self> {
         let id = match file {
             QUANTIZED => GRANITE_Q8_ID,
             FULL => GRANITE_ID,
@@ -131,7 +142,7 @@ impl Granite {
         env(&runtime_of(dir))?;
         let (dir, file) = (dir.to_path_buf(), file.to_owned());
         Ok(Self {
-            model: IdleCache::empty(DEFAULT_IDLE, move || read(&dir, &file)),
+            model: IdleCache::empty(idle, move || read(&dir, &file)),
             id,
         })
     }

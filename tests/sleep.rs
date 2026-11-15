@@ -1083,3 +1083,42 @@ fn a_night_scrubs_what_older_purges_left() {
     assert!(!dump_all(&db(&n.data)).contains("Viejo título"));
     assert_eq!(open(&n.data, NOW).unscrubbed_purged().unwrap(), 0);
 }
+
+#[test]
+fn many_writers_marking_use_at_once_leave_one_whole_mark() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().to_path_buf();
+    let done = std::sync::atomic::AtomicBool::new(false);
+    std::thread::scope(|s| {
+        let writers: Vec<_> = (0..16)
+            .map(|i| {
+                let data = &data;
+                s.spawn(move || {
+                    for j in 0..200 {
+                        mark_used(data, NOW + i * 1000 + j);
+                    }
+                })
+            })
+            .collect();
+        // Every mark a reader finds is whole: no writer renames another's half-written file.
+        s.spawn(|| {
+            while !done.load(std::sync::atomic::Ordering::SeqCst) {
+                if let Ok(m) = std::fs::read_to_string(data.join("sleep/last-use")) {
+                    assert!(m.trim().parse::<i64>().is_ok(), "{m:?}");
+                }
+            }
+        });
+        for w in writers {
+            w.join().unwrap();
+        }
+        done.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+    let mark = std::fs::read_to_string(dir.path().join("sleep/last-use")).unwrap();
+    assert!(mark.trim().parse::<i64>().is_ok(), "{mark:?}");
+    let left: Vec<_> = std::fs::read_dir(dir.path().join("sleep"))
+        .unwrap()
+        .map(|f| f.unwrap().file_name())
+        .filter(|n| n != "last-use")
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+}

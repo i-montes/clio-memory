@@ -1,7 +1,16 @@
 #![allow(clippy::unwrap_used)] // tests: panicking is the failure mode
 //! The tools an agent calls: what they answer, what they refuse, and their caps.
 
+mod common;
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use clio_memory::agent::{EmbedModel, Memory};
 use clio_memory::tools::{Session, TOOLS};
+use clio_memory::{Embedder, Engine, FixedClock, OpenMode, SystemClock};
+use common::HashEmbedder;
 use serde_json::json;
 
 fn session(t: &tempfile::TempDir) -> Session {
@@ -84,6 +93,72 @@ fn the_read_budget_is_20_calls() {
     }
     let e = s.call("memory_get", &json!({"id": 1})).unwrap_err();
     assert!(e.contains("budget"), "{e}");
+}
+
+#[test]
+fn the_read_budget_refills_after_half_an_hour() {
+    let t = tempfile::tempdir().unwrap();
+    let clock = Arc::new(FixedClock::new(10_000));
+    let mut s = session(&t).with_clock(clock.clone());
+    for _ in 0..20 {
+        s.call("memory_context", &json!({})).unwrap();
+    }
+    let why = s.call("memory_context", &json!({})).unwrap_err();
+    assert!(why.contains("refills in 30 minutes"), "{why}");
+    clock.set(10_000 + 1799);
+    let why = s.call("memory_context", &json!({})).unwrap_err();
+    assert!(why.contains("refills in 1 minutes"), "{why}");
+    clock.set(10_000 + 1800);
+    assert!(s.call("memory_context", &json!({})).is_ok());
+}
+
+#[test]
+fn the_save_budget_refills_too() {
+    let t = tempfile::tempdir().unwrap();
+    let clock = Arc::new(FixedClock::new(10_000));
+    let mut s = session(&t).with_clock(clock.clone());
+    for i in 0..30 {
+        save(&mut s, &format!("dato número {i}")).unwrap_or_else(|e| panic!("{i}: {e}"));
+    }
+    let why = save(&mut s, "uno de más").unwrap_err();
+    assert!(why.contains("refills in"), "{why}");
+    clock.set(10_000 + 1800);
+    save(&mut s, "uno de más").unwrap();
+}
+
+#[test]
+fn the_change_budget_refills_too() {
+    let t = tempfile::tempdir().unwrap();
+    let clock = Arc::new(FixedClock::new(10_000));
+    let mut s = session(&t).with_clock(clock.clone());
+    save(&mut s, "uno").unwrap();
+    for _ in 0..10 {
+        s.call("memory_pin", &json!({"id": 1})).unwrap();
+    }
+    let why = s.call("memory_pin", &json!({"id": 1})).unwrap_err();
+    assert!(why.contains("refills in"), "{why}");
+    clock.set(10_000 + 1800);
+    s.call("memory_pin", &json!({"id": 1})).unwrap();
+}
+
+#[test]
+fn the_text_budget_refills_too() {
+    let t = tempfile::tempdir().unwrap();
+    let clock = Arc::new(FixedClock::new(10_000));
+    let mut s = session(&t).with_clock(clock.clone());
+    for i in 0..8 {
+        save(&mut s, &format!("{} {i}", "relleno largo ".repeat(80))).unwrap();
+    }
+    let ask = json!({"query": "relleno", "limit": 8});
+    let calls = (0..20)
+        .take_while(|_| s.call("memory_search", &ask).is_ok())
+        .count();
+    assert!(
+        calls < 20,
+        "the 24 KiB cap should stop it before the 20 calls"
+    );
+    clock.set(10_000 + 1800);
+    s.call("memory_search", &ask).unwrap();
 }
 
 #[test]
@@ -344,4 +419,56 @@ fn a_bad_id_spends_no_change() {
     }
     let r = s.call("memory_pin", &json!({"id": 1})).unwrap();
     assert!(!r.contains("10"), "{r}");
+}
+
+/// Inside `embed`, tries to take the writer: it can only if the session let it go.
+struct ProbeEmbedder {
+    inner: HashEmbedder,
+    db: PathBuf,
+    free: Arc<AtomicBool>,
+}
+impl Embedder for ProbeEmbedder {
+    fn model_id(&self) -> &str {
+        self.inner.model_id()
+    }
+    fn dim(&self) -> usize {
+        self.inner.dim()
+    }
+    fn embed(&self, texts: &[&str]) -> clio_memory::Result<Vec<Vec<f32>>> {
+        if Engine::open(&self.db, OpenMode::ReadWrite, Arc::new(SystemClock)).is_ok() {
+            self.free.store(true, Ordering::SeqCst);
+        }
+        self.inner.embed(texts)
+    }
+}
+
+#[test]
+fn a_save_does_not_hold_the_writer_while_it_embeds() {
+    let t = tempfile::tempdir().unwrap();
+    let free = Arc::new(AtomicBool::new(false));
+    let model = EmbedModel::from_embedder(Arc::new(ProbeEmbedder {
+        inner: HashEmbedder::new("hash", 16),
+        db: t.path().join("memory.db"),
+        free: free.clone(),
+    }));
+    let mut s = Session::new(t.path().to_path_buf(), None, "mcp:prueba".into()).with_model(model);
+    let said = s
+        .call(
+            "memory_save",
+            &json!({"text": "Qué: una prueba", "kind": "semantic"}),
+        )
+        .unwrap();
+    assert!(said.starts_with("saved"), "{said}");
+    assert!(
+        free.load(Ordering::SeqCst),
+        "the writer was held while the model ran"
+    );
+    let m = Memory::open_read(t.path(), &EmbedModel::none(), None, "mcp:prueba")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        m.engine().stats().unwrap().vectors,
+        1,
+        "the vector is stored all the same"
+    );
 }

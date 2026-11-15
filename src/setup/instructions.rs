@@ -4,9 +4,10 @@
 //! Claude Code, Codex and Gemini CLI read one file; Antigravity reads Gemini's `GEMINI.md`, so
 //! the two share it. OpenCode has no such file of ours to append to (its `AGENTS.md` is the
 //! person's), so it gets `clio-memory.md` beside its config and that file's absolute path in the
-//! `instructions` array of `opencode.json`. Only lines equal to ours are ever removed; every
-//! other byte of a file, and every other key and entry of the config, stays where it was. A file
-//! left with nothing but blank lines is deleted (unless it is a link).
+//! `instructions` array of `opencode.json`. Only lines equal to ours (or to an earlier version's,
+//! which `add_instructions` replaces in place) are ever removed; every other byte of a file, and
+//! every other key and entry of the config, stays where it was. A file left with nothing but
+//! blank lines is deleted (unless it is a link).
 
 use std::path::{Path, PathBuf};
 
@@ -14,7 +15,7 @@ use serde_json::{Map, Value};
 
 use super::agents::{AgentId, Env};
 use super::config_file::{opencode_config, read_json, write_json};
-use super::{INSTRUCTIONS_LINE, write_keeping_mode, write_private};
+use super::{INSTRUCTIONS_LINE, OLD_INSTRUCTIONS_LINES, write_keeping_mode, write_private};
 
 /// The file `agent`'s line goes in.
 pub fn instructions_file(env: &Env, agent: AgentId) -> PathBuf {
@@ -48,7 +49,7 @@ fn opencode_md(env: &Env) -> PathBuf {
 
 /// Whether `agent` has the line (for OpenCode: the file with it, and the config pointing at it).
 pub fn has_instructions(env: &Env, agent: AgentId) -> bool {
-    let has_line = |text: &str| text.lines().any(|l| l.trim() == INSTRUCTIONS_LINE);
+    let has_line = |text: &str| text.lines().any(is_ours);
     let file = std::fs::read_to_string(instructions_file(env, agent));
     if !file.as_deref().is_ok_and(has_line) {
         return false;
@@ -66,17 +67,25 @@ pub fn has_instructions(env: &Env, agent: AgentId) -> bool {
     )
 }
 
-/// Adds the line to `agent`; `None` when it was there already, else the file it went in.
+/// Adds the line to `agent`, or puts it in the place of an earlier version's; `None` when it was
+/// there already, else the file it went in.
 pub fn add_instructions(env: &Env, agent: AgentId) -> Result<Option<PathBuf>, String> {
-    if has_instructions(env, agent) {
+    let file = instructions_file(env, agent);
+    let old = std::fs::read_to_string(&file).is_ok_and(|t| {
+        t.lines()
+            .any(|l| OLD_INSTRUCTIONS_LINES.contains(&l.trim()))
+    });
+    if !old && has_instructions(env, agent) {
         return Ok(None);
     }
-    let file = instructions_file(env, agent);
     if agent != AgentId::OpenCode {
         let text = read_text(&file)?;
-        if !text.lines().any(|l| l.trim() == INSTRUCTIONS_LINE) {
-            write_through(&file, &format!("{text}{}{INSTRUCTIONS_LINE}\n", sep(&text)))?;
-        }
+        let text = if old {
+            renewed(&text)
+        } else {
+            format!("{text}{}{INSTRUCTIONS_LINE}\n", sep(&text))
+        };
+        write_through(&file, &text)?;
         return Ok(Some(file));
     }
 
@@ -235,12 +244,30 @@ fn sep(text: &str) -> &'static str {
     }
 }
 
-/// `text` without the lines that are ours (compared trimmed); `None` when it had none.
+/// Whether `line` is ours, this version's or an earlier one's (compared trimmed).
+fn is_ours(line: &str) -> bool {
+    let line = line.trim();
+    line == INSTRUCTIONS_LINE || OLD_INSTRUCTIONS_LINES.contains(&line)
+}
+
+/// `text` with its first line of ours made the current one, where it was, and the rest of ours
+/// gone: never two.
+fn renewed(text: &str) -> String {
+    let mut first = true;
+    text.split_inclusive('\n')
+        .filter_map(|l| {
+            if !is_ours(l) {
+                return Some(l.to_owned());
+            }
+            let end = &l[l.trim_end_matches(['\r', '\n']).len()..];
+            std::mem::take(&mut first).then(|| format!("{INSTRUCTIONS_LINE}{end}"))
+        })
+        .collect()
+}
+
+/// `text` without the lines that are ours; `None` when it had none.
 fn without_line(text: &str) -> Option<String> {
-    let kept: String = text
-        .split_inclusive('\n')
-        .filter(|l| l.trim() != INSTRUCTIONS_LINE)
-        .collect();
+    let kept: String = text.split_inclusive('\n').filter(|l| !is_ours(l)).collect();
     (kept.len() != text.len()).then_some(kept)
 }
 

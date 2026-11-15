@@ -28,7 +28,10 @@ pub const SKILL: &str = include_str!("../../skill/SKILL.md");
 /// The line added to each agent's instructions file (`~/.claude/CLAUDE.md` and the like) when the
 /// person says yes.
 pub const INSTRUCTIONS_LINE: &str =
-    "- Mi memoria principal es clio-memory (MCP): úsala según la skill clio-memory.";
+    "- Mi memoria principal es clio-memory: úsala según la skill clio-memory.";
+/// Lines earlier versions added: still ours, to be removed or replaced by `INSTRUCTIONS_LINE`.
+pub const OLD_INSTRUCTIONS_LINES: &[&str] =
+    &["- Mi memoria principal es clio-memory (MCP): úsala según la skill clio-memory."];
 /// The name Claude Code's flow knew it by.
 pub const CLAUDE_MD_LINE: &str = INSTRUCTIONS_LINE;
 /// The installer `update` runs again: the one published with the latest release. A release is

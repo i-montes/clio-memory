@@ -32,7 +32,7 @@ Cómo se baja e instala el binario (`install.sh`) está en [releases.md](release
 Qué es «nuestro»:
 
 - **Servidor MCP.** Es nuestro el que corre un binario llamado `clio-memory` con el único argumento `mcp`. Si ese binario es este, está al día. Si es otro (por ejemplo `~/.cargo/bin/clio-memory`, de una instalación vieja), se re-apunta a este sin preguntar. Si está desactivado (`"enabled": false`, o `"disabled": true`), se vuelve a escribir activado. Cualquier otra cosa llamada `clio-memory` es ajena.
-- **Skill.** Es nuestra la que coincide, por sha256, con la de esta versión o con una publicada antes (v0.2.0, v0.4.0, v0.5.0): se actualiza o se mueve. Cualquier otra, incluida una que hayas editado, es ajena.
+- **Skill.** Es nuestra la que coincide, por sha256, con la de esta versión o con una publicada antes (la de v0.2.0, la de v0.4.0, la de v0.5.0, la de v0.6.0 y la de v0.7.0 a v0.10.1): se actualiza o se mueve. Cualquier otra, incluida una que hayas editado, es ajena.
 - **Claude Code.** Solo cuenta el alcance de usuario (`--scope user`). Una entrada `clio-memory` en el alcance local o de proyecto se lee como «no hay».
 
 Correrlo otra vez conserva lo elegido. Sin preguntas (con `--yes` o sin terminal) y sin banderas, se quedan los agentes que ya estaban conectados y siguen instalados (uno que no lo estaba se conecta con `--agents`, y `setup` lo dice; uno que desinstalaste se salta aunque quede su configuración), el modelo que hay (si no había ninguno, no se baja nada) y las líneas de instrucciones como estaban. Cada paso dice «ya está» y no reescribe lo que ya está bien.
@@ -90,8 +90,10 @@ Los archivos de instrucciones (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`) solo recib
 La línea, igual para todos los agentes:
 
 ```
-- Mi memoria principal es clio-memory (MCP): úsala según la skill clio-memory.
+- Mi memoria principal es clio-memory: úsala según la skill clio-memory.
 ```
+
+La de las versiones anteriores a v0.11.0 (`… clio-memory (MCP): …`) también es nuestra: cuando `setup` agrega la línea, pone esta en el lugar de aquella (nunca las dos), y al desconectar se quita cualquiera de ellas.
 
 ## Dónde va la skill
 

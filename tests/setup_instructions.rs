@@ -530,3 +530,62 @@ fn a_file_left_empty_is_deleted() {
     assert!(md.symlink_metadata().unwrap().file_type().is_symlink());
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "");
 }
+
+#[test]
+fn the_older_line_is_replaced_not_doubled() {
+    let [old] = clio_memory::setup::OLD_INSTRUCTIONS_LINES else {
+        panic!("one older line")
+    };
+    assert_ne!(*old, INSTRUCTIONS_LINE);
+    let r = rig();
+    let env = r.env();
+    let md = r.home.join(".claude/CLAUDE.md");
+    put(&md, &format!("# Mis reglas\n{old}\n- corto\n"));
+    assert!(has_instructions(&env, AgentId::ClaudeCode));
+    assert_eq!(
+        add_instructions(&env, AgentId::ClaudeCode).unwrap(),
+        Some(md.clone())
+    );
+    // In its place, once.
+    assert_eq!(
+        std::fs::read_to_string(&md).unwrap(),
+        format!("# Mis reglas\n{INSTRUCTIONS_LINE}\n- corto\n")
+    );
+    assert!(has_instructions(&env, AgentId::ClaudeCode));
+    assert_eq!(add_instructions(&env, AgentId::ClaudeCode).unwrap(), None);
+
+    // Both lines, or the old one twice: one current line is left.
+    put(
+        &md,
+        &format!("{old}\n- corto\n  {INSTRUCTIONS_LINE}\n{old}"),
+    );
+    add_instructions(&env, AgentId::ClaudeCode).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&md).unwrap(),
+        format!("{INSTRUCTIONS_LINE}\n- corto\n")
+    );
+
+    // Either line is removed.
+    put(&md, &format!("# Mis reglas\n{old}\n"));
+    assert_eq!(
+        remove_instructions(&env, AgentId::ClaudeCode, &[]).unwrap(),
+        Some(md.clone())
+    );
+    assert_eq!(std::fs::read_to_string(&md).unwrap(), "# Mis reglas\n");
+
+    // OpenCode: its own file is rewritten with the current line.
+    put(&r.opencode_md(), &format!("{old}\n"));
+    put(
+        &r.opencode_json(),
+        &json!({"instructions": [r.opencode_md().to_str().unwrap()]}).to_string(),
+    );
+    assert!(has_instructions(&env, AgentId::OpenCode));
+    assert!(add_instructions(&env, AgentId::OpenCode).unwrap().is_some());
+    assert_eq!(
+        std::fs::read_to_string(r.opencode_md()).unwrap(),
+        format!("{INSTRUCTIONS_LINE}\n")
+    );
+    put(&r.opencode_md(), &format!("{old}\n"));
+    remove_instructions(&env, AgentId::OpenCode, &[]).unwrap();
+    assert!(!r.opencode_md().exists());
+}

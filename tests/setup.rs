@@ -118,7 +118,7 @@ fn the_claude_md_line_only_with_consent_and_only_once() {
     r.setup(false, Some(true)).unwrap();
     assert_eq!(
         std::fs::read_to_string(&md).unwrap(),
-        "# Mis reglas\n- responde corto\n- Mi memoria principal es clio-memory (MCP): úsala según la skill clio-memory.\n"
+        "# Mis reglas\n- responde corto\n- Mi memoria principal es clio-memory: úsala según la skill clio-memory.\n"
     );
 }
 
@@ -233,4 +233,30 @@ fn the_command_runs_setup_with_the_flags() {
         .output()
         .unwrap();
     assert_eq!(bad.status.code(), Some(2));
+}
+
+#[test]
+fn the_skill_of_v0_7_to_v0_10_is_known_as_ours() {
+    assert!(
+        clio_memory::setup::skill::KNOWN_SKILLS
+            .contains(&"2e3637e12fd31d53632ed8574e94241bae03ca95d84ca6c016f836da0317df01")
+    );
+}
+
+#[test]
+fn the_skill_teaches_both_ways() {
+    let s = clio_memory::setup::SKILL;
+    for needle in [
+        "memory_search",
+        "clio-memory m search",
+        "clio-memory m save",
+        "<<'EOF'",
+        "UNTRUSTED-DATA",
+    ] {
+        assert!(s.contains(needle), "the skill does not mention {needle}");
+    }
+    assert!(
+        !s.lines().nth(2).unwrap_or_default().contains("MCP tools"),
+        "the description no longer says MCP only"
+    );
 }

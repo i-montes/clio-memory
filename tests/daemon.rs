@@ -263,7 +263,11 @@ fn a_daemon_that_answers_stale_is_one_that_is_leaving() {
     let stale = json!({"ok": false, "error": "stale", "text": "vieja"});
     let older = fake_daemon(&f, vec![stale.clone(), stale]);
     assert!(f.cli_out(&["--status"]).contains("demonio: inactivo"));
-    assert!(f.cli_out(&["--stop"]).contains("no había demonio"));
+    let started = Instant::now();
+    assert!(f.cli_out(&["--stop"]).contains("demonio detenido"));
+    // It waited for the socket to go, not for its 2 s.
+    assert!(started.elapsed() < Duration::from_millis(1500));
+    assert!(!f.data.join("daemon.sock").exists());
     older.join().unwrap();
 }
 
@@ -310,8 +314,8 @@ fn fake_daemon(f: &Folder, answers: Vec<Value>) -> std::thread::JoinHandle<()> {
     fake_daemon_with(f, n, move |_| answers.lock().unwrap().next().unwrap())
 }
 
-/// A daemon that answers `n` requests with `answer(request)`, then goes. Fewer requests in 10 s
-/// fail the test instead of leaving it waiting.
+/// A daemon that answers `n` requests with `answer(request)`, then goes (its socket too). Fewer
+/// requests in 10 s fail the test instead of leaving it waiting.
 fn fake_daemon_with(
     f: &Folder,
     n: usize,
@@ -320,7 +324,8 @@ fn fake_daemon_with(
     use std::io::{BufRead, BufReader, ErrorKind};
     use std::os::unix::net::UnixListener;
     std::fs::create_dir(&f.data).unwrap();
-    let listener = UnixListener::bind(f.data.join("daemon.sock")).unwrap();
+    let sock = f.data.join("daemon.sock");
+    let listener = UnixListener::bind(&sock).unwrap();
     listener.set_nonblocking(true).unwrap();
     std::thread::spawn(move || {
         let until = Instant::now() + Duration::from_secs(10);
@@ -341,6 +346,7 @@ fn fake_daemon_with(
             let request: Value = serde_json::from_str(&line).unwrap();
             writeln!(&conn, "{}", answer(&request)).unwrap();
         }
+        std::fs::remove_file(&sock).unwrap();
     })
 }
 

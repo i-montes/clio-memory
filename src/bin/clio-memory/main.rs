@@ -210,9 +210,10 @@ fn daemon(db: &std::path::Path, status: bool, stop: bool) -> Result<Vec<String>,
     }
     let data = commands::data_of(db);
     if stop {
-        return Ok(vec![match daemon_answer(data, "shutdown")? {
-            Some(_) => "demonio detenido".into(),
-            None => "no había demonio".into(),
+        return Ok(vec![if stop_daemon(data)? {
+            "demonio detenido".into()
+        } else {
+            "no había demonio".into()
         }]);
     }
     if status {

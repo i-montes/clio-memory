@@ -1018,8 +1018,9 @@ pub fn embed_pending(data: &Path, model: &EmbedModel) -> Res<usize> {
 }
 
 /// One batch of [`embed_pending`]: the newest memories (what a save just wrote) and no more. The
-/// daemon's save, which leaves the rest to its background. Whether more may wait (the batch was
-/// full). It never takes the writer to close the queued jobs: the background or the exit does.
+/// daemon's save, which leaves the rest to its background. When nothing else waits, the queued
+/// jobs are closed under the same writer that stored the batch. Whether more may wait (the batch
+/// was full, or something still waited when the jobs were to be closed).
 pub fn embed_newest(data: &Path, model: &EmbedModel) -> Res<bool> {
     embed(data, model, true).map(|(_, more)| more)
 }
@@ -1050,7 +1051,8 @@ fn embed(data: &Path, model: &EmbedModel, once: bool) -> Res<(usize, bool)> {
         let w = Memory::open_write(data, model, None, "agente")?;
         stored += w.engine.store_vectors(computed).map_err(m)?;
         if once {
-            return Ok((stored, examined == batch));
+            let more = examined == batch || !w.engine.close_embed_jobs().map_err(m)?;
+            return Ok((stored, more));
         }
     }
 }

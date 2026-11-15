@@ -592,7 +592,7 @@ fn a_backlog_is_embedded_in_the_background_and_holds_up_no_session() {
 }
 
 #[test]
-fn a_save_with_nothing_else_waiting_starts_no_background() {
+fn a_save_with_nothing_else_waiting_closes_its_own_job() {
     let t = tempfile::tempdir().unwrap();
     let d = daemon(t.path());
     let save = call(
@@ -606,11 +606,9 @@ fn a_save_with_nothing_else_waiting_starts_no_background() {
         saved["text"].as_str().unwrap().starts_with("saved"),
         "{saved}"
     );
+    // Its own job is closed by the save itself, under the writer that stored its vector.
     assert_eq!(vectors(t.path()), 1);
-    // A background would close the save's queued job (taking the writer for that alone); it is
-    // left for the next one, or the daemon's exit.
-    std::thread::sleep(Duration::from_millis(300));
-    assert_eq!(ready_embed_jobs(t.path()), 1, "a background ran");
+    assert_eq!(ready_embed_jobs(t.path()), 0, "the save left its job open");
 }
 
 fn ready_embed_jobs(data: &Path) -> usize {

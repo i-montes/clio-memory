@@ -13,7 +13,8 @@ use clio_memory::setup::INSTRUCTIONS_LINE;
 use clio_memory::setup::agents::{AgentId, Env};
 use clio_memory::setup::instructions::has_instructions;
 use clio_memory::setup::mcp::{McpState, mcp_state};
-use clio_memory::setup::modes::Mode;
+use clio_memory::setup::modes::{self, Mode};
+use clio_memory::setup::permission;
 use clio_memory::setup::plan::{
     Health, Selection, Step, agent_report, apply, connected, uninstall,
 };
@@ -483,8 +484,11 @@ fn the_report_says_each_agents_state() {
         .map(|(a, health, text)| (a, (health, text)))
         .collect();
     assert_eq!(report.len(), 5, "{report:?}");
-    assert_eq!(report[&ClaudeCode], (Health::Ok, "conectado".to_owned()));
-    assert_eq!(report[&Codex], (Health::Ok, "conectado".to_owned()));
+    assert_eq!(
+        report[&ClaudeCode],
+        (Health::Ok, "conectado (MCP)".to_owned())
+    );
+    assert_eq!(report[&Codex], (Health::Ok, "conectado (MCP)".to_owned()));
     assert_eq!(report[&Gemini], (Health::Off, "no conectado".to_owned()));
     assert_eq!(
         report[&OpenCode],
@@ -742,4 +746,56 @@ fn what_runs_before_the_binary_can_keep_it() {
     });
     assert!(ran.get(), "{steps:#?}");
     assert!(steps.iter().any(|s| s.what == "modelos"), "{steps:#?}");
+}
+
+impl Rig {
+    /// Connects `agents` by skill.
+    fn by_skill(&self, agents: &[AgentId]) -> Vec<Step> {
+        apply(
+            &self.env(),
+            &Selection {
+                agents: agents.to_vec(),
+                instructions: true,
+                replace: false,
+                exclusive: false,
+                mode: Some(Mode::Skill),
+            },
+            &never,
+        )
+    }
+}
+
+// Taking an agent connected by skill out takes its way with it: the mode noted and, in Claude
+// Code, the permission rule; the skill goes when nobody else reads it.
+#[test]
+fn uninstall_takes_the_mode_and_the_rule_away() {
+    let r = rig();
+    all_ok(&r.by_skill(&[ClaudeCode]));
+    all_ok(&r.apply(&[Codex], false));
+    assert_eq!(modes::load(&r.data).get(&ClaudeCode), Some(&Mode::Skill));
+    assert!(permission::has(&r.home));
+    let steps = uninstall(&r.env(), Some(&[ClaudeCode]));
+    all_ok(&steps);
+    assert_eq!(modes::load(&r.data).get(&ClaudeCode), None, "{steps:#?}");
+    assert_eq!(modes::load(&r.data).get(&Codex), Some(&Mode::Mcp));
+    assert!(!permission::has(&r.home), "{steps:#?}");
+    assert!(!has_instructions(&r.env(), ClaudeCode));
+    assert!(!r.skill(".claude/skills").exists(), "{steps:#?}");
+    assert!(r.skill(".agents/skills").is_file(), "Codex still reads it");
+    assert_eq!(connected(&r.env()), vec![Codex]);
+}
+
+#[test]
+fn uninstall_of_everything_removes_the_modes_file() {
+    let r = rig();
+    all_ok(&r.by_skill(&[ClaudeCode, OpenCode]));
+    all_ok(&r.apply(&[Codex], false));
+    assert!(modes::file(&r.data).is_file());
+    let steps = uninstall(&r.env(), None);
+    all_ok(&steps);
+    assert!(!modes::file(&r.data).exists(), "{steps:#?}");
+    assert!(!permission::has(&r.home));
+    assert!(connected(&r.env()).is_empty());
+    // Nothing noted is fine too.
+    all_ok(&uninstall(&r.env(), None));
 }

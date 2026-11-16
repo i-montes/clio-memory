@@ -1026,6 +1026,9 @@ impl Machine {
             .env_remove("CLIO_MEMORY_CLAUDE")
             .env_remove("CLIO_MEMORY_BIN_DIR")
             .env_remove("CODEX_HOME")
+            .env_remove("CLAUDECODE")
+            .env_remove("CLAUDE_CODE_SESSION_ID")
+            .env_remove("CLIO_MEMORY_AGENT")
             .args(args)
             .stdin(std::process::Stdio::null())
             .output()
@@ -1139,7 +1142,10 @@ fn doctor_lists_agents() {
     let o = m.run(&["doctor"]);
     let text = out(&o);
     assert_eq!(code(&o), 1, "{text}");
-    assert!(text.contains("ok   agente opencode: conectado\n"), "{text}");
+    assert!(
+        text.contains("ok   agente opencode: conectado (MCP)\n"),
+        "{text}"
+    );
     assert!(
         text.contains("--   agente gemini: no conectado\n"),
         "{text}"
@@ -1239,7 +1245,10 @@ fn setup_on(m: &Machine, claude: Option<&Path>, args: &[&str]) -> Output {
         .env("CODEX_HOME", &codex_home)
         .env("SHELL", "/bin/bash")
         .env_remove("CLIO_MEMORY_BIN_DIR")
-        .env_remove("CLIO_MEMORY_CLAUDE");
+        .env_remove("CLIO_MEMORY_CLAUDE")
+        .env_remove("CLAUDECODE")
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .env_remove("CLIO_MEMORY_AGENT");
     if let Some(claude) = claude {
         cmd.env("CLIO_MEMORY_CLAUDE", claude);
     }
@@ -1739,6 +1748,96 @@ fn doctor_warns_of_an_older_clio_memory_that_runs_first_without_failing() {
     assert!(line.contains("cargo uninstall clio-memory"), "{text}");
 }
 
+/// Claude Code connected by skill and Codex by MCP, by `setup` (each its default); with
+/// `on_path`, this binary is on the `PATH` as `clio-memory`. The fake `claude` lives outside the
+/// `PATH` (`CLIO_MEMORY_CLAUDE`): what it is returned, for the next runs.
+fn claude_by_skill_and_codex_by_mcp(m: &Machine, on_path: bool) -> std::path::PathBuf {
+    let claude = fakes::fake_claude_mcp(&m.home.parent().unwrap().join("claude-bin"));
+    fakes::fake_codex(&m.bin, false);
+    if on_path {
+        std::os::unix::fs::symlink(&m.exe, m.bin.join("clio-memory")).unwrap();
+    }
+    let o = setup_on(
+        m,
+        Some(&claude),
+        &[
+            "setup",
+            "--yes",
+            "--agents",
+            "claude-code,codex",
+            "--model",
+            "none",
+        ],
+    );
+    assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+    claude
+}
+
+#[test]
+fn doctor_names_the_way_each_agent_is_connected() {
+    let m = machine();
+    let claude = claude_by_skill_and_codex_by_mcp(&m, true);
+    let o = setup_on(&m, Some(&claude), &["doctor"]);
+    let text = out(&o);
+    assert!(
+        text.contains("ok   agente claude-code: conectado (skill)\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("ok   agente codex: conectado (MCP)\n"),
+        "{text}"
+    );
+    assert_eq!(code(&o), 0, "{text}{}", err(&o));
+}
+
+#[test]
+fn doctor_fails_when_the_skill_way_cannot_find_the_binary() {
+    let m = machine();
+    let claude = claude_by_skill_and_codex_by_mcp(&m, false);
+    let o = setup_on(&m, Some(&claude), &["doctor"]);
+    let text = out(&o);
+    assert!(
+        text.contains(&format!(
+            "FAIL agente claude-code: por skill, pero «clio-memory» no está en el PATH (agrega {} al PATH)\n",
+            m.exe.parent().unwrap().display()
+        )),
+        "{text}"
+    );
+    // Codex goes through its server: the PATH is not its business.
+    assert!(
+        text.contains("ok   agente codex: conectado (MCP)\n"),
+        "{text}"
+    );
+    assert_eq!(code(&o), 1, "{text}");
+    // Another `clio-memory` first on the PATH runs instead of this one: the skill way is broken.
+    let old = old_clio_memory_on_the_path(&m);
+    let o = setup_on(&m, Some(&claude), &["doctor"]);
+    let text = out(&o);
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("FAIL agente claude-code: por skill, pero "))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(line.contains(&old.display().to_string()), "{text}");
+    assert!(line.contains("cargo uninstall clio-memory"), "{text}");
+    assert_eq!(code(&o), 1, "{text}");
+}
+
+#[test]
+fn doctor_fails_when_the_skill_is_gone() {
+    let m = machine();
+    let claude = claude_by_skill_and_codex_by_mcp(&m, true);
+    std::fs::remove_dir_all(m.home.join(".claude/skills/clio-memory")).unwrap();
+    let o = setup_on(&m, Some(&claude), &["doctor"]);
+    let text = out(&o);
+    assert!(
+        text.contains(
+            "FAIL agente claude-code: por skill, pero no ve la skill (clio-memory setup la repone)\n"
+        ),
+        "{text}"
+    );
+    assert_eq!(code(&o), 1, "{text}");
+}
+
 // Right after an install nothing has used the memory yet: doctor says so, still checks the
 // agents, and only an agent's FAIL makes it fail.
 #[test]
@@ -1754,7 +1853,10 @@ fn doctor_before_the_first_memory_is_not_a_failure() {
         text.contains("todavía no hay memoria: se crea la primera vez que un agente la usa"),
         "{text}"
     );
-    assert!(text.contains("ok   agente opencode: conectado\n"), "{text}");
+    assert!(
+        text.contains("ok   agente opencode: conectado (MCP)\n"),
+        "{text}"
+    );
     assert!(
         !m.data.join("memory.db").exists(),
         "doctor created the memory"

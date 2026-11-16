@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use super::agents::{AgentId, Env, detect};
+use super::agents::{AgentId, Env, detect, shadowing, shadowing_note};
 use super::instructions::{
     add_instructions, has_old_instructions, instructions_file, remove_instructions,
 };
@@ -419,11 +419,12 @@ pub fn uninstall_with(
         .filter(|a| !leaving.contains(a) && conn[a] == Some(true))
         .collect();
     for agent in leaving.iter().copied() {
+        // By MCP or by skill: `disconnect` takes either way out.
+        if conn[&agent] == Some(true) {
+            steps.extend(disconnect(env, agent, &still, &mut conn));
+            continue;
+        }
         match mcp_state(env, agent) {
-            Ok(state) if is_connected(&state) => {
-                steps.extend(disconnect(env, agent, &still, &mut conn));
-                continue;
-            }
             Ok(McpState::Foreign(_)) => steps.push(Step::new(
                 Some(agent),
                 "MCP",
@@ -453,6 +454,18 @@ pub fn uninstall_with(
         return steps;
     }
 
+    // Every way noted went with its agent; with something left undone, the file keeps it.
+    if !steps.iter().any(|s| s.outcome.is_err()) {
+        let file = modes::file(&env.data);
+        match std::fs::remove_file(&file) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => steps.push(Step::new(
+                None,
+                "modos",
+                Err(format!("{}: {e}", file.display())),
+            )),
+            _ => {}
+        }
+    }
     if sleep_present(&env.home) {
         steps.push(Step::new(
             None,
@@ -507,14 +520,20 @@ pub enum Health {
     Fail,
 }
 
-/// Each agent found on this machine: how it is and what is the matter: `conectado`,
-/// `no conectado` (`NOT_CONNECTED`), or what is wrong. An agent whose state cannot be read is
-/// `Off` while it does not see our skill (most likely it was never connected), else `Fail`.
+/// Each agent found on this machine: how it is and what is the matter: `conectado (skill)`,
+/// `conectado (MCP)`, `no conectado` (`NOT_CONNECTED`), or what is wrong. An agent whose state
+/// cannot be read is `Off` while it does not see our skill (most likely it was never connected),
+/// else `Fail`.
 pub fn agent_report(env: &Env) -> Vec<(AgentId, Health, String)> {
+    let noted = modes::load(&env.data);
     detect(env)
         .into_iter()
         .map(|f| {
             let agent = f.agent;
+            if noted.get(&agent) == Some(&Mode::Skill) {
+                let (health, text) = skill_way_report(env, agent);
+                return (agent, health, text);
+            }
             let (health, text) = match mcp_state(env, agent) {
                 Err(e) if sees_our_skill(&env.home, agent) => (Health::Fail, e),
                 Err(e) => (Health::Off, format!("no se pudo leer su estado: {e}")),
@@ -529,15 +548,33 @@ pub fn agent_report(env: &Env) -> Vec<(AgentId, Health, String)> {
                 Ok(McpState::OtherPath(p)) => {
                     (Health::Fail, format!("el MCP apunta a {}", p.display()))
                 }
-                Ok(McpState::Ours) => skill_report(&env.home, agent),
+                Ok(McpState::Ours) => skill_report(&env.home, agent, Mode::Mcp),
             };
             (agent, health, text)
         })
         .collect()
 }
 
+/// An agent connected by skill: `clio-memory` on the `PATH` is this binary, and it sees the skill.
+fn skill_way_report(env: &Env, agent: AgentId) -> (Health, String) {
+    if env.program("clio-memory").is_none() {
+        let dir = env.exe.parent().unwrap_or(&env.exe).display();
+        return (
+            Health::Fail,
+            format!("por skill, pero «clio-memory» no está en el PATH (agrega {dir} al PATH)"),
+        );
+    }
+    if let Some(other) = shadowing(env) {
+        return (
+            Health::Fail,
+            format!("por skill, pero {}", shadowing_note(env, &other)),
+        );
+    }
+    skill_report(&env.home, agent, Mode::Skill)
+}
+
 /// A connected agent's skill: ours and current in a folder it reads, and nothing foreign there.
-fn skill_report(home: &Path, agent: AgentId) -> (Health, String) {
+fn skill_report(home: &Path, agent: AgentId, mode: Mode) -> (Health, String) {
     let states: Vec<(PathBuf, SkillFile)> = read_by(agent)
         .map(|d| d.path(home))
         .map(|p| {
@@ -549,11 +586,20 @@ fn skill_report(home: &Path, agent: AgentId) -> (Health, String) {
     if let Some(p) = first(SkillFile::Foreign) {
         (Health::Fail, format!("skill ajena en {}", p.display()))
     } else if first(SkillFile::Current).is_some() {
-        (Health::Ok, "conectado".to_owned())
+        let way = match mode {
+            Mode::Skill => "skill",
+            Mode::Mcp => "MCP",
+        };
+        (Health::Ok, format!("conectado ({way})"))
     } else if let Some(p) = first(SkillFile::Old) {
         (
             Health::Fail,
             format!("skill desactualizada en {}", p.display()),
+        )
+    } else if mode == Mode::Skill {
+        (
+            Health::Fail,
+            "por skill, pero no ve la skill (clio-memory setup la repone)".to_owned(),
         )
     } else {
         (Health::Fail, "falta la skill".to_owned())

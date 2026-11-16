@@ -36,7 +36,7 @@ pub fn as_person() -> bool {
 pub const PERSONS_ONLY: &str = "esta orden es de la persona: córrela tú en una terminal (o pon CLIO_MEMORY_AS_PERSON=1 si eres tú quien la corre desde un agente)";
 
 /// An accident guard, not a barrier: an agent with a shell can set the variable. `actor` is the
-/// global `--actor`; `main` checks `uninstall --data` with this same function. `caller` is only
+/// global `--actor`; `main` checks `uninstall --data` and `setup temis` with this same function. `caller` is only
 /// run for a guarded command without `as_person` (finding the caller can spawn `ps`).
 pub fn persons_only(
     command: &Command,
@@ -54,6 +54,8 @@ pub fn persons_only(
         Command::ImportMemories { origin, .. } => *origin == Some(Origin::User),
         Command::Remember { .. } => actor.is_none(),
         Command::Uninstall { data, .. } => *data,
+        // it keeps a credential and points the sleep at a server that gets memory text
+        Command::SetupTemis { .. } => true,
         _ => false,
     };
     if persons && !as_person && caller().agent != "cli" {

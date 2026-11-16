@@ -116,6 +116,47 @@ fn main() -> ExitCode {
             ..
         })) => done(setup_sleep(remove)),
         Ok(args::Parsed::Run(args::Cli {
+            command:
+                ref command @ args::Command::SetupTemis {
+                    ref url,
+                    ref model,
+                    allow_http,
+                    remove,
+                    check,
+                },
+            actor,
+            db,
+            ..
+        })) => {
+            // before anything is read, asked or changed: a refusal leaves everything as it was
+            if let Err(message) = write::persons_only(
+                command,
+                actor.as_deref(),
+                &|| clio_memory::agent::caller::caller(None),
+                write::as_person(),
+            ) {
+                output::error(&format!("error: {message}"));
+                return ExitCode::from(1);
+            }
+            match setup_temis(
+                commands::data_of(&db),
+                url.as_deref(),
+                model.as_deref(),
+                allow_http,
+                remove,
+                check,
+            ) {
+                Ok(line) => {
+                    output::line(&line);
+                    ExitCode::SUCCESS
+                }
+                Err((code, message)) => {
+                    output::error(&format!("error: {message}"));
+                    ExitCode::from(code)
+                }
+            }
+        }
+        Ok(args::Parsed::Run(args::Cli {
             command: args::Command::Update,
             ..
         })) => done(clio_memory::setup::update(clio_memory::setup::INSTALLER_URL).map(|()| vec![])),
@@ -521,7 +562,7 @@ fn memory_files(db: &std::path::Path) -> Result<MemoryFiles, String> {
             name.push(suffix);
             std::path::PathBuf::from(name)
         })
-        .chain(["daemon.sock", "daemon.lock", "daemon.log"].map(|f| data.join(f)))
+        .chain(["daemon.sock", "daemon.lock", "daemon.log", "temis.json"].map(|f| data.join(f)))
         .collect();
     Ok(MemoryFiles {
         db: db.to_path_buf(),
@@ -575,6 +616,82 @@ fn setup_sleep(remove: bool) -> Result<Vec<String>, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let at = install_sleep(&home, &exe, &["sleep"], &service_command)?;
     Ok(vec![format!("sueño instalado: {}", at.display())])
+}
+
+/// `clio-memory setup temis`: `--url` keeps what Temis answered to, `--check` asks it again with what
+/// is kept, `--remove` forgets it. The error carries its exit code (2 for a bad use).
+fn setup_temis(
+    data: &std::path::Path,
+    url: Option<&str>,
+    model: Option<&str>,
+    allow_http: bool,
+    remove: bool,
+    check: bool,
+) -> Result<String, (u8, String)> {
+    use clio_memory::temis::{self, Config, DEFAULT_MODEL, Temis};
+    // `Temis` asked twice: `/health` (no token) and `/v1/model` (the token proves itself).
+    let verify = |cfg: Config| -> Result<String, String> {
+        let (url, post) = (cfg.url.clone(), temis::curl_post("curl".into()));
+        let temis = Temis::new(cfg, post);
+        temis.health()?;
+        Ok(format!("Temis listo: {} en {url}", temis.model()?))
+    };
+    let not_right = |why: String| format!("Temis no respondió bien ({why})");
+    if remove {
+        let was = temis::remove(data).map_err(|e| (1, e))?;
+        return Ok(if was {
+            "Temis quitado"
+        } else {
+            "Temis no estaba configurado"
+        }
+        .into());
+    }
+    let Some(url) = url else {
+        debug_assert!(check);
+        let cfg = temis::load(data, &|k| std::env::var(k).ok()).ok_or_else(|| {
+            (
+                1,
+                "Temis no está configurado (clio-memory setup temis --url URL)".to_owned(),
+            )
+        })?;
+        return verify(cfg).map_err(|e| (1, not_right(e)));
+    };
+    // Everything that is a bad use is refused before the token is read or anything is called.
+    let url = temis::check_url(url, allow_http).map_err(|e| (2, e))?;
+    let token = read_temis_token().map_err(|e| (1, e))?;
+    if token.chars().count() < 24 {
+        return Err((
+            2,
+            "el token de Temis debe tener al menos 24 caracteres".into(),
+        ));
+    }
+    let cfg = Config {
+        url,
+        token,
+        model: model.unwrap_or(DEFAULT_MODEL).to_owned(),
+    };
+    let line =
+        verify(cfg.clone()).map_err(|e| (1, format!("{}: no se guardó nada", not_right(e))))?;
+    temis::save(data, &cfg).map_err(|e| (1, e))?;
+    Ok(line)
+}
+
+/// The token: typed without echo in a terminal, else the first line of the standard input.
+fn read_temis_token() -> Result<String, String> {
+    use std::io::{BufRead, IsTerminal};
+    let token = if std::io::stdin().is_terminal() {
+        cliclack::password("Token de Temis")
+            .interact()
+            .map_err(|e| format!("no se pudo leer el token: {e}"))?
+    } else {
+        let mut line = String::new();
+        std::io::stdin()
+            .lock()
+            .read_line(&mut line)
+            .map_err(|e| format!("no se pudo leer el token: {e}"))?;
+        line
+    };
+    Ok(token.trim().to_owned())
 }
 
 /// `clio-memory sleep`: one night, or with `--report` the last night's report.

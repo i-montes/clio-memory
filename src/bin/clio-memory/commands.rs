@@ -365,6 +365,13 @@ fn doctor(cli: &Cli, machine: Option<&Env>) -> Result<ExitCode, String> {
             Ok(None) => format!("info demonio: {}", crate::not_running()),
             Err(e) => format!("FAIL demonio: {}", clean(e)),
         });
+        // What is set, not whether Temis answers: `setup temis --check` calls it, `doctor` never.
+        line(
+            &match clio_memory::temis::load(data_of(&cli.db), &|k| std::env::var(k).ok()) {
+                Some(c) => format!("info temis: configurado ({})", clean(&c.url)),
+                None => "info temis: no configurado (clio-memory setup temis --url URL)".into(),
+            },
+        );
         if let Some(note) = &shadow {
             line(&format!("--   {}", clean(note)));
         }

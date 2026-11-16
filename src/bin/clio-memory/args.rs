@@ -48,6 +48,13 @@ agents:
   setup sleep [--remove]      install (or remove) the sleep: a user timer that runs
                               `clio-memory sleep` every half hour
                               (setup claude-code installs it too)
+  setup temis --url URL [--model NAME] [--allow-http]
+              | --check | --remove
+                              keep the URL and the token of Temis, which the sleep asks about
+                              pairs of memories (a person only); the token is read from standard
+                              input (never an argument), only https is accepted (http only to
+                              this machine, or anywhere with --allow-http), and nothing is kept
+                              before Temis answered with it
   uninstall [--agents LIST] [--models] [--data] [--yes]
                               take clio-memory out of the agents: the MCP server, the skill (only
                               ours) and the instructions line; with no --agents, out of all of
@@ -56,8 +63,8 @@ agents:
                               codex,gemini,antigravity. --models deletes ~/.cache/clio-models
                               (Clio's models too: they can be downloaded again);
                               --data deletes the memory: memory.db (with its -wal, -shm and lock
-                              files) and the sleep's folder beside it, and nothing else of that
-                              folder; it asks first in a terminal, and without one needs --yes
+                              files), the sleep's folder beside it and temis.json, and nothing
+                              else of that folder; it asks first in a terminal, and without one needs --yes
   sleep [--now] [--dry-run] [--report]
                               one sleep: check and copy the file, quarantine secrets and likely
                               attacks, fold repeats, purge what was discarded long ago; only when
@@ -188,6 +195,14 @@ pub enum Command {
     },
     SetupSleep {
         remove: bool,
+    },
+    /// `setup temis`: keep (`url`), check or remove the URL and the token of Temis.
+    SetupTemis {
+        url: Option<String>,
+        model: Option<String>,
+        allow_http: bool,
+        remove: bool,
+        check: bool,
     },
     /// `update`: the installer again, then `setup --yes`.
     Update,
@@ -555,6 +570,32 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, UsageErro
                 return usage("--status or --stop, not both");
             }
             Command::Daemon { status, stop }
+        }
+        // Before the generic `setup`: it takes `--model` for its own, and no other form's flags.
+        "setup" if rest.0.first().is_some_and(|a| a == "temis") => {
+            rest.0.remove(0);
+            let url = rest.flag("--url")?;
+            let model = rest.flag("--model")?.map(|m| m.trim().to_owned());
+            let allow_http = rest.switch("--allow-http");
+            let remove = rest.switch("--remove");
+            let check = rest.switch("--check");
+            rest.none()?;
+            if usize::from(url.is_some()) + usize::from(remove) + usize::from(check) != 1 {
+                return usage("setup temis takes --url URL, --check or --remove (one of them)");
+            }
+            if url.is_none() && (model.is_some() || allow_http) {
+                return usage("--model and --allow-http go with setup temis --url");
+            }
+            if model.as_deref() == Some("") {
+                return usage("--model needs a name");
+            }
+            Command::SetupTemis {
+                url,
+                model,
+                allow_http,
+                remove,
+                check,
+            }
         }
         "setup" => {
             let replace = rest.switch("--replace");

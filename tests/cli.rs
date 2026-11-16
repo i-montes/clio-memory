@@ -1212,9 +1212,12 @@ fn uninstall_with_data_and_yes_takes_everything_out() {
     let models = m.home.join(".cache/clio-models/potion-multilingual-128M");
     std::fs::create_dir_all(&models).unwrap();
     std::fs::write(models.join("model.safetensors"), "pesos").unwrap();
+    // Temis's URL and token are the memory's too: they go with it
+    std::fs::write(m.data.join("temis.json"), "{}").unwrap();
     let o = m.run(&["uninstall", "--data", "--models", "--yes"]);
     assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
     assert!(!m.data.join("memory.db").exists(), "{}", out(&o));
+    assert!(!m.data.join("temis.json").exists(), "{}", out(&o));
     assert!(m.data.is_dir(), "the folder itself stays");
     assert!(!m.home.join(".cache/clio-models").exists());
     assert!(m.home.is_dir());
@@ -2288,4 +2291,290 @@ fn setup_model_stops_the_daemon() {
     let o = m.run(&["setup", "model", "potion"]);
     assert_eq!(code(&o), 1, "{}{}", out(&o), err(&o));
     assert!(gone_soon(pid), "the daemon is still running");
+}
+
+// `setup temis`: the URL and the token of Temis, kept once it answered. A fake `curl` first on the
+// PATH answers `/health` and `/v1/model` and logs the URL line of each config it reads.
+const TEMIS_URL: &str = "https://h/temis";
+
+fn temis_token() -> String {
+    concat!("un-token-de-prueba-", "de-32-caracteres").to_owned()
+}
+
+fn fake_temis_curl(bin: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let log = bin.join("temis-curl.log");
+    let curl = bin.join("curl");
+    std::fs::write(
+        &curl,
+        format!(
+            r#"#!/bin/sh
+PATH=/usr/bin:/bin
+cfg=$(cat)
+printf '%s\n' "$cfg" | grep '^url' >> '{}'
+case "$cfg" in
+  *'/health"'*) printf '{{"model":"temis-2.4.0"}}\n200' ;;
+  *'/v1/model"'*)
+    if [ "$FAKE_TEMIS_REFUSES" = 1 ]; then
+      printf '{{"detail":{{"error_type":"authentication_error"}}}}\n401'
+    else
+      printf '{{"model":"temis-2.4.0"}}\n200'
+    fi ;;
+  *) printf '{{}}\n404' ;;
+esac
+"#,
+            log.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&curl, std::fs::Permissions::from_mode(0o755)).unwrap();
+    log
+}
+
+impl Machine {
+    /// `run` with the standard input given, extra environment and the agent that runs it.
+    fn run_temis(&self, args: &[&str], stdin: &str, envs: &[(&str, &str)], agent: &str) -> Output {
+        use std::io::Write;
+        let mut child = Command::new(env!("CARGO_BIN_EXE_clio-memory"))
+            .env("HOME", &self.home)
+            .env("PATH", &self.bin)
+            .env("CLIO_MEMORY_DATA", &self.data)
+            .env_remove("CLIO_MEMORY_CLAUDE")
+            .env_remove("CLIO_MEMORY_BIN_DIR")
+            .env_remove("CODEX_HOME")
+            .env_remove("CLAUDECODE")
+            .env_remove("CLAUDE_CODE_SESSION_ID")
+            .env_remove("CLIO_MEMORY_AS_PERSON")
+            .env_remove("CLIO_MEMORY_TEMIS_URL")
+            .env_remove("CLIO_MEMORY_TEMIS_TOKEN")
+            .env("CLIO_MEMORY_AGENT", agent)
+            .envs(envs.iter().copied())
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut pipe = child.stdin.take().unwrap();
+        let _ = pipe.write_all(stdin.as_bytes());
+        drop(pipe);
+        child.wait_with_output().unwrap()
+    }
+
+    fn temis(&self, args: &[&str], stdin: &str) -> Output {
+        self.run_temis(args, stdin, &[], "cli")
+    }
+}
+
+#[test]
+fn setup_temis_saves_what_it_could_verify() {
+    use std::os::unix::fs::PermissionsExt;
+    let m = machine();
+    fake_temis_curl(&m.bin);
+    let token = temis_token();
+    let o = m.temis(
+        &["setup", "temis", "--url", TEMIS_URL],
+        &format!("{token}\n"),
+    );
+    assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+    assert_eq!(
+        out(&o).trim(),
+        "Temis listo: temis-2.4.0 en https://h/temis"
+    );
+    let file = m.data.join("temis.json");
+    assert_eq!(
+        std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(
+        (saved["url"].as_str(), saved["token"].as_str()),
+        (Some(TEMIS_URL), Some(token.as_str()))
+    );
+    assert!(!out(&o).contains(&token) && !err(&o).contains(&token));
+    // --model names the model the sleep will ask for; a trailing slash is not kept
+    let o = m.temis(
+        &[
+            "setup",
+            "temis",
+            "--url",
+            "https://h/temis/",
+            "--model",
+            "temis-x",
+        ],
+        &format!("{token}\r\n"),
+    );
+    assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(
+        (saved["url"].as_str(), saved["model"].as_str()),
+        (Some(TEMIS_URL), Some("temis-x"))
+    );
+    assert_eq!(
+        saved["token"].as_str(),
+        Some(token.as_str()),
+        "the line ending is not the token's"
+    );
+}
+
+#[test]
+fn a_token_that_temis_refuses_saves_nothing() {
+    let m = machine();
+    fake_temis_curl(&m.bin);
+    let token = temis_token();
+    let o = m.run_temis(
+        &["setup", "temis", "--url", TEMIS_URL],
+        &format!("{token}\n"),
+        &[("FAKE_TEMIS_REFUSES", "1")],
+        "cli",
+    );
+    assert_eq!(code(&o), 1, "{}{}", out(&o), err(&o));
+    assert!(err(&o).contains("authentication_error"), "{}", err(&o));
+    assert!(err(&o).contains("no se guardó nada"), "{}", err(&o));
+    assert!(!m.data.join("temis.json").exists());
+    assert!(!out(&o).contains(&token) && !err(&o).contains(&token));
+}
+
+#[test]
+fn a_short_token_or_a_plain_http_url_is_refused_before_any_call() {
+    let m = machine();
+    let log = fake_temis_curl(&m.bin);
+    let o = m.temis(&["setup", "temis", "--url", TEMIS_URL], "corto-1234\n");
+    assert_eq!(code(&o), 2, "{}{}", out(&o), err(&o));
+    assert!(err(&o).contains("al menos 24"), "{}", err(&o));
+    let o = m.temis(
+        &["setup", "temis", "--url", "http://api.x"],
+        &format!("{}\n", temis_token()),
+    );
+    assert_eq!(code(&o), 2, "{}{}", out(&o), err(&o));
+    assert!(err(&o).contains("https"), "{}", err(&o));
+    // an empty standard input is a token too short
+    let o = m.temis(&["setup", "temis", "--url", TEMIS_URL], "");
+    assert_eq!(code(&o), 2, "{}{}", out(&o), err(&o));
+    assert!(!log.exists(), "curl was called");
+    assert!(!m.data.join("temis.json").exists());
+}
+
+#[test]
+fn the_token_is_never_an_argument() {
+    let m = machine();
+    let log = fake_temis_curl(&m.bin);
+    let o = m.temis(
+        &[
+            "setup",
+            "temis",
+            "--url",
+            TEMIS_URL,
+            "--token",
+            &temis_token(),
+        ],
+        "",
+    );
+    assert_eq!(code(&o), 2, "{}{}", out(&o), err(&o));
+    assert!(err(&o).contains("unknown option --token"), "{}", err(&o));
+    assert!(!log.exists() && !m.data.join("temis.json").exists());
+}
+
+#[test]
+fn remove_and_check() {
+    let m = machine();
+    let log = fake_temis_curl(&m.bin);
+    let o = m.temis(&["setup", "temis", "--check"], "");
+    assert_eq!(code(&o), 1, "{}{}", out(&o), err(&o));
+    assert!(err(&o).contains("Temis no está configurado"), "{}", err(&o));
+    let token = temis_token();
+    let o = m.temis(
+        &["setup", "temis", "--url", TEMIS_URL],
+        &format!("{token}\n"),
+    );
+    assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+    // --check asks Temis again with what was saved
+    let o = m.temis(&["setup", "temis", "--check"], "");
+    assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+    assert_eq!(
+        out(&o).trim(),
+        "Temis listo: temis-2.4.0 en https://h/temis"
+    );
+    let o = m.run_temis(
+        &["setup", "temis", "--check"],
+        "",
+        &[("FAKE_TEMIS_REFUSES", "1")],
+        "cli",
+    );
+    assert_eq!(code(&o), 1, "{}{}", out(&o), err(&o));
+    assert!(
+        err(&o).contains("Temis no respondió bien (") && err(&o).contains("authentication_error"),
+        "{}",
+        err(&o)
+    );
+    let o = m.temis(&["setup", "temis", "--remove"], "");
+    assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+    assert!(out(&o).contains("Temis quitado"), "{}", out(&o));
+    assert!(!m.data.join("temis.json").exists());
+    assert!(log.exists());
+}
+
+#[test]
+fn an_agent_cannot_set_up_temis() {
+    let m = machine();
+    let log = fake_temis_curl(&m.bin);
+    let token = temis_token();
+    std::fs::write(m.data.join("temis.json"), "{}").unwrap();
+    for args in [
+        &["setup", "temis", "--url", TEMIS_URL][..],
+        &["setup", "temis", "--check"],
+        &["setup", "temis", "--remove"],
+    ] {
+        let o = m.run_temis(args, &format!("{token}\n"), &[], "claude-code");
+        assert_eq!(
+            (code(&o), err(&o).contains(REFUSAL)),
+            (1, true),
+            "{args:?}: {}{}",
+            out(&o),
+            err(&o)
+        );
+    }
+    assert!(!log.exists(), "curl was called");
+    assert_eq!(
+        std::fs::read_to_string(m.data.join("temis.json")).unwrap(),
+        "{}"
+    );
+    // the person at the keyboard of an agent says so
+    let o = m.run_temis(
+        &["setup", "temis", "--remove"],
+        "",
+        &[("CLIO_MEMORY_AS_PERSON", "1")],
+        "claude-code",
+    );
+    assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+}
+
+#[test]
+fn doctor_says_whether_temis_is_set_without_calling_it() {
+    let m = machine();
+    let log = fake_temis_curl(&m.bin);
+    let o = m.temis(&["doctor"], "");
+    assert!(
+        out(&o).contains("info temis: no configurado (clio-memory setup temis --url URL)"),
+        "{}{}",
+        out(&o),
+        err(&o)
+    );
+    let token = temis_token();
+    std::fs::write(
+        m.data.join("temis.json"),
+        serde_json::json!({"url": TEMIS_URL, "token": token}).to_string(),
+    )
+    .unwrap();
+    let o = m.temis(&["doctor"], "");
+    assert!(
+        out(&o).contains("info temis: configurado (https://h/temis)"),
+        "{}{}",
+        out(&o),
+        err(&o)
+    );
+    assert!(!out(&o).contains(&token) && !err(&o).contains(&token));
+    assert!(!log.exists(), "doctor called Temis");
 }

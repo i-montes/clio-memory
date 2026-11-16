@@ -17,6 +17,7 @@ const MAX_CHARS: usize = 4000;
 /// Consecutive failures that turn Temis off for this process.
 const MAX_FAILURES: u32 = 3;
 
+#[derive(Clone)]
 pub struct Config {
     pub url: String,
     pub token: String,

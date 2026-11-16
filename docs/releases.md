@@ -28,7 +28,7 @@ El sueño decide con Temis, si lo configuraste.
 - **Sin Temis, nada cambia**: el sueño es el de v0.11.0.
 - **Programas anfitriones (Clio)**: `clio_memory::temis::from_data(&datos)` se pasa a `sleep::run_judged`; `sleep::run` sigue igual.
 
-Después de etiquetar: correr `clio-memory update` y luego `clio-memory setup temis --url https://api.imontes.dev/temis` con el token por la entrada estándar. Queda pendiente la comprobación con el servicio real (`bench/temis/run.py` y un `sleep --now --dry-run` sobre una copia de la memoria).
+Después de etiquetar: correr `clio-memory update` y luego `clio-memory setup temis --url https://api.imontes.dev/temis` con el token por la entrada estándar. La comprobación con el servicio real se hizo el 2026-11-16. `bench/temis/run.py` dio las mismas cifras que [results.md](../bench/temis/results.md), `setup temis` contra el servicio respondió `Temis listo: temis-2.4.0`, y un `sleep --now --dry-run` sobre una copia de la memoria terminó sin cambiar nada.
 
 ### v0.11.0
 

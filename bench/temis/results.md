@@ -8,6 +8,8 @@ CLIO_MEMORY_TEMIS_URL=https://api.imontes.dev/temis CLIO_MEMORY_TEMIS_TOKEN=… 
 
 Servicio: `temis-2.4.0` (`v1112-mrbert-cortos`). 84 llamadas en 94 s (incluye la pausa de 0,6 s entre llamadas); ~0,5 s por llamada de ida y vuelta, ~150 ms en el servidor. Cero tokens de modelo de lenguaje.
 
+Repetida el 2026-11-16, antes de publicar v0.12.0: las 28 filas y la tabla de umbrales salieron idénticas. Ese día `GET /v1/model` respondió `{"model":"temis-2.4.0","name":"Temis",…}`, y `clio-memory setup temis` lo leyó bien (`Temis listo: temis-2.4.0 en https://api.imontes.dev/temis`).
+
 Dos preguntas, con el texto con que Temis fue entrenado:
 - `memory_preserved`: «Todo lo que dice `original` está también en `unido`, aunque sea con otras palabras.» (sí o no, de 0 a 1), en los dos sentidos.
 - `memory_relation`: `conflicts_with`, `scoped`, `compatible`, `related` o `ninguna`.

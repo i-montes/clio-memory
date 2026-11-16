@@ -16,9 +16,17 @@ fn isolated(cmd: &mut Command) -> &mut Command {
         .env("PATH", "/nonexistent/clio-memory-test-path")
         .env_remove("CLIO_MEMORY_CLAUDE")
         .env_remove("CODEX_HOME")
+        // tests may run inside an agent; the person's commands refuse agents, and a test is the person
+        .env("CLIO_MEMORY_AGENT", "cli")
+        .env_remove("CLIO_MEMORY_AS_PERSON")
 }
 
 fn run(db: Option<&Path>, args: &[&str]) -> Output {
+    run_env(db, &[], args)
+}
+
+/// `run` with extra environment, applied after the defaults.
+fn run_env(db: Option<&Path>, envs: &[(&str, &str)], args: &[&str]) -> Output {
     // Tests run in parallel threads. While one thread holds an engine open, another can fork a
     // child that inherits a copy of the lock file until its `exec`; the lock then outlives the
     // first thread's `drop(engine)` for a moment. That is the harness, not the product: wait it
@@ -31,6 +39,7 @@ fn run(db: Option<&Path>, args: &[&str]) -> Output {
         let o = isolated(&mut cmd)
             .env("USER", "tester")
             .env("CLIO_MEMORY_DATA", "/nonexistent/clio-memory-test")
+            .envs(envs.iter().copied())
             .args(args)
             .output()
             .unwrap();
@@ -48,6 +57,7 @@ fn run(db: Option<&Path>, args: &[&str]) -> Output {
     isolated(&mut cmd)
         .env("USER", "tester")
         .env("CLIO_MEMORY_DATA", "/nonexistent/clio-memory-test")
+        .envs(envs.iter().copied())
         .args(args)
         .output()
         .unwrap()
@@ -745,6 +755,7 @@ fn the_default_actor_is_created_once_and_reused() {
     // without $USER the name falls back to "unknown"
     let o = Command::new(env!("CARGO_BIN_EXE_clio-memory"))
         .env_remove("USER")
+        .env("CLIO_MEMORY_AGENT", "cli")
         .arg("--db")
         .arg(&db)
         .args(["feedback", "1", "useful"])
@@ -936,6 +947,121 @@ fn purge_needs_confirmation_a_person_and_leaves_a_tombstone() {
     assert_eq!(code(&run(Some(&db), &["purge"])), 2);
 }
 
+const REFUSAL: &str = "esta orden es de la persona: córrela tú en una terminal (o pon CLIO_MEMORY_AS_PERSON=1 si eres tú quien la corre desde un agente)";
+const CODEX: [(&str, &str); 1] = [("CLIO_MEMORY_AGENT", "codex")];
+
+#[test]
+fn an_agent_cannot_purge() {
+    let (_dir, db) = closed();
+    let o = run_env(Some(&db), &CODEX, &["purge", "1", "--yes"]);
+    assert_eq!(code(&o), 1);
+    assert!(err(&o).contains(REFUSAL), "{}", err(&o));
+    assert_eq!(state_of(&db, "1"), "Active");
+    // the other commands of the list refuse too, whatever else they take
+    for args in [
+        &["promote", "1"][..],
+        &["archive", "1"],
+        &["revert", "1"],
+        &["feedback", "1", "useful"],
+        &["import", "/nonexistent/export"],
+        &[
+            "import-memories",
+            "main",
+            "/nonexistent/x",
+            "--origin",
+            "user",
+        ],
+    ] {
+        let o = run_env(Some(&db), &CODEX, args);
+        assert_eq!(
+            (code(&o), err(&o).contains(REFUSAL)),
+            (1, true),
+            "{args:?}: {}",
+            err(&o)
+        );
+    }
+    // import-memories with any other origin is not the person's authority: it gets past the guard
+    let o = run_env(
+        Some(&db),
+        &CODEX,
+        &["import-memories", "main", "/nonexistent/x"],
+    );
+    assert!(!err(&o).contains(REFUSAL), "{}", err(&o));
+}
+
+#[test]
+fn an_agent_cannot_uninstall_the_data() {
+    let m = machine();
+    let o = Command::new(env!("CARGO_BIN_EXE_clio-memory"))
+        .env("HOME", &m.home)
+        .env("PATH", &m.bin)
+        .env("CLIO_MEMORY_DATA", &m.data)
+        .env("CLIO_MEMORY_AGENT", "codex")
+        .args(["uninstall", "--data", "--yes"])
+        .output()
+        .unwrap();
+    assert_eq!(code(&o), 1);
+    assert!(err(&o).contains(REFUSAL), "{}", err(&o));
+    assert!(m.data.exists(), "a refusal changes nothing");
+}
+
+#[test]
+fn an_agent_cannot_write_as_the_person() {
+    let (_dir, db) = closed();
+    let o = run_env(Some(&db), &CODEX, &["remember", "main", "soy la persona"]);
+    assert_eq!(code(&o), 1);
+    assert!(err(&o).contains(REFUSAL), "{}", err(&o));
+    let o = run_env(
+        Some(&db),
+        &CODEX,
+        &["--actor", "mcp:codex", "remember", "main", "soy un agente"],
+    );
+    assert_eq!(code(&o), 0, "{}", err(&o));
+}
+
+#[test]
+fn the_person_can_say_it_is_them() {
+    let (_dir, db) = closed();
+    let env = [
+        ("CLIO_MEMORY_AGENT", "codex"),
+        ("CLIO_MEMORY_AS_PERSON", "1"),
+    ];
+    let o = run_env(Some(&db), &env, &["remember", "main", "soy la persona"]);
+    assert_eq!(code(&o), 0, "{}", err(&o));
+    let o = run_env(Some(&db), &env, &["purge", "1", "--yes"]);
+    assert_eq!(code(&o), 0, "{}", err(&o));
+}
+
+#[test]
+fn reading_commands_are_not_stopped() {
+    let (_dir, db) = closed();
+    let dump = tempfile::tempdir().unwrap();
+    let export = dump.path().join("out.jsonl");
+    let export = export.to_str().unwrap();
+    for args in [
+        &["list", "main"][..],
+        &["get", "1"],
+        &["stats"],
+        &["doctor"],
+        &["export", export],
+    ] {
+        let o = run_env(Some(&db), &CODEX, args);
+        assert_eq!(code(&o), 0, "{args:?}: {}", err(&o));
+    }
+    // a command that opens the file read-write but is nobody's authority is not stopped either
+    let copy = dump.path().join("copy.db");
+    let o = run_env(Some(&db), &CODEX, &["backup", copy.to_str().unwrap()]);
+    assert_eq!(code(&o), 0, "{}", err(&o));
+}
+
+#[test]
+fn from_a_plain_shell_nothing_changes() {
+    // the helper says `cli` by default: the person's commands run as they always did
+    let (_dir, db) = closed();
+    assert_eq!(code(&run(Some(&db), &["remember", "main", "a mano"])), 0);
+    assert_eq!(code(&run(Some(&db), &["purge", "1", "--yes"])), 0);
+}
+
 #[test]
 fn without_db_the_default_file_is_used() {
     let dir = tempfile::tempdir().unwrap();
@@ -1028,7 +1154,9 @@ impl Machine {
             .env_remove("CODEX_HOME")
             .env_remove("CLAUDECODE")
             .env_remove("CLAUDE_CODE_SESSION_ID")
-            .env_remove("CLIO_MEMORY_AGENT")
+            // a test is the person, even when the tests run inside an agent
+            .env("CLIO_MEMORY_AGENT", "cli")
+            .env_remove("CLIO_MEMORY_AS_PERSON")
             .args(args)
             .stdin(std::process::Stdio::null())
             .output()

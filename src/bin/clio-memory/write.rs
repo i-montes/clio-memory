@@ -5,6 +5,7 @@ use std::io::BufReader;
 use std::process::ExitCode;
 use std::sync::Arc;
 
+use clio_memory::agent::caller::{Caller, caller};
 use clio_memory::{
     ActorId, ActorKind, Engine, Error, ImportOpts, JobKind, JobState, OpenMode, Origin, Proposal,
     Quota, RunOpts, Signal, SystemClock,
@@ -26,7 +27,48 @@ const AGENT_QUOTA: Quota = Quota {
     window_secs: 3600,
 };
 
+/// `CLIO_MEMORY_AS_PERSON=1`: the person says it is them at the keyboard.
+pub fn as_person() -> bool {
+    std::env::var("CLIO_MEMORY_AS_PERSON").is_ok_and(|v| v == "1")
+}
+
+/// The refusal for a command that acts with the person's authority, run from an agent.
+pub const PERSONS_ONLY: &str = "esta orden es de la persona: córrela tú en una terminal (o pon CLIO_MEMORY_AS_PERSON=1 si eres tú quien la corre desde un agente)";
+
+/// An accident guard, not a barrier: an agent with a shell can set the variable. `actor` is the
+/// global `--actor`; `main` checks `uninstall --data` with this same function. `caller` is only
+/// run for a guarded command without `as_person` (finding the caller can spawn `ps`).
+pub fn persons_only(
+    command: &Command,
+    actor: Option<&str>,
+    caller: &dyn Fn() -> Caller,
+    as_person: bool,
+) -> Result<(), String> {
+    let persons = match command {
+        Command::Purge { .. }
+        | Command::Promote { .. }
+        | Command::Archive { .. }
+        | Command::Revert { .. }
+        | Command::Feedback { .. }
+        | Command::Import { .. } => true,
+        Command::ImportMemories { origin, .. } => *origin == Some(Origin::User),
+        Command::Remember { .. } => actor.is_none(),
+        Command::Uninstall { data, .. } => *data,
+        _ => false,
+    };
+    if persons && !as_person && caller().agent != "cli" {
+        return Err(PERSONS_ONLY.into());
+    }
+    Ok(())
+}
+
 pub fn run(cli: &Cli) -> Result<ExitCode, String> {
+    persons_only(
+        &cli.command,
+        cli.actor.as_deref(),
+        &|| caller(None),
+        as_person(),
+    )?;
     let created_new = matches!(cli.command, Command::Import { .. }) && !cli.db.exists();
     // the input is opened before the database so a bad path cannot leave a new empty file behind
     let import_input = match &cli.command {

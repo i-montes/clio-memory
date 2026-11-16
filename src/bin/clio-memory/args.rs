@@ -112,6 +112,8 @@ inspect (open the file read-only; never write):
   context SCOPE TEXT...       the prompt context for TEXT (fixed blocks + recall)
 
 change (open the file read-write; fail if another program holds its write lock):
+  (promote, archive, revert, purge, feedback, import, remember without --actor, import-memories
+   --origin user and uninstall --data refuse to run from an agent unless CLIO_MEMORY_AS_PERSON=1)
   remember SCOPE TEXT... [--kind K] [--topic T] [--source S]
                               propose one memory through the normal rules (K: working|episodic|
                               semantic|procedural, default semantic); with --actor NAME it is

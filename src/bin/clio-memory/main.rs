@@ -133,15 +133,28 @@ fn main() -> ExitCode {
         })) => done(sleep(&db, model, now, dry_run, report, json)),
         Ok(args::Parsed::Run(args::Cli {
             command:
-                args::Command::Uninstall {
-                    agents,
+                ref command @ args::Command::Uninstall {
+                    ref agents,
                     models,
                     data,
                     yes,
                 },
+            actor,
             db,
             ..
-        })) => uninstall(&db, agents.as_deref(), models, data, yes),
+        })) => {
+            // before anything is asked or changed: a refusal leaves everything as it was
+            if let Err(message) = write::persons_only(
+                command,
+                actor.as_deref(),
+                &|| clio_memory::agent::caller::caller(None),
+                write::as_person(),
+            ) {
+                output::error(&format!("error: {message}"));
+                return ExitCode::from(1);
+            }
+            uninstall(&db, agents.as_deref(), models, data, yes)
+        }
         Ok(args::Parsed::Run(args::Cli {
             command: args::Command::Daemon { status, stop },
             db,

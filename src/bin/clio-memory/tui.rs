@@ -25,6 +25,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use cliclack::{Theme, ThemeState};
 use clio_memory::setup::agents::{AgentId, Found};
 use clio_memory::setup::model_choice::ModelChoice;
+use clio_memory::setup::modes::Mode;
 use clio_memory::setup::plan::Step;
 use clio_memory::setup::{GRANITE, ModelSpec, POTION};
 use console::{Style, measure_text_width};
@@ -578,6 +579,26 @@ impl Screen for Tui {
         agents.sort();
         agents.dedup();
         Some(agents)
+    }
+
+    /// `◆  Así se conecta: Claude Code por skill, …; Codex por MCP`, and «Así», «Todos por skill»,
+    /// «Todos por MCP».
+    fn choose_mode(&mut self, split: &str) -> Option<Option<Mode>> {
+        let question = self.lines(&format!("Así se conecta: {split}")).join("\n");
+        let mut prompt = cliclack::select(question)
+            .initial_value(None)
+            .item(None, "Así", "")
+            .item(
+                Some(Mode::Skill),
+                "Todos por skill",
+                "corren «clio-memory m …», sin proceso por sesión",
+            )
+            .item(
+                Some(Mode::Mcp),
+                "Todos por MCP",
+                "un proceso «clio-memory mcp» por sesión",
+            );
+        self.ask(Hint::Select, || prompt.interact())
     }
 
     fn choose_model(

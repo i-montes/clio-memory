@@ -9,8 +9,12 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use super::agents::{AgentId, Env, detect};
-use super::instructions::{add_instructions, instructions_file, remove_instructions};
+use super::instructions::{
+    add_instructions, has_old_instructions, instructions_file, remove_instructions,
+};
 use super::mcp::{McpState, mcp_connect, mcp_disconnect, mcp_state};
+use super::modes::{self, Mode};
+use super::permission;
 use super::skill::{SkillDir, SkillFile, place_skill, placement, skill_state};
 use super::{ensure_sleep, remove_sleep, sleep_is_clio_memorys, sleep_present};
 
@@ -25,6 +29,8 @@ pub struct Selection {
     /// The connected agents not in `agents` are disconnected (only the TUI sets it: flags only
     /// add).
     pub exclusive: bool,
+    /// How each of `agents` is connected; `None`: the way noted, else its default.
+    pub mode: Option<Mode>,
 }
 
 /// One thing done (or not), for an agent or for all of them (`agent: None`).
@@ -68,11 +74,13 @@ fn is_connected(state: &McpState) -> bool {
     matches!(state, McpState::Ours | McpState::OtherPath(_))
 }
 
-/// The agents with a `clio-memory` server of ours, current or to be redone.
+/// The agents connected: noted as connected by skill, or with a `clio-memory` server of ours,
+/// current or to be redone.
 pub fn connected(env: &Env) -> Vec<AgentId> {
-    AgentId::ALL
+    connections(env)
         .into_iter()
-        .filter(|&a| mcp_state(env, a).is_ok_and(|s| is_connected(&s)))
+        .filter(|(_, c)| *c == Some(true))
+        .map(|(a, _)| a)
         .collect()
 }
 
@@ -81,15 +89,23 @@ pub fn connected(env: &Env) -> Vec<AgentId> {
 type Connections = BTreeMap<AgentId, Option<bool>>;
 
 fn connections(env: &Env) -> Connections {
+    let noted = modes::load(&env.data);
     AgentId::ALL
         .into_iter()
-        .map(|a| (a, mcp_state(env, a).ok().map(|s| is_connected(&s))))
+        .map(|a| (a, connection(env, &noted, a)))
         .collect()
+}
+
+fn connection(env: &Env, noted: &BTreeMap<AgentId, Mode>, agent: AgentId) -> Option<bool> {
+    if noted.get(&agent) == Some(&Mode::Skill) {
+        return Some(true);
+    }
+    mcp_state(env, agent).ok().map(|s| is_connected(&s))
 }
 
 /// After trying to change `agent`: what it is now, as far as can be read.
 fn reread(env: &Env, agent: AgentId) -> Option<bool> {
-    mcp_state(env, agent).ok().map(|s| is_connected(&s))
+    connection(env, &modes::load(&env.data), agent)
 }
 
 /// The agents the skill is for: the connected ones, and those whose state cannot be read but
@@ -117,8 +133,9 @@ fn sees_our_skill(home: &Path, agent: AgentId) -> bool {
     })
 }
 
-/// Connects `sel.agents`; then, with `exclusive`, disconnects the others; then puts the skill
-/// where every connected agent sees it, and installs the nightly sleep.
+/// Connects `sel.agents`, each by skill or by MCP (`sel.mode`, else the way noted, else its
+/// default); then, with `exclusive`, disconnects the others; then puts the skill where every
+/// connected agent sees it, and installs the nightly sleep.
 pub fn apply(env: &Env, sel: &Selection, ask: &dyn Fn(&str) -> bool) -> Vec<Step> {
     let mut steps = Vec::new();
     let found: Vec<AgentId> = detect(env).into_iter().map(|f| f.agent).collect();
@@ -142,6 +159,7 @@ pub fn apply(env: &Env, sel: &Selection, ask: &dyn Fn(&str) -> bool) -> Vec<Step
         .collect();
     // Whether anything was connected or disconnected: if not, there is nothing to place.
     let mut touched = false;
+    let noted = modes::load(&env.data);
 
     for agent in chosen.iter().copied() {
         let label = agent.label();
@@ -185,26 +203,18 @@ pub fn apply(env: &Env, sel: &Selection, ask: &dyn Fn(&str) -> bool) -> Vec<Step
             }
             approved.extend(foreign_skills);
         }
-        let exe = env.exe.display();
-        let done = match &state {
-            McpState::Ours => Ok("el servidor MCP clio-memory ya está registrado".to_owned()),
-            other => mcp_connect(env, agent).map(|()| match other {
-                McpState::OtherPath(p) if *p == env.exe => {
-                    "el servidor MCP clio-memory estaba desactivado; reactivado".to_owned()
-                }
-                McpState::OtherPath(p) => format!(
-                    "el servidor MCP clio-memory apuntaba a {}; ahora a {exe}",
-                    p.display()
-                ),
-                _ => format!("servidor MCP clio-memory registrado: {exe} mcp"),
-            }),
+        let was = noted.get(&agent) == Some(&Mode::Skill);
+        let (what, done) = match modes::resolve(sel.mode, &noted, agent) {
+            Mode::Mcp => ("MCP", by_mcp(env, agent, &state, was)),
+            Mode::Skill => ("por skill", by_skill(env, agent, &state, was)),
         };
         let ok = done.is_ok();
         // A failed connect may have removed what was there before adding: read it again.
         conn.insert(agent, if ok { Some(true) } else { reread(env, agent) });
-        steps.push(Step::new(Some(agent), "MCP", done));
+        steps.push(Step::new(Some(agent), what, done));
         touched |= ok;
-        if ok && sel.instructions {
+        // An earlier version's line is ours, added with a yes: renewing it is not adding one.
+        if ok && (sel.instructions || has_old_instructions(env, agent)) {
             steps.push(Step::new(
                 Some(agent),
                 "instrucciones",
@@ -252,6 +262,62 @@ pub fn apply(env: &Env, sel: &Selection, ask: &dyn Fn(&str) -> bool) -> Vec<Step
     steps
 }
 
+/// Connects `agent` by its MCP server; notes the mode, and in Claude Code takes the skill way's
+/// permission rule away (`was`: it was noted as by skill).
+fn by_mcp(env: &Env, agent: AgentId, state: &McpState, was: bool) -> Result<String, String> {
+    let exe = env.exe.display();
+    let said = match state {
+        McpState::Ours => "el servidor MCP clio-memory ya está registrado".to_owned(),
+        other => {
+            mcp_connect(env, agent)?;
+            match other {
+                McpState::OtherPath(p) if *p == env.exe => {
+                    "el servidor MCP clio-memory estaba desactivado; reactivado".to_owned()
+                }
+                McpState::OtherPath(p) => format!(
+                    "el servidor MCP clio-memory apuntaba a {}; ahora a {exe}",
+                    p.display()
+                ),
+                _ => format!("servidor MCP clio-memory registrado: {exe} mcp"),
+            }
+        }
+    };
+    modes::set(&env.data, agent, Some(Mode::Mcp))?;
+    revoke_rule(env, agent, was)?;
+    Ok(said)
+}
+
+/// Takes Claude Code's rule away when there is something of ours to take: it was by skill, or the
+/// rule is there. A settings.json that cannot be read is then left alone for someone who never
+/// used the skill way.
+fn revoke_rule(env: &Env, agent: AgentId, was_skill: bool) -> Result<(), String> {
+    if agent == AgentId::ClaudeCode && (was_skill || permission::has(&env.home)) {
+        permission::revoke(&env.home)?;
+    }
+    Ok(())
+}
+
+/// Connects `agent` by skill: no server (one of ours, or another the person agreed to replace, is
+/// taken out); notes the mode, and in Claude Code adds the rule that lets it run
+/// `clio-memory m …`. `was`: it was noted as by skill already.
+fn by_skill(env: &Env, agent: AgentId, state: &McpState, was: bool) -> Result<String, String> {
+    // Noted first: a failed removal then still counts as connected, and the next run finishes it.
+    modes::set(&env.data, agent, Some(Mode::Skill))?;
+    let removed = *state != McpState::Absent;
+    if removed {
+        mcp_disconnect(env, agent)?;
+    }
+    let ruled = agent == AgentId::ClaudeCode && permission::allow(&env.home)?;
+    let already = if was && !removed && !ruled {
+        "ya estaba "
+    } else {
+        ""
+    };
+    Ok(format!(
+        "{already}conectado por skill: corre «clio-memory m …» (sin proceso por sesión)"
+    ))
+}
+
 /// The instructions line in `agent`, as a step's outcome.
 fn add_line(env: &Env, agent: AgentId) -> Result<String, String> {
     let file = instructions_file(env, agent);
@@ -276,9 +342,25 @@ fn remove_line(env: &Env, agent: AgentId, still: &[AgentId]) -> Option<Step> {
     Some(Step::new(Some(agent), "instrucciones", done))
 }
 
-/// Disconnects an agent that is connected: its server, then its line.
+/// Disconnects an agent that is connected: its server (or its skill way: the mode noted, and in
+/// Claude Code the permission rule), then its line.
 fn disconnect(env: &Env, agent: AgentId, still: &[AgentId], conn: &mut Connections) -> Vec<Step> {
-    let done = mcp_disconnect(env, agent).map(|()| "servidor MCP clio-memory quitado".to_owned());
+    let skill = modes::load(&env.data).get(&agent) == Some(&Mode::Skill);
+    let done = (|| {
+        // By skill there is no server of ours, unless one was put back by hand.
+        let server = !skill || mcp_state(env, agent).is_ok_and(|s| is_connected(&s));
+        if server {
+            mcp_disconnect(env, agent)?;
+        }
+        modes::set(&env.data, agent, None)?;
+        revoke_rule(env, agent, skill)?;
+        Ok(if server {
+            "servidor MCP clio-memory quitado"
+        } else {
+            "conexión por skill quitada"
+        }
+        .to_owned())
+    })();
     let ok = done.is_ok();
     conn.insert(agent, if ok { Some(false) } else { reread(env, agent) });
     let mut steps = vec![Step::new(Some(agent), "MCP", done)];

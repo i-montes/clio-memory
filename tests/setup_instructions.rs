@@ -36,6 +36,7 @@ impl Rig {
     fn env(&self) -> Env<'static> {
         Env {
             home: self.home.clone(),
+            data: self.home.join(".local/share/clio"),
             exe: PathBuf::from("/opt/clio-memory"),
             path: vec![],
             codex_home: self.codex_home.clone(),

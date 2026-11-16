@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use clio_memory::setup::agents::AgentId;
 use clio_memory::setup::model_choice::ModelChoice;
+use clio_memory::setup::modes::Mode;
 use clio_memory::{JobState, MemoryId, MemoryType, OpId, Origin, Signal, State};
 
 pub const USAGE: &str = "\
@@ -20,7 +21,8 @@ agents:
                               alone it serves in the foreground, --status says whether it runs,
                               --stop stops it
   setup [--yes] [--agents LIST|all] [--model granite|potion|none]
-        [--instructions|--no-instructions] [--replace] [--from-installer]
+        [--mode skill|mcp|auto] [--instructions|--no-instructions] [--replace]
+        [--from-installer]
                               connect clio-memory to the agents on this machine and install the
                               vector model and the sleep; in a terminal it asks, and with
                               --yes or without a terminal it uses the flags and, where missing:
@@ -31,11 +33,16 @@ agents:
                               questions, flags only add: nothing is disconnected or deleted
                               (that is `uninstall`). LIST: claude-code,opencode,codex,gemini,
                               antigravity.
+                              --mode: how each agent is connected: by skill (no server; the
+                              agent runs `clio-memory m ...`) or by the MCP server; auto (the
+                              default) keeps the way noted in <data>/agents.json, else skill in
+                              Claude Code and OpenCode and MCP in the others
                               --from-installer: run by install.sh (says where the binary is and,
                               if its folder is not on the PATH, the line that adds it)
   setup claude-code [--replace] [--claude-md|--no-claude-md]
-                              make clio-memory Claude Code's primary memory: register this MCP
-                              server (user scope) and install the skill clio-memory; asks before
+                              make clio-memory Claude Code's primary memory: connect it by
+                              skill (or by this MCP server, user scope, when setup noted that)
+                              and install the skill clio-memory; asks before
                               replacing anything of the same name and before adding a line to
                               ~/.claude/CLAUDE.md (the flags answer for it)
   setup sleep [--remove]      install (or remove) the sleep: a user timer that runs
@@ -165,6 +172,8 @@ pub enum Command {
         model: Option<ModelChoice>,
         instructions: Option<bool>,
         replace: bool,
+        /// `--mode skill|mcp`; `auto` (or none) is `None`.
+        mode: Option<Mode>,
     },
     /// `setup claude-code`: replace what has the same name; the CLAUDE.md line (None: ask).
     SetupClaudeCode {
@@ -454,6 +463,15 @@ fn parse_model_choice(s: &str) -> Result<ModelChoice, UsageError> {
     }
 }
 
+fn parse_mode(s: &str) -> Result<Option<Mode>, UsageError> {
+    match s {
+        "skill" => Ok(Some(Mode::Skill)),
+        "mcp" => Ok(Some(Mode::Mcp)),
+        "auto" => Ok(None),
+        _ => usage(format!("unknown mode {s:?} (skill|mcp|auto)")),
+    }
+}
+
 fn parse_job_state(s: &str) -> Result<JobState, UsageError> {
     match s {
         "pending" => Ok(JobState::Pending),
@@ -548,6 +566,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, UsageErro
             let from_installer = rest.switch_all("--from-installer");
             let agents = rest.flag("--agents")?;
             let model = rest.flag("--model")?;
+            let mode = rest.flag("--mode")?;
             let instructions = match (
                 rest.switch("--instructions"),
                 rest.switch("--no-instructions"),
@@ -559,6 +578,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, UsageErro
                 || from_installer
                 || agents.is_some()
                 || model.is_some()
+                || mode.is_some()
                 || instructions.is_some();
             let what = rest.positionals()?;
             let what: Vec<&str> = what.iter().map(String::as_str).collect();
@@ -576,12 +596,13 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, UsageErro
                         model: model.map(|m| parse_model_choice(&m)).transpose()?,
                         instructions,
                         replace,
+                        mode: mode.map(|m| parse_mode(&m)).transpose()?.flatten(),
                     }
                 }
                 _ if bare => {
                     return usage(
-                        "--yes, --from-installer, --agents, --model and --instructions go with \
-                         setup alone",
+                        "--yes, --from-installer, --agents, --model, --mode and --instructions go \
+                         with setup alone",
                     );
                 }
                 ["claude-code"] => Command::SetupClaudeCode { replace, claude_md },

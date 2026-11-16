@@ -16,6 +16,7 @@ use clio_memory::setup::instructions::instructions_file;
 use clio_memory::setup::model_choice::{
     ModelChoice, default_choice, granite_available, installed_best, to_remove, up_to_date,
 };
+use clio_memory::setup::modes::{self, Mode};
 use clio_memory::setup::plan::{Selection, Step, apply, connected};
 use clio_memory::setup::{
     GRANITE, ModelSpec, POTION, RUNTIME_DIR, curl_get_watching, install_model, install_runtime,
@@ -32,6 +33,8 @@ pub struct SetupArgs {
     pub model: Option<ModelChoice>,
     pub instructions: Option<bool>,
     pub replace: bool,
+    /// `--mode`: how the agents are connected (`None`: as noted, else each one's default).
+    pub mode: Option<Mode>,
     /// Whether stderr is a terminal (with `yes`, it decides whether the flow asks: `interactive`).
     pub terminal: bool,
     /// The `curl` that downloads the model (`curl` on the `PATH`; a fake in tests).
@@ -48,6 +51,9 @@ pub trait Screen {
     /// clio-memory is installed at `at` (only when it comes from the installer).
     fn installed(&mut self, at: &Path);
     fn choose_agents(&mut self, found: &[Found], connected: &[AgentId]) -> Option<Vec<AgentId>>;
+    /// How the agents are connected, `split` saying how it is going to be: as it is (`None`), or
+    /// all of them one way.
+    fn choose_mode(&mut self, split: &str) -> Option<Option<Mode>>;
     fn choose_model(
         &mut self,
         options: &[ModelChoice],
@@ -88,6 +94,10 @@ impl Screen for Plain {
 
     fn choose_agents(&mut self, found: &[Found], _connected: &[AgentId]) -> Option<Vec<AgentId>> {
         Some(found.iter().map(|f| f.agent).collect())
+    }
+
+    fn choose_mode(&mut self, _split: &str) -> Option<Option<Mode>> {
+        Some(None)
     }
 
     fn choose_model(
@@ -155,6 +165,30 @@ pub fn join_labels(agents: &[AgentId]) -> String {
         Some((last, [])) => (*last).to_owned(),
         Some((last, rest)) => format!("{} y {last}", rest.join(", ")),
     }
+}
+
+/// How `agents` are going to be connected: `Claude Code y OpenCode por skill, sin proceso por
+/// sesión; Codex por MCP`.
+pub fn split(agents: &[AgentId], noted: &std::collections::BTreeMap<AgentId, Mode>) -> String {
+    let by = |mode: Mode| -> Vec<AgentId> {
+        agents
+            .iter()
+            .copied()
+            .filter(|a| modes::resolve(None, noted, *a) == mode)
+            .collect()
+    };
+    let (skill, mcp) = (by(Mode::Skill), by(Mode::Mcp));
+    let mut parts = Vec::new();
+    if !skill.is_empty() {
+        parts.push(format!(
+            "{} por skill, sin proceso por sesión",
+            join_labels(&skill)
+        ));
+    }
+    if !mcp.is_empty() {
+        parts.push(format!("{} por MCP", join_labels(&mcp)));
+    }
+    parts.join("; ")
 }
 
 /// The line to add to the shell's startup file so `bin_dir` is on the `PATH`, or `None` when it
@@ -303,6 +337,16 @@ pub fn run(screen: &mut dyn Screen, env: &Env, args: SetupArgs) -> ExitCode {
             chosen
         }
     };
+    // The way: the flag's, else (asked, or) each one's as noted or by default.
+    let mode = match args.mode {
+        None if asks && !agents.is_empty() => {
+            match screen.choose_mode(&split(&agents, &modes::load(&env.data))) {
+                Some(mode) => mode,
+                None => return cancelled(screen),
+            }
+        }
+        mode => mode,
+    };
     if found.is_empty() && args.agents.is_none() {
         screen.note(
             "No encontré ningún agente en esta máquina: el binario y el modelo sirven igual, y luego `clio-memory setup` los conecta.",
@@ -390,6 +434,7 @@ pub fn run(screen: &mut dyn Screen, env: &Env, args: SetupArgs) -> ExitCode {
             instructions,
             replace: args.replace,
             exclusive,
+            mode,
         };
         let steps = {
             let cell = RefCell::new(&mut *screen);
@@ -666,6 +711,9 @@ mod tests {
     struct Script {
         agents: Vec<AgentId>,
         model: Option<ModelChoice>,
+        /// The answer to `choose_mode`, and what it was shown.
+        mode: Option<Mode>,
+        split: Option<String>,
         /// The answers to `confirm`, in order; a question past them fails the test.
         answers: Vec<bool>,
         asked: Vec<String>,
@@ -679,6 +727,10 @@ mod tests {
         fn installed(&mut self, _: &Path) {}
         fn choose_agents(&mut self, _: &[Found], _: &[AgentId]) -> Option<Vec<AgentId>> {
             Some(self.agents.clone())
+        }
+        fn choose_mode(&mut self, split: &str) -> Option<Option<Mode>> {
+            self.split = Some(split.to_owned());
+            Some(self.mode)
         }
         fn choose_model(&mut self, _: &[ModelChoice], current: ModelChoice) -> Option<ModelChoice> {
             Some(self.model.unwrap_or(current))
@@ -717,6 +769,7 @@ mod tests {
         }
         let env = Env {
             home,
+            data: t.path().join("data"),
             exe: t.path().join("bin/clio-memory"),
             path: Vec::new(),
             codex_home: None,
@@ -784,6 +837,50 @@ mod tests {
         let both = vec![AgentId::OpenCode, AgentId::Antigravity];
         assert_eq!(connected(&env), both);
         assert_eq!(s.done, Some(both));
+    }
+
+    // After the agents, the split it is going to apply; «Todos por MCP» connects OpenCode (by
+    // skill by default) by its server.
+    #[test]
+    fn the_split_is_shown_and_all_by_mcp_is_taken() {
+        let (_t, env) = home();
+        let mut s = Script {
+            agents: vec![AgentId::OpenCode, AgentId::Antigravity],
+            model: Some(ModelChoice::None),
+            mode: Some(Mode::Mcp),
+            answers: vec![true],
+            ..Script::default()
+        };
+        ask(&mut s, &env, Path::new("/nonexistent/curl"));
+        assert_eq!(
+            s.split.as_deref(),
+            Some("OpenCode por skill, sin proceso por sesión; Antigravity por MCP")
+        );
+        let noted = modes::load(&env.data);
+        assert_eq!(
+            noted.get(&AgentId::OpenCode),
+            Some(&Mode::Mcp),
+            "{:?}",
+            s.steps
+        );
+        let config = std::fs::read_to_string(env.home.join(".config/opencode/opencode.json"))
+            .expect("opencode.json");
+        assert!(config.contains("\"mcp\""), "{config}");
+    }
+
+    #[test]
+    fn the_split_names_each_way() {
+        use AgentId::{ClaudeCode, Codex, OpenCode};
+        let mut noted = std::collections::BTreeMap::new();
+        assert_eq!(
+            split(&[ClaudeCode, OpenCode, Codex], &noted),
+            "Claude Code y OpenCode por skill, sin proceso por sesión; Codex por MCP"
+        );
+        noted.insert(ClaudeCode, Mode::Mcp);
+        assert_eq!(
+            split(&[ClaudeCode, Codex], &noted),
+            "Claude Code y Codex por MCP"
+        );
     }
 
     /// Granite's files, as `installed_best` sees them.

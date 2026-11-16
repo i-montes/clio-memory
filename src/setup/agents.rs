@@ -55,6 +55,8 @@ impl AgentId {
 /// What detection and setup look at: the machine, passed in so tests can fake all of it.
 pub struct Env<'a> {
     pub home: PathBuf,
+    /// The memory's folder (the folder of `--db`): where the way each agent is connected is noted.
+    pub data: PathBuf,
     /// This binary (what the agents' MCP entries point at).
     pub exe: PathBuf,
     /// The directories of `PATH`.

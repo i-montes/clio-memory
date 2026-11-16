@@ -37,11 +37,12 @@ fn main() -> ExitCode {
                     model,
                     instructions,
                     replace,
+                    mode,
                 },
             db,
             ..
         })) => {
-            let env = match machine() {
+            let env = match machine(commands::data_of(&db)) {
                 Ok(env) => env,
                 Err(message) => {
                     output::error(&format!("error: {message}"));
@@ -74,6 +75,7 @@ fn main() -> ExitCode {
                     model,
                     instructions,
                     replace,
+                    mode,
                     terminal,
                     curl: "curl".into(),
                     data: Some(commands::data_of(&db).to_path_buf()),
@@ -82,8 +84,13 @@ fn main() -> ExitCode {
         }
         Ok(args::Parsed::Run(args::Cli {
             command: args::Command::SetupClaudeCode { replace, claude_md },
+            db,
             ..
-        })) => done(setup_claude_code(replace, claude_md)),
+        })) => done(setup_claude_code(
+            commands::data_of(&db),
+            replace,
+            claude_md,
+        )),
         Ok(args::Parsed::Run(args::Cli {
             command: args::Command::SetupModel { potion },
             db,
@@ -154,13 +161,15 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Ok(args::Parsed::Run(cli)) => match commands::run(&cli, machine().ok().as_ref()) {
-            Ok(code) => code,
-            Err(message) => {
-                output::error(&format!("error: {message}"));
-                ExitCode::from(1)
+        Ok(args::Parsed::Run(cli)) => {
+            match commands::run(&cli, machine(commands::data_of(&cli.db)).ok().as_ref()) {
+                Ok(code) => code,
+                Err(message) => {
+                    output::error(&format!("error: {message}"));
+                    ExitCode::from(1)
+                }
             }
-        },
+        }
         Err(args::UsageError(message)) => {
             // The full text is ~14 KB; a caller (often an agent) pays for it on every typo.
             output::error(&format!(
@@ -344,9 +353,10 @@ fn ask(question: &str) -> bool {
     )
 }
 
-/// This machine, as setup sees it: the home, this binary, the `PATH`, and the overrides of
-/// where Codex and Claude Code are and of where the installer puts the binary.
-fn machine() -> Result<Env<'static>, String> {
+/// This machine, as setup sees it: the home, the memory's folder `data`, this binary, the
+/// `PATH`, and the overrides of where Codex and Claude Code are and of where the installer puts
+/// the binary.
+fn machine(data: &std::path::Path) -> Result<Env<'static>, String> {
     let var = |name: &str| {
         std::env::var_os(name)
             .filter(|v| !v.is_empty())
@@ -354,6 +364,7 @@ fn machine() -> Result<Env<'static>, String> {
     };
     Ok(Env {
         home: home()?,
+        data: data.to_path_buf(),
         exe: std::env::current_exe().map_err(|e| e.to_string())?,
         path: std::env::var_os("PATH")
             .map(|p| std::env::split_paths(&p).collect())
@@ -378,7 +389,7 @@ fn uninstall(
         output::error(&format!("error: {message}"));
         ExitCode::from(code)
     };
-    let env = match machine() {
+    let env = match machine(commands::data_of(db)) {
         Ok(env) => env,
         Err(e) => return fail(e, 1),
     };
@@ -516,13 +527,18 @@ fn remove_folder(dir: &std::path::Path) -> Result<(), String> {
     }
 }
 
-fn setup_claude_code(replace: bool, claude_md: Option<bool>) -> Result<Vec<String>, String> {
+fn setup_claude_code(
+    data: &std::path::Path,
+    replace: bool,
+    claude_md: Option<bool>,
+) -> Result<Vec<String>, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let claude = std::env::var_os("CLIO_MEMORY_CLAUDE")
         .filter(|c| !c.is_empty())
         .unwrap_or_else(|| "claude".into());
     clio_memory::setup::ClaudeCode {
         home: home()?,
+        data: data.to_path_buf(),
         claude: claude.into(),
         exe,
         replace,

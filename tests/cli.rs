@@ -1284,6 +1284,8 @@ fn setup_agents_flag_only_adds() {
             "claude-code",
             "--model",
             "none",
+            "--mode",
+            "mcp",
         ],
     );
     assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
@@ -1379,6 +1381,8 @@ fn setup_flags_that_contradict_are_usage_errors() {
         &["setup", "--model", "big"],
         &["setup", "claude-code", "--yes"],
         &["setup", "model", "--agents", "codex"],
+        &["setup", "--mode", "both"],
+        &["setup", "claude-code", "--mode", "mcp"],
     ] {
         let o = setup_on(&m, None, args);
         assert_eq!(code(&o), 2, "{args:?}: {}{}", out(&o), err(&o));
@@ -1544,6 +1548,8 @@ fn setup_rerun_without_flags_keeps_what_was_chosen() {
             "--model",
             "none",
             "--no-instructions",
+            "--mode",
+            "mcp",
         ],
     );
     assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
@@ -1568,7 +1574,9 @@ fn setup_rerun_without_flags_keeps_what_was_chosen() {
     let o = setup_on(
         &m,
         Some(&claude),
-        &["setup", "--yes", "--agents", "opencode", "--model", "none"],
+        &[
+            "setup", "--yes", "--agents", "opencode", "--model", "none", "--mode", "mcp",
+        ],
     );
     assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
     assert!(

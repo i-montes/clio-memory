@@ -50,6 +50,7 @@ impl Rig {
     fn env(&self) -> Env<'static> {
         Env {
             home: self.home.clone(),
+            data: self.home.join(".local/share/clio"),
             exe: PathBuf::from(EXE),
             path: vec![self.bin.clone()],
             codex_home: Some(self.codex_home.clone()),

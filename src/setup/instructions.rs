@@ -67,14 +67,19 @@ pub fn has_instructions(env: &Env, agent: AgentId) -> bool {
     )
 }
 
+/// Whether `agent`'s file holds an earlier version's line (which `add_instructions` renews).
+pub fn has_old_instructions(env: &Env, agent: AgentId) -> bool {
+    std::fs::read_to_string(instructions_file(env, agent)).is_ok_and(|t| {
+        t.lines()
+            .any(|l| OLD_INSTRUCTIONS_LINES.contains(&l.trim()))
+    })
+}
+
 /// Adds the line to `agent`, or puts it in the place of an earlier version's; `None` when it was
 /// there already, else the file it went in.
 pub fn add_instructions(env: &Env, agent: AgentId) -> Result<Option<PathBuf>, String> {
     let file = instructions_file(env, agent);
-    let old = std::fs::read_to_string(&file).is_ok_and(|t| {
-        t.lines()
-            .any(|l| OLD_INSTRUCTIONS_LINES.contains(&l.trim()))
-    });
+    let old = has_old_instructions(env, agent);
     if !old && has_instructions(env, agent) {
         return Ok(None);
     }

@@ -13,6 +13,7 @@ use clio_memory::setup::INSTRUCTIONS_LINE;
 use clio_memory::setup::agents::{AgentId, Env};
 use clio_memory::setup::instructions::has_instructions;
 use clio_memory::setup::mcp::{McpState, mcp_state};
+use clio_memory::setup::modes::Mode;
 use clio_memory::setup::plan::{
     Health, Selection, Step, agent_report, apply, connected, uninstall,
 };
@@ -29,6 +30,8 @@ struct Rig {
     bin: PathBuf,
     codex_home: PathBuf,
     exe: PathBuf,
+    /// The memory's folder (`Env::data`).
+    data: PathBuf,
 }
 
 fn rig_with(codex_fails: bool) -> Rig {
@@ -45,6 +48,7 @@ fn rig_with(codex_fails: bool) -> Rig {
     let exe = t.path().join("opt bin/clio-memory");
     Rig {
         bin_dir: None,
+        data: t.path().join("data"),
         home,
         bin,
         codex_home,
@@ -69,6 +73,7 @@ impl Rig {
     fn env(&self) -> Env<'static> {
         Env {
             home: self.home.clone(),
+            data: self.data.clone(),
             exe: self.exe.clone(),
             path: vec![self.bin.clone()],
             codex_home: Some(self.codex_home.clone()),
@@ -78,6 +83,8 @@ impl Rig {
         }
     }
 
+    /// Connects `agents` by MCP (these tests are about the server; `tests/setup_modes.rs` has
+    /// the skill way).
     fn apply(&self, agents: &[AgentId], exclusive: bool) -> Vec<Step> {
         apply(
             &self.env(),
@@ -86,6 +93,7 @@ impl Rig {
                 instructions: true,
                 replace: false,
                 exclusive,
+                mode: Some(Mode::Mcp),
             },
             &never,
         )
@@ -190,6 +198,7 @@ fn declined_conflict_writes_nothing_for_that_agent() {
             instructions: true,
             replace: false,
             exclusive: false,
+            mode: None,
         },
         &|q: &str| {
             asked.borrow_mut().push(q.to_owned());
@@ -233,6 +242,7 @@ fn a_foreign_skill_is_asked_about_and_a_no_keeps_it() {
             instructions: true,
             replace: false,
             exclusive: false,
+            mode: None,
         },
         &|q: &str| {
             assert!(q.contains("una skill clio-memory distinta"), "{q}");
@@ -253,6 +263,7 @@ fn a_foreign_skill_is_asked_about_and_a_no_keeps_it() {
             instructions: false,
             replace: false,
             exclusive: false,
+            mode: None,
         },
         &|_| true,
     );
@@ -568,6 +579,7 @@ fn a_declined_agent_keeps_our_skill() {
             instructions: true,
             replace: false,
             exclusive: false,
+            mode: None,
         },
         &|_| false,
     );
@@ -588,6 +600,7 @@ fn a_declined_setup_claude_code_keeps_our_skill() {
     let skill = our_claude_skill(&r);
     let e = clio_memory::setup::ClaudeCode {
         home: r.home.clone(),
+        data: r.data.clone(),
         claude: r.bin.join("claude"),
         exe: r.exe.clone(),
         replace: false,

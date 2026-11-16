@@ -7,6 +7,8 @@ mod common;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+use clio_memory::setup::agents::AgentId;
+use clio_memory::setup::modes::{self, Mode};
 use clio_memory::setup::{ClaudeCode, POTION, install_model};
 use common::fakes::{
     CLAUDE_USER_SCOPE, calls, claude_get_output, claude_registry, fake_claude_mcp,
@@ -15,6 +17,8 @@ use common::fakes::{
 struct Rig {
     _t: tempfile::TempDir,
     home: PathBuf,
+    /// The memory's folder (`Env::data`).
+    data: PathBuf,
     dir: PathBuf,
     claude: PathBuf,
 }
@@ -28,6 +32,7 @@ fn rig() -> Rig {
     let claude = fake_claude_mcp(&dir);
     Rig {
         home,
+        data: t.path().join("data"),
         dir,
         claude,
         _t: t,
@@ -38,6 +43,7 @@ impl Rig {
     fn setup(&self, replace: bool, claude_md: Option<bool>) -> Result<Vec<String>, String> {
         ClaudeCode {
             home: self.home.clone(),
+            data: self.data.clone(),
             claude: self.claude.clone(),
             exe: PathBuf::from("/opt/bin/clio-memory"),
             replace,
@@ -60,11 +66,17 @@ impl Rig {
     fn skill(&self) -> PathBuf {
         self.home.join(".claude/skills/clio-memory/SKILL.md")
     }
+
+    /// Claude Code noted as connected by MCP (by skill is its default).
+    fn by_mcp(&self) {
+        modes::set(&self.data, AgentId::ClaudeCode, Some(Mode::Mcp)).unwrap();
+    }
 }
 
 #[test]
 fn setup_registers_the_mcp_and_installs_the_skill() {
     let r = rig();
+    r.by_mcp();
     r.setup(false, Some(false)).unwrap();
     assert!(
         r.log()
@@ -80,6 +92,7 @@ fn setup_registers_the_mcp_and_installs_the_skill() {
 #[test]
 fn an_existing_clio_memory_server_is_not_replaced_without_replace() {
     let r = rig();
+    r.by_mcp();
     std::fs::write(
         claude_registry(&r.dir),
         claude_get_output(CLAUDE_USER_SCOPE, "user", "clio", "memory mcp"),
@@ -127,6 +140,7 @@ fn without_claude_nothing_is_written() {
     let r = rig();
     let e = ClaudeCode {
         home: r.home.clone(),
+        data: r.data.clone(),
         claude: r.dir.join("no-such-claude"),
         exe: PathBuf::from("/opt/bin/clio-memory"),
         replace: false,
@@ -217,6 +231,7 @@ fn the_command_runs_setup_with_the_flags() {
         .env("HOME", &r.home)
         .env("PATH", path)
         .env("CLIO_MEMORY_CLAUDE", &r.claude)
+        .env_remove("CLIO_MEMORY_DATA")
         .args(["setup", "claude-code", "--no-claude-md"])
         .stdin(std::process::Stdio::null())
         .output()
@@ -224,7 +239,7 @@ fn the_command_runs_setup_with_the_flags() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(
-        out.contains("skill instalada") && out.contains("registrado"),
+        out.contains("skill instalada") && out.contains("conectado por skill"),
         "{out}"
     );
     assert!(!r.home.join(".claude/CLAUDE.md").exists());

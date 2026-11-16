@@ -17,6 +17,8 @@ pub mod config_file;
 pub mod instructions;
 pub mod mcp;
 pub mod model_choice;
+pub mod modes;
+pub mod permission;
 pub mod plan;
 pub mod skill;
 
@@ -151,6 +153,8 @@ pub const POTION: ModelSpec = ModelSpec {
 /// One run of `setup claude-code`.
 pub struct ClaudeCode<'a> {
     pub home: PathBuf,
+    /// The memory's folder (`Env::data`).
+    pub data: PathBuf,
     /// The `claude` program.
     pub claude: PathBuf,
     /// This binary, by its absolute path: what the MCP entry runs.
@@ -179,6 +183,7 @@ impl ClaudeCode<'_> {
         // read from their files where it can be; where it cannot, their skill is left as it is.
         let env = Env {
             home: self.home.clone(),
+            data: self.data.clone(),
             exe: self.exe.clone(),
             path: Vec::new(),
             codex_home: None,
@@ -199,6 +204,7 @@ impl ClaudeCode<'_> {
             instructions,
             replace: self.replace,
             exclusive: false,
+            mode: None,
         };
         let mut said = Vec::new();
         for step in plan::apply(&env, &selection, self.ask) {

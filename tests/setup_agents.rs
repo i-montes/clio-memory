@@ -217,6 +217,7 @@ fn detect_finds_by_program_and_by_folder() {
     let svc = |_: &[&str]| -> Result<(), String> { Ok(()) };
     let env = Env {
         home: home.clone(),
+        data: home.join(".local/share/clio"),
         exe: PathBuf::from("/x/clio-memory"),
         path: vec![t.path().join("nowhere"), bin.clone()],
         codex_home: None,
@@ -256,6 +257,7 @@ fn detect_prefers_the_override_and_the_program_over_the_folder() {
     let svc = |_: &[&str]| -> Result<(), String> { Ok(()) };
     let env = Env {
         home: home.clone(),
+        data: home.join(".local/share/clio"),
         exe: PathBuf::from("/x/clio-memory"),
         path: vec![bin],
         codex_home: None,
@@ -288,6 +290,7 @@ fn detect_finds_nothing_in_an_empty_machine() {
     let svc = |_: &[&str]| -> Result<(), String> { Ok(()) };
     let env = Env {
         home: t.path().to_path_buf(),
+        data: t.path().join(".local/share/clio"),
         exe: PathBuf::from("/x/clio-memory"),
         path: vec![],
         codex_home: None,
@@ -330,6 +333,7 @@ fn env_with<'a>(
 ) -> Env<'a> {
     Env {
         home: home.to_path_buf(),
+        data: home.join(".local/share/clio"),
         exe: PathBuf::from("/x/clio-memory"),
         path,
         codex_home: None,
@@ -423,6 +427,7 @@ fn another_clio_memory_first_on_the_path_is_found() {
     let service = |_: &[&str]| Ok(());
     let env = |path: Vec<PathBuf>| Env {
         home: t.path().join("home"),
+        data: t.path().join("home/.local/share/clio"),
         exe: ours.clone(),
         path,
         codex_home: None,

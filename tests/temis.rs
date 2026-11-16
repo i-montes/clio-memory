@@ -105,6 +105,7 @@ fn the_token_goes_to_curl_on_stdin_escaped_and_never_as_an_argument() {
     assert!(text.contains(r#"header = "Authorization: Bearer tok\"en\\x-0123456789abcdef0123""#));
     assert!(text.contains(r#"data-binary = "{\"a\":\"b \\\"c\\\"\"}""#));
     assert!(text.contains("max-time = 10"));
+    assert!(text.lines().any(|l| l == "globoff"), "{text}");
     // A line break in a value cannot start a new line of the config.
     let c = Config {
         token: "a\nurl = \"x\"".into(),
@@ -420,8 +421,22 @@ fn a_curl_that_fails_says_so_without_the_token() {
 
 #[test]
 fn from_data_reads_the_file_and_makes_no_call() {
+    // `from_data` reads the real environment: with the variables set in this shell, the test runs
+    // again in a child without them.
+    let vars = ["CLIO_MEMORY_TEMIS_URL", "CLIO_MEMORY_TEMIS_TOKEN"];
+    if vars.iter().any(|v| std::env::var_os(v).is_some()) {
+        let o = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "from_data_reads_the_file_and_makes_no_call"])
+            .env_remove(vars[0])
+            .env_remove(vars[1])
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&o.stdout);
+        assert!(o.status.success() && said.contains("1 passed"), "{said}");
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
-    // No file (and, in the tests, no variables): no Temis.
+    // No file (and no variables): no Temis.
     assert!(from_data(dir.path()).is_none());
     save(dir.path(), &cfg()).unwrap();
     // Building it calls nothing: the `curl` here would be the real one.

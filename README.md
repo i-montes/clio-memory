@@ -52,11 +52,11 @@ Después, `memory_context` empieza con una línea como `Anoche (sueño): 1 a cua
 
 Si configuraste [Temis](docs/motor.md#the-sleep) (`clio-memory setup temis --url URL`, el token por la entrada estándar), el sueño le pregunta por los pares de recuerdos parecidos, sin modelo de lenguaje y sin gastar tokens. Hace dos preguntas por par: si todo lo que dice uno está también en el otro (`se_conserva`, de 0 a 1, en los dos sentidos) y cómo se relacionan (`relacion`). Con la respuesta:
 
-- si uno contiene al otro (≥ 0,80, con las mismas cifras y nombres) y Temis no ve una contradicción, el contenido va a cuarentena con «sueño: contenido en mN» (se deshace con `revert`; se purga a los 30 días); el otro recuerdo queda con sus relaciones;
+- si uno contiene al otro (≥ 0,80; sus cifras, palabras de código y nombres están en el que queda, y los dos dicen las mismas negaciones) y Temis no ve una contradicción (ningún `conflicts_with` con confianza ≥ 0,50), el contenido va a cuarentena con «sueño: contenido en mN» (se deshace con `revert`; se purga a los 30 días); el otro recuerdo queda con sus relaciones;
 - si lo contiene pero Temis dice `conflicts_with` (confianza ≥ 0,50), no se dobla: el par sale en «para revisar»;
 - en cualquier otro caso no pasa nada. El sueño nunca escribe relaciones de Temis.
 
-**Sin Temis, nada cambia.** Lo que se envía es el contenido de los pares parecidos (cortado a 4000 caracteres, y nunca un texto que parezca un secreto), solo al servidor que configuraste, con `curl` y el token por la entrada estándar (nunca en la línea de órdenes). Un `--dry-run` nunca pregunta. Topes: 40 pares por sueño, 10 s por llamada; si falla 3 veces seguidas, los parecidos quedan para el próximo sueño con una sola alarma.
+**Sin Temis, nada cambia.** Lo que se envía es el contenido de los pares parecidos (cortado a 4000 caracteres, y nunca un texto que parezca un secreto), solo al servidor que configuraste, con `curl` y el token por la entrada estándar (nunca en la línea de órdenes). Un `--dry-run` nunca pregunta. Topes: 40 pares por sueño, 10 s por llamada; si falla 3 veces seguidas (o no respondió ni una vez), los parecidos quedan para el próximo sueño con una sola alarma; mientras no responde, esos pares esperan al próximo sueño que corra de todos modos (al menos uno al día) en vez de despertarlo.
 
 `setup temis` verifica el servidor antes de guardar (`<datos>/temis.json`, 0600): `--check` lo vuelve a preguntar, `--remove` lo quita, `--allow-http` admite `http` fuera de esta máquina (por defecto solo `https`). `CLIO_MEMORY_TEMIS_URL` y `CLIO_MEMORY_TEMIS_TOKEN` mandan sobre el archivo. Como guarda una credencial y manda texto de tu memoria a un servidor, **solo la persona puede correrlo**: un agente no.
 

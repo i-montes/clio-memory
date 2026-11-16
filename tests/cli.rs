@@ -19,6 +19,8 @@ fn isolated(cmd: &mut Command) -> &mut Command {
         // tests may run inside an agent; the person's commands refuse agents, and a test is the person
         .env("CLIO_MEMORY_AGENT", "cli")
         .env_remove("CLIO_MEMORY_AS_PERSON")
+        .env_remove("CLIO_MEMORY_TEMIS_URL")
+        .env_remove("CLIO_MEMORY_TEMIS_TOKEN")
 }
 
 fn run(db: Option<&Path>, args: &[&str]) -> Output {
@@ -1165,6 +1167,8 @@ impl Machine {
             // a test is the person, even when the tests run inside an agent
             .env("CLIO_MEMORY_AGENT", "cli")
             .env_remove("CLIO_MEMORY_AS_PERSON")
+            .env_remove("CLIO_MEMORY_TEMIS_URL")
+            .env_remove("CLIO_MEMORY_TEMIS_TOKEN")
             .args(args)
             .stdin(std::process::Stdio::null())
             .output()
@@ -2318,7 +2322,7 @@ case "$cfg" in
     if [ "$FAKE_TEMIS_REFUSES" = 1 ]; then
       printf '{{"detail":{{"error_type":"authentication_error"}}}}\n401'
     else
-      printf '{{"model":"temis-2.4.0"}}\n200'
+      printf '{{"model":"%s"}}\n200' "${{FAKE_TEMIS_MODEL:-temis-2.4.0}}"
     fi ;;
   *) printf '{{}}\n404' ;;
 esac
@@ -2417,6 +2421,30 @@ fn setup_temis_saves_what_it_could_verify() {
         Some(token.as_str()),
         "the line ending is not the token's"
     );
+}
+
+#[test]
+fn the_model_name_temis_sends_is_cleaned_and_cut() {
+    let m = machine();
+    fake_temis_curl(&m.bin);
+    // An escape sequence and a line break, as JSON escapes, and a name far too long.
+    let model = format!("temis\\u001b[31m\\nrojo-{}", "x".repeat(200));
+    let o = m.run_temis(
+        &["setup", "temis", "--url", TEMIS_URL],
+        &format!("{}\n", temis_token()),
+        &[("FAKE_TEMIS_MODEL", &model)],
+        "cli",
+    );
+    assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+    let line = out(&o);
+    let line = line.trim();
+    assert!(!line.chars().any(char::is_control), "{line:?}");
+    let name = line
+        .strip_prefix("Temis listo: ")
+        .and_then(|l| l.strip_suffix(" en https://h/temis"))
+        .unwrap();
+    assert_eq!(name.chars().count(), 80, "{name:?}");
+    assert!(name.starts_with("temis [31m rojo-x"), "{name:?}");
 }
 
 #[test]

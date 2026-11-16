@@ -177,7 +177,13 @@ pub fn curl_config(cfg: &Config, path: &str, body: Option<&str>) -> String {
     if body.is_some() {
         lines.push(r#"request = "POST""#.into());
     }
-    lines.extend(["max-time = 10".into(), "silent".into(), "show-error".into()]);
+    lines.extend([
+        "max-time = 10".into(),
+        "silent".into(),
+        "show-error".into(),
+        // `[]` and `{}` in the URL are not curl's ranges.
+        "globoff".into(),
+    ]);
     if body.is_some() {
         lines.push(r#"header = "Content-Type: application/json""#.into());
     }

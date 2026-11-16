@@ -258,6 +258,7 @@ pub fn run_judged(
         report: &mut report,
         deferred: BTreeSet::new(),
         awaiting: BTreeSet::new(),
+        judge_later: BTreeSet::new(),
         merge_due: opts.now || now - state.last_merge >= MERGE_EVERY,
         merged: false,
     };
@@ -266,6 +267,13 @@ pub fn run_judged(
     let merged = night_run.merged;
     let deferred = std::mem::take(&mut night_run.deferred);
     let awaiting = std::mem::take(&mut night_run.awaiting);
+    // What waits anyway (`pending`) is not also waiting for the judge.
+    let judge_later: Vec<i64> = night_run
+        .judge_later
+        .difference(&deferred)
+        .take(MAX_PENDING)
+        .map(|i| i.0)
+        .collect();
     report.tokens += merger.map_or(0, |m| m.tokens());
     // The newest wait when there are too many; the oldest are merged if they change again.
     let dropped = awaiting.len().saturating_sub(MAX_PENDING);
@@ -293,6 +301,7 @@ pub fn run_judged(
                         pending: deferred.iter().take(MAX_PENDING).map(|i| i.0).collect(),
                         last_merge: if merged { now } else { state.last_merge },
                         awaiting_merge: awaiting,
+                        awaiting_judge: judge_later,
                     },
                 )?;
             }
@@ -408,6 +417,8 @@ struct Night<'a> {
     deferred: BTreeSet<MemoryId>,
     /// Near-duplicate groups' seeds left for the model's next turn.
     awaiting: BTreeSet<MemoryId>,
+    /// What the judge did not answer for: asked again by a sleep that runs anyway.
+    judge_later: BTreeSet<MemoryId>,
     /// Whether the model step may run this time (`MERGE_EVERY`), and whether the model was called.
     merge_due: bool,
     merged: bool,
@@ -446,6 +457,7 @@ impl Night<'_> {
             .collect();
         fresh.extend(state.pending.iter().map(|&id| MemoryId(id)));
         fresh.extend(state.awaiting_merge.iter().map(|&id| MemoryId(id)));
+        fresh.extend(state.awaiting_judge.iter().map(|&id| MemoryId(id)));
         let mut active = Vec::new();
         for scope in self.read.scopes()? {
             active.extend(self.read.list(scope.id, Some(State::Active), None)?);
@@ -471,10 +483,12 @@ impl Night<'_> {
         let mut left = limit.saturating_sub(self.report.quarantined.len() - before);
         // What waited for the model keeps waiting unless this sleep looks at it again.
         let mut carry = true;
+        let mut judged = false;
         if self.embedder.is_some() {
             self.repeats(&fresh, &mut left, &mut gone)?;
             // Temis is never asked in a dry run: it would send memory text out for nothing.
             if let Some(j) = judge.filter(|_| !self.dry_run) {
+                judged = true;
                 self.contained(j, &fresh, &mut left, &mut gone)?;
             }
             match merger {
@@ -500,6 +514,16 @@ impl Night<'_> {
         if carry {
             self.awaiting
                 .extend(state.awaiting_merge.iter().map(|&id| MemoryId(id)));
+        }
+        if !judged {
+            // No judge this time: what waited for one keeps waiting, while it is still active.
+            let waited: HashSet<i64> = state.awaiting_judge.iter().copied().collect();
+            self.judge_later.extend(
+                fresh
+                    .iter()
+                    .map(|r| r.id)
+                    .filter(|id| waited.contains(&id.0) && !gone.contains(id)),
+            );
         }
         self.contradictions(&fresh, &gone)?;
         if copied {
@@ -736,9 +760,10 @@ impl Night<'_> {
     }
 
     /// With a judge (Temis): of a new memory and a near neighbor (same place, kind and trust), the
-    /// one the other keeps whole, numbers and names too, goes to quarantine with its relations
-    /// passed on, unless it is kept or the judge sees a contradiction (then it is for review).
-    /// Design §6. What the cap, a failing judge or the quarantine cap leave waits a night.
+    /// one the other keeps whole, numbers, names and negations too, goes to quarantine with its
+    /// relations passed on, unless it is kept or the judge sees a contradiction (then it is for
+    /// review). Design §6. What the cap or the quarantine cap leave waits in `pending`; what a
+    /// failing judge leaves waits for the next sleep that runs anyway (`judge_later`).
     fn contained(
         &mut self,
         judge: &dyn PairJudge,
@@ -754,10 +779,13 @@ impl Night<'_> {
         // A pair is asked once a night, from whichever side comes first.
         let mut asked: HashSet<(MemoryId, MemoryId)> = HashSet::new();
         let mut failures = 0usize;
+        // Whether the judge failed at all this sleep, and whether it ever answered.
+        let (mut failed_once, mut answered) = (false, false);
         for (i, r) in fresh.iter().enumerate() {
             if gone.contains(&r.id) || !self.read.has_vector(r.id)? || self.contradicted(r.id)? {
                 continue;
             }
+            let r_kept = self.kept(r)?;
             let (mut stop, mut failed) = (false, false);
             for (n, score) in self.read.neighbors(r.id, &[r.scope], NEIGHBORS)? {
                 if !(floor..REPEAT).contains(&score)
@@ -772,9 +800,20 @@ impl Night<'_> {
                 if has_secret(&r.content) || has_secret(&n.content) {
                     continue;
                 }
+                // Neither could be folded: nothing to ask.
+                if r_kept && self.kept(&n)? {
+                    continue;
+                }
                 let key = (r.id.min(n.id), r.id.max(n.id));
                 if asked.contains(&key) {
                     continue;
+                }
+                // No room to fold: no text goes out for nothing.
+                if *left == 0 {
+                    self.report
+                        .alarm("demasiados para cuarentena: quedaron parecidos para mañana".into());
+                    stop = true;
+                    break;
                 }
                 if asked.len() == MAX_JUDGED {
                     stop = true;
@@ -788,14 +827,16 @@ impl Night<'_> {
                     failed = true;
                     break;
                 };
+                answered = true;
                 let Some(b) = judge.preserved(&n.content, &r.content) else {
                     failures += 1;
                     failed = true;
                     break;
                 };
                 failures = 0;
-                let r_goes = a >= PRESERVED_MIN && marks(&r.content).is_subset(&marks(&n.content));
-                let n_goes = b >= PRESERVED_MIN && marks(&n.content).is_subset(&marks(&r.content));
+                let same = negations(&r.content) == negations(&n.content);
+                let r_goes = same && a >= PRESERVED_MIN && within(&r.content, &n.content);
+                let n_goes = same && b >= PRESERVED_MIN && within(&n.content, &r.content);
                 let (keep, lose) = match (r_goes, n_goes) {
                     (true, true) if self.rank(&n)? > self.rank(r)? => (n, r.clone()),
                     (true, true) | (false, true) => (r.clone(), n),
@@ -826,12 +867,6 @@ impl Night<'_> {
                     }
                     Some(_) => failures = 0,
                 }
-                if *left == 0 {
-                    self.report
-                        .alarm("demasiados para cuarentena: quedaron parecidos para mañana".into());
-                    stop = true;
-                    break;
-                }
                 let why = format!("{SLEEP_REASON} contenido en m{}", keep.id.0);
                 if self.quarantine_one(lose.id, &why)? {
                     // Never in a dry run: this step does not run then.
@@ -846,24 +881,35 @@ impl Night<'_> {
                 }
             }
             if failed {
-                // This memory's pair had no answer: it is asked again the next sleep.
-                self.deferred.insert(r.id);
+                // This memory's pair had no answer: it is asked again by the next sleep that runs
+                // anyway, without waking one for it.
+                failed_once = true;
+                self.judge_later.insert(r.id);
             }
-            if failures >= MAX_JUDGE_FAILURES {
+            let down = failures >= MAX_JUDGE_FAILURES;
+            if down {
                 self.report
                     .alarm("Temis no respondió: los parecidos quedan para el próximo sueño".into());
-                stop = true;
             }
-            if stop {
-                // Nothing falls out of pending: what is left waits for the next sleep.
-                self.deferred.extend(
-                    fresh[i..]
-                        .iter()
-                        .map(|r| r.id)
-                        .filter(|id| !gone.contains(id)),
-                );
+            if stop || down {
+                // Nothing falls out: what is left waits for the next sleep, in `pending` when the
+                // judge answers, else for a sleep that runs anyway.
+                let rest = fresh[i..]
+                    .iter()
+                    .map(|r| r.id)
+                    .filter(|id| !gone.contains(id));
+                if down {
+                    self.judge_later.extend(rest);
+                } else {
+                    self.deferred.extend(rest);
+                }
                 break;
             }
+        }
+        // A judge that never answered is down, however few pairs it was asked.
+        if failed_once && !answered {
+            self.report
+                .alarm("Temis no respondió: los parecidos quedan para el próximo sueño".into());
         }
         Ok(())
     }
@@ -1089,6 +1135,55 @@ fn marks(text: &str) -> BTreeSet<&str> {
                 .any(|c| c.is_ascii_digit() || matches!(c, '_' | '/' | '.' | ':' | '-'))
         })
         .collect()
+}
+
+/// Words that turn a statement around, whole and in any case; `no-` is a prefix (`no-cache`).
+const NEGATIONS: &[&str] = &[
+    "no", "nunca", "sin", "ni", "jamás", "tampoco", "not", "never", "without", "no-",
+];
+
+/// The negation words of a text: two that say different ones do not say the same thing.
+fn negations(text: &str) -> BTreeSet<&'static str> {
+    text.split_whitespace()
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
+        .filter_map(|w| {
+            NEGATIONS
+                .iter()
+                .copied()
+                .find(|n| match n.strip_suffix('-') {
+                    Some(_) => w.starts_with(n),
+                    None => w == *n,
+                })
+        })
+        .collect()
+}
+
+/// The names of a text: words that start with a capital letter and do not start a sentence or a
+/// line ("van por Wompi", not "Wompi cobra.").
+fn names(text: &str) -> BTreeSet<&str> {
+    let mut found = BTreeSet::new();
+    for line in text.lines() {
+        let mut start = true;
+        for w in line.split_whitespace() {
+            let word = w.trim_matches(|c: char| !c.is_alphanumeric());
+            if word.is_empty() {
+                continue;
+            }
+            if !start && word.chars().next().is_some_and(char::is_uppercase) {
+                found.insert(word);
+            }
+            start = w.ends_with(['.', '!', '?']);
+        }
+    }
+    found
+}
+
+/// Are the numbers, code-like words and names of `lose` all in `keep`?
+fn within(lose: &str, keep: &str) -> bool {
+    marks(lose).is_subset(&marks(keep)) && names(lose).is_subset(&names(keep))
 }
 
 /// Outside text and the agent's own are never mixed.

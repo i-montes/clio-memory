@@ -1232,20 +1232,23 @@ impl PairJudge for Scripted {
 }
 
 impl Night {
-    fn report_judged(&self, at: i64, judge: &dyn PairJudge) -> Report {
-        let out = run_judged(
+    fn sleep_judged(&self, at: i64, judge: &dyn PairJudge, now: bool) -> Slept {
+        run_judged(
             &self.data,
             &self.model,
             None,
             Some(judge),
             &Options {
-                now: true,
+                now,
                 dry_run: false,
                 clock: Arc::new(FixedClock::new(at)),
             },
         )
-        .unwrap();
-        match out {
+        .unwrap()
+    }
+
+    fn report_judged(&self, at: i64, judge: &dyn PairJudge) -> Report {
+        match self.sleep_judged(at, judge, true) {
             Slept::Done(r) => r,
             Slept::Skipped(why) => panic!("skipped: {why}"),
         }
@@ -1405,16 +1408,128 @@ fn temis_down_leaves_the_pairs_for_later_and_the_night_completes() {
     // Three failures in a row end the step: the fourth pair is not asked.
     assert_eq!(judge.asked(), 3);
     assert_eq!(r.judged, 3);
-    // Nothing falls out of pending: every pair has a memory that asks for it the next sleep,
-    // the one never asked too.
-    let pending = ids(&n, "pending");
+    // Nothing is lost: every pair has a memory that asks for it the next sleep, the one never
+    // asked too. But a Temis that does not answer is no reason to wake: not in `pending`.
+    let waiting = ids(&n, "awaiting_judge");
     for (a, b) in &pairs {
         assert!(
-            pending.contains(&a.0) || pending.contains(&b.0),
+            waiting.contains(&a.0) || waiting.contains(&b.0),
             "{}",
             state(&n)
         );
     }
+    assert!(ids(&n, "pending").is_empty(), "{}", state(&n));
+}
+
+#[test]
+fn while_temis_is_down_the_sleep_does_not_wake_for_the_pairs() {
+    let n = night();
+    let (short, long) = {
+        let e = open(&n.data, NOW - DAY);
+        pair(&n, &e, DOCKER)
+    };
+    let down = Scripted::new().silent();
+    assert!(matches!(n.sleep_judged(NOW, &down, false), Slept::Done(r) if r.complete));
+    assert_eq!(ids(&n, "awaiting_judge"), vec![short.0], "{}", state(&n));
+    // Half an hour later nothing changed: the pair waiting for Temis wakes nobody.
+    for wake in [3600, 2 * 3600, 12 * 3600] {
+        assert!(
+            matches!(
+                n.sleep_judged(NOW + wake, &down, false),
+                Slept::Skipped("nada cambió desde el último sueño")
+            ),
+            "woke at +{wake}"
+        );
+    }
+    assert_eq!(down.asked(), 1);
+    // The day's sleep runs anyway, asks again, and Temis answers now: the pair is folded.
+    let longer = format!("{DOCKER} local");
+    let up = Scripted::new()
+        .preserved(DOCKER, &longer, 0.93)
+        .preserved(&longer, DOCKER, 0.10);
+    match n.sleep_judged(NOW + 25 * 3600, &up, false) {
+        Slept::Done(r) => assert_eq!(r.contained, vec![(short.0, long.0)], "{r:?}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(ids(&n, "awaiting_judge").is_empty(), "{}", state(&n));
+}
+
+#[test]
+fn a_sleep_by_hand_takes_up_what_waited_for_temis() {
+    let n = night();
+    let (short, long) = {
+        let e = open(&n.data, NOW - DAY);
+        pair(&n, &e, DOCKER)
+    };
+    n.sleep_judged(NOW, &Scripted::new().silent(), false);
+    assert_eq!(ids(&n, "awaiting_judge"), vec![short.0], "{}", state(&n));
+    let longer = format!("{DOCKER} local");
+    let up = Scripted::new()
+        .preserved(DOCKER, &longer, 0.93)
+        .preserved(&longer, DOCKER, 0.10);
+    let r = n.report_judged(NOW + 3600, &up);
+    assert_eq!(r.contained, vec![(short.0, long.0)], "{r:?}");
+    assert!(ids(&n, "awaiting_judge").is_empty(), "{}", state(&n));
+    assert!(ids(&n, "pending").is_empty(), "{}", state(&n));
+}
+
+#[test]
+fn a_sleep_without_a_judge_keeps_what_waited_for_one() {
+    let n = night();
+    let (short, _) = {
+        let e = open(&n.data, NOW - DAY);
+        pair(&n, &e, DOCKER)
+    };
+    n.sleep_judged(NOW, &Scripted::new().silent(), false);
+    assert_eq!(ids(&n, "awaiting_judge"), vec![short.0], "{}", state(&n));
+    n.report(NOW + 3600, None);
+    assert_eq!(ids(&n, "awaiting_judge"), vec![short.0], "{}", state(&n));
+    // Gone (forgotten by someone), it waits no more.
+    n.write(NOW + 7200, |e, n| {
+        e.forget(short, n.agent, "ya no vale").unwrap();
+    });
+    n.report(NOW + 3 * 3600, None);
+    assert!(ids(&n, "awaiting_judge").is_empty(), "{}", state(&n));
+}
+
+#[test]
+fn what_waits_anyway_does_not_also_wait_for_the_judge() {
+    let n = night();
+    let (short, long) = {
+        let e = open(&n.data, NOW - DAY);
+        pair(&n, &e, DOCKER)
+    };
+    // Temis down, and a model that cannot merge tonight either: the pair waits in `pending`.
+    let merger = Fake::new(|_| None);
+    let out = run_judged(
+        &n.data,
+        &n.model,
+        Some(&merger),
+        Some(&Scripted::new().silent()),
+        &Options {
+            now: true,
+            dry_run: false,
+            clock: Arc::new(FixedClock::new(NOW)),
+        },
+    )
+    .unwrap();
+    assert!(matches!(out, Slept::Done(r) if r.complete));
+    let mut pending = ids(&n, "pending");
+    pending.sort_unstable();
+    assert_eq!(pending, vec![short.0, long.0], "{}", state(&n));
+    assert!(ids(&n, "awaiting_judge").is_empty(), "{}", state(&n));
+}
+
+#[test]
+fn a_judge_that_never_answered_raises_the_alarm_on_a_small_night() {
+    let n = night();
+    {
+        let e = open(&n.data, NOW - DAY);
+        pair(&n, &e, DOCKER);
+    }
+    let r = n.report_judged(NOW, &Scripted::new().silent());
+    assert_eq!(r.judged, 1, "{r:?}");
+    assert!(r.alarms.iter().any(|a| a == TEMIS_DOWN), "{r:?}");
 }
 
 #[test]
@@ -1459,7 +1574,14 @@ fn a_relation_with_no_answer_folds_nothing() {
     assert!(r.contained.is_empty(), "{r:?}");
     assert_eq!(n.get(short).state, State::Active);
     assert_eq!(n.get(long).state, State::Active);
-    assert!(ids(&n, "pending").contains(&short.0), "{}", state(&n));
+    assert!(
+        ids(&n, "awaiting_judge").contains(&short.0),
+        "{}",
+        state(&n)
+    );
+    assert!(!ids(&n, "pending").contains(&short.0), "{}", state(&n));
+    // Temis answered the first two questions: no alarm for one missing answer.
+    assert!(!r.alarms.iter().any(|a| a == TEMIS_DOWN), "{r:?}");
 }
 
 #[test]
@@ -1505,31 +1627,84 @@ fn the_quarantine_cap_is_shared_with_the_folds() {
     assert_eq!(n.get(short).state, State::Active);
     assert_eq!(n.get(long).state, State::Active);
     assert!(ids(&n, "pending").contains(&short.0), "{}", state(&n));
+    // No room for a fold: Temis is not even asked.
+    assert_eq!(judge.asked(), 0);
+    assert!(judge.seen().is_empty(), "{:?}", judge.seen());
+}
+
+#[test]
+fn two_memories_of_the_person_are_never_sent() {
+    let n = night();
+    let longer = format!("{DOCKER} local");
+    let (a, b) = {
+        let e = open(&n.data, NOW - DAY);
+        (n.save(&e, n.person, DOCKER), n.save(&e, n.person, &longer))
+    };
+    let judge = Scripted::new()
+        .preserved(DOCKER, &longer, 0.95)
+        .preserved(&longer, DOCKER, 0.95);
+    let r = n.report_judged(NOW, &judge);
+    assert!(judge.seen().is_empty(), "{:?}", judge.seen());
+    assert_eq!(r.judged, 0, "{r:?}");
+    assert_eq!(n.get(a).state, State::Active);
+    assert_eq!(n.get(b).state, State::Active);
+}
+
+/// Two texts the judge says keep each other whole, and yet are not the same thing.
+fn not_folded(x: &str, y: &str) {
+    let n = night();
+    let (a, b) = {
+        let e = open(&n.data, NOW - DAY);
+        (n.save(&e, n.agent, x), n.save(&e, n.agent, y))
+    };
+    let judge = Scripted::new().preserved(x, y, 0.95).preserved(y, x, 0.95);
+    let r = n.report_judged(NOW, &judge);
+    // The pair is within the range (the judge was asked), and still nothing is folded.
+    assert_eq!(r.judged, 1, "{r:?}");
+    assert!(r.contained.is_empty(), "{r:?}");
+    assert_eq!(n.get(a).state, State::Active);
+    assert_eq!(n.get(b).state, State::Active);
+}
+
+#[test]
+fn a_negation_stops_the_fold() {
+    not_folded(
+        "el servidor usa docker en pruebas",
+        "el servidor no usa docker en pruebas",
+    );
+}
+
+#[test]
+fn another_name_stops_the_fold() {
+    not_folded(
+        "los pagos de la tienda van por Wompi con tarjeta desde la web móvil",
+        "los pagos de la tienda van por Stripe con tarjeta desde la web móvil",
+    );
 }
 
 #[test]
 fn a_text_that_looks_like_a_secret_is_never_sent() {
     let n = night();
     let key = format!("sk-{}", "a1B2c3D4e5F6g7H8i9J0k1L2");
+    // Long enough that the key leaves the pair within the range.
+    let base =
+        format!("{DOCKER} levantado con make up desde la carpeta raiz del proyecto principal");
     let (a, b) = {
         let e = open(&n.data, NOW - DAY);
         (
-            n.save(&e, n.person, DOCKER),
-            n.save(&e, n.person, &format!("{DOCKER} local")),
+            n.save(&e, n.person, &base),
+            n.save(&e, n.agent, &format!("{base} local")),
         )
     };
     // The engine refuses a secret: put straight into the file, as one written before the rule.
+    // Only the person's is left alone by the quarantine, and the agent's is not kept, so the pair
+    // could be asked about.
     let conn = rusqlite::Connection::open(db(&n.data)).unwrap();
-    for (id, text) in [
-        (a, format!("{DOCKER} {key}")),
-        (b, format!("{DOCKER} local {key}")),
-    ] {
-        conn.execute(
-            "UPDATE memories SET content = ?1 WHERE id = ?2",
-            rusqlite::params![text, id.0],
-        )
-        .unwrap();
-    }
+    conn.execute(
+        "UPDATE memories SET content = ?1 WHERE id = ?2",
+        rusqlite::params![format!("{base} {key}"), a.0],
+    )
+    .unwrap();
     drop(conn);
     let judge = Scripted::new();
     let r = n.report_judged(NOW, &judge);

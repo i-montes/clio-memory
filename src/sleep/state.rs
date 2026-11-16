@@ -28,6 +28,10 @@ pub struct SleepState {
     /// Memories that form a near-duplicate group, waiting for the model's next turn.
     #[serde(default)]
     pub awaiting_merge: Vec<i64>,
+    /// Memories whose pair the judge (Temis) did not answer: asked again by the next sleep that
+    /// runs anyway, never a reason to wake one.
+    #[serde(default)]
+    pub awaiting_judge: Vec<i64>,
 }
 
 /// The folder the sleep keeps all of this in, beside the memory file.

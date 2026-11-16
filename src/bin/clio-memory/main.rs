@@ -634,7 +634,12 @@ fn setup_temis(
         let (url, post) = (cfg.url.clone(), temis::curl_post("curl".into()));
         let temis = Temis::new(cfg, post);
         temis.health()?;
-        Ok(format!("Temis listo: {} en {url}", temis.model()?))
+        // The name is the server's text: no control characters, and short.
+        let model: String = clio_memory::agent::memory::clean_text(&temis.model()?)
+            .chars()
+            .take(80)
+            .collect();
+        Ok(format!("Temis listo: {model} en {url}"))
     };
     let not_right = |why: String| format!("Temis no respondió bien ({why})");
     if remove {

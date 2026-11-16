@@ -76,6 +76,13 @@ pub fn load(data: &Path, env: &dyn Fn(&str) -> Option<String>) -> Option<Config>
     }
 }
 
+/// What the hosts use: the configuration as `load` reads it with the real environment, and the
+/// real `curl`. Building it makes no call.
+pub fn from_data(data: &Path) -> Option<Temis> {
+    let cfg = load(data, &|k| std::env::var(k).ok())?;
+    Some(Temis::new(cfg, curl_post(PathBuf::from("curl"))))
+}
+
 /// Written whole, 0600, or not at all.
 pub fn save(data: &Path, cfg: &Config) -> Result<(), String> {
     let path = config_path(data);

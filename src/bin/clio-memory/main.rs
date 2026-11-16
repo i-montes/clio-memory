@@ -704,7 +704,7 @@ fn sleep(
     json: bool,
 ) -> Result<Vec<String>, String> {
     use clio_memory::agent::memory::{DB_FILE, EmbedModel};
-    use clio_memory::sleep::{Options, Slept, last_report, morning_line, run};
+    use clio_memory::sleep::{Options, PairJudge, Slept, last_report, morning_line, run_judged};
     if db.file_name().is_none_or(|n| n != DB_FILE) {
         return Err(format!(
             "sleep uses <folder>/{DB_FILE}: give --db a file called {DB_FILE}"
@@ -723,10 +723,15 @@ fn sleep(
     };
     let clock: std::sync::Arc<dyn clio_memory::Clock> =
         std::sync::Arc::new(clio_memory::SystemClock);
-    let out = run(
+    // A dry run never asks Temis, so it does not even build it.
+    let temis = (!dry_run)
+        .then(|| clio_memory::temis::from_data(data))
+        .flatten();
+    let out = run_judged(
         data,
         &model,
         None,
+        temis.as_ref().map(|t| t as &dyn PairJudge),
         &Options {
             now,
             dry_run,

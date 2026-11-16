@@ -2578,3 +2578,178 @@ fn doctor_says_whether_temis_is_set_without_calling_it() {
     assert!(!out(&o).contains(&token) && !err(&o).contains(&token));
     assert!(!log.exists(), "doctor called Temis");
 }
+
+// The sleep and Temis: a fake `curl` that answers `/v1/decide` and logs each call it gets.
+fn fake_decide_curl(bin: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let log = bin.join("decide-curl.log");
+    let curl = bin.join("curl");
+    std::fs::write(
+        &curl,
+        format!(
+            r#"#!/bin/sh
+PATH=/usr/bin:/bin
+cfg=$(cat)
+printf '%s\n' "$cfg" | grep '^url' >> '{}'
+printf '{{"answers":{{"se_conserva":{{"type":"noul","noul":0.95}},"relacion":{{"type":"choice","choice":"compatible","confidence":0.9}}}}}}\n200'
+"#,
+            log.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&curl, std::fs::Permissions::from_mode(0o755)).unwrap();
+    log
+}
+
+/// Two near-identical memories (Granite: cosine 0.94, in the sleep's near-duplicate band); the
+/// shorter has no number, so the longer keeps it whole. No vectors yet: the sleep computes them.
+fn seed_pair(m: &Machine) {
+    // Another test's fork can hold a copy of the lock file for a moment (see `run_env`).
+    let open = || {
+        Engine::open(
+            &m.data.join("memory.db"),
+            OpenMode::ReadWrite,
+            Arc::new(SystemClock),
+        )
+    };
+    let mut e = open();
+    for _ in 0..60 {
+        if e.is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        e = open();
+    }
+    let e = e.unwrap();
+    let scope = e.scopes().unwrap()[0].id;
+    let agent = e
+        .register_actor("agente", ActorKind::Agent, Quota::default())
+        .unwrap();
+    for text in [
+        "El servidor de pruebas usa docker compose y se levanta con make up",
+        "El servidor de pruebas corre en el puerto 8080 con docker compose y se levanta con make up",
+    ] {
+        e.propose(prop(scope, agent, text)).unwrap();
+    }
+}
+
+fn temis_file(m: &Machine, token: &str) {
+    std::fs::write(
+        m.data.join("temis.json"),
+        serde_json::json!({"url": TEMIS_URL, "token": token}).to_string(),
+    )
+    .unwrap();
+}
+
+fn files_under(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut found = vec![];
+    for f in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        if f.path().is_dir() {
+            found.extend(files_under(&f.path()));
+        } else {
+            found.push(f.path());
+        }
+    }
+    found
+}
+
+/// The sleep with the real model, from the binary: what is asked of Temis, and when not. They need
+/// the Granite files (`CLIO_MEMORY_GRANITE_DIR`) and say so, and pass, without them.
+#[cfg(feature = "granite")]
+fn granite_sleep(
+    temis: bool,
+    extra: &[&str],
+) -> Option<(Machine, std::path::PathBuf, String, Output)> {
+    let Some(dir) = std::env::var_os("CLIO_MEMORY_GRANITE_DIR") else {
+        eprintln!("skipped: CLIO_MEMORY_GRANITE_DIR is not set");
+        return None;
+    };
+    let m = machine();
+    seed_pair(&m);
+    let log = fake_decide_curl(&m.bin);
+    let token = temis_token();
+    if temis {
+        temis_file(&m, &token);
+    }
+    let mut args = vec!["--model", dir.to_str().unwrap(), "sleep", "--now"];
+    args.extend_from_slice(extra);
+    let o = m.temis(&args, "");
+    Some((m, log, token, o))
+}
+
+#[cfg(feature = "granite")]
+#[test]
+fn sleep_asks_temis_when_it_is_set() {
+    let Some((m, log, token, o)) = granite_sleep(true, &[]) else {
+        return;
+    };
+    assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+    assert!(
+        out(&o).contains("1 contenida en otra"),
+        "{}{}",
+        out(&o),
+        err(&o)
+    );
+    let calls = std::fs::read_to_string(&log).unwrap();
+    assert!(calls.contains("/v1/decide"), "{calls}");
+    // Neither the output nor what the sleep keeps carries the token.
+    assert!(!out(&o).contains(&token) && !err(&o).contains(&token));
+    let kept = files_under(&m.data.join("sleep"));
+    assert!(!kept.is_empty());
+    for f in kept {
+        let bytes = std::fs::read(&f).unwrap();
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains(&token),
+            "{}",
+            f.display()
+        );
+    }
+}
+
+#[cfg(feature = "granite")]
+#[test]
+fn dry_run_never_calls_temis() {
+    // A dry run computes no vectors, so a first sleep (without Temis) stores them and its cursor
+    // is forgotten: the pair is new again, and a dry run could ask about it.
+    let Some((m, log, token, o)) = granite_sleep(false, &[]) else {
+        return;
+    };
+    assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+    std::fs::write(
+        m.data.join("sleep/state.json"),
+        serde_json::json!({"cursor": 0, "rules_version": clio_memory::sleep::signals::RULES_VERSION, "last_complete": 0}).to_string(),
+    )
+    .unwrap();
+    temis_file(&m, &token);
+    let dir = std::env::var("CLIO_MEMORY_GRANITE_DIR").unwrap();
+    let o = m.temis(&["--model", &dir, "sleep", "--now", "--dry-run"], "");
+    assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+    assert!(!log.exists(), "curl was called in a dry run");
+}
+
+#[cfg(feature = "granite")]
+#[test]
+fn sleep_without_temis_is_silent_about_it() {
+    let Some((_m, log, _, o)) = granite_sleep(false, &[]) else {
+        return;
+    };
+    assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+    let said = format!("{}{}", out(&o), err(&o)).to_lowercase();
+    assert!(
+        !said.contains("temis") && !said.contains("contenida"),
+        "{said}"
+    );
+    assert!(!log.exists(), "curl was called");
+}
+
+/// Only the wiring, with no model: `sleep --now` with a `temis.json` builds the judge, exits 0 and
+/// shows no token. The step that asks Temis cannot run without a model (the tests above).
+#[test]
+fn sleep_with_temis_and_no_model_exits_0_and_shows_no_token() {
+    let m = machine();
+    let token = temis_token();
+    temis_file(&m, &token);
+    let o = m.temis(&["sleep", "--now"], "");
+    assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+    assert!(!out(&o).contains(&token) && !err(&o).contains(&token));
+}

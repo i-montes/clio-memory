@@ -1618,3 +1618,60 @@ fn an_older_report_without_the_new_fields_still_loads() {
     assert_eq!(r.judged, 0);
     assert_eq!(r.quarantined.len(), 1);
 }
+
+/// The real `Temis` over a fake `Post`: it answers `se_conserva` by direction (the shorter text
+/// is whole in the longer) and `relacion` compatible, and logs the path of every call.
+#[test]
+fn sleep_asks_temis_when_it_is_set() {
+    use clio_memory::temis::{Config, Post, Temis};
+    let n = night();
+    let (short, long) = {
+        let e = open(&n.data, NOW - DAY);
+        pair(&n, &e, DOCKER)
+    };
+    let token = format!("{}-{}", "tk", "0123456789abcdef0123456789");
+    let cfg = Config {
+        url: "https://h/temis".into(),
+        token: token.clone(),
+        model: "temis-latest".into(),
+    };
+    let paths: Arc<Mutex<Vec<String>>> = Arc::default();
+    let seen = paths.clone();
+    let post: Box<Post> = Box::new(move |_, path, body| {
+        seen.lock().unwrap().push(path.to_owned());
+        let body: serde_json::Value = serde_json::from_str(body.unwrap()).unwrap();
+        let answers = if body["questions"].get("se_conserva").is_some() {
+            let whole = body["state"]["original"] == DOCKER;
+            let v = if whole { 0.95 } else { 0.1 };
+            serde_json::json!({"se_conserva": {"type": "noul", "noul": v}})
+        } else {
+            serde_json::json!({"relacion": {"type": "choice", "choice": "compatible", "confidence": 0.9}})
+        };
+        Ok((200, serde_json::json!({"answers": answers}).to_string()))
+    });
+    let r = n.report_judged(NOW, &Temis::new(cfg, post));
+    assert_eq!(r.contained, vec![(short.0, long.0)], "{r:?}");
+    assert_eq!(n.get(short).state, State::Quarantine);
+    assert_eq!(n.get(long).state, State::Active);
+    assert!(
+        paths.lock().unwrap().iter().all(|p| p == "/v1/decide")
+            && !paths.lock().unwrap().is_empty()
+    );
+    // Neither the report nor anything else the sleep keeps holds the token.
+    let mut files = vec![];
+    let mut dirs = vec![n.data.join("sleep")];
+    while let Some(d) = dirs.pop() {
+        for f in std::fs::read_dir(d).unwrap().flatten() {
+            if f.path().is_dir() {
+                dirs.push(f.path());
+            } else if f.path().extension().is_none_or(|e| e != "db") {
+                files.push(f.path());
+            }
+        }
+    }
+    assert!(!files.is_empty());
+    for f in files {
+        let text = std::fs::read_to_string(&f).unwrap_or_default();
+        assert!(!text.contains(&token), "{}", f.display());
+    }
+}

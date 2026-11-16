@@ -417,3 +417,13 @@ fn a_curl_that_fails_says_so_without_the_token() {
     let err = Temis::new(cfg(), curl_post(missing)).health().unwrap_err();
     assert!(!err.contains(&token()), "{err}");
 }
+
+#[test]
+fn from_data_reads_the_file_and_makes_no_call() {
+    let dir = tempfile::tempdir().unwrap();
+    // No file (and, in the tests, no variables): no Temis.
+    assert!(from_data(dir.path()).is_none());
+    save(dir.path(), &cfg()).unwrap();
+    // Building it calls nothing: the `curl` here would be the real one.
+    assert!(from_data(dir.path()).is_some());
+}

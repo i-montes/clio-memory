@@ -25,7 +25,7 @@ clio-memory es la **memoria propia de un agente**. Guarda lo que vale la pena re
 
 ## Qué sale de esta máquina
 
-- Nada sale, salvo las descargas de `setup` y `update`.
+- Nada sale, salvo las descargas de `setup` y `update` y, **solo si tú lo configuraste** con `clio-memory setup temis`, el contenido de los recuerdos parecidos que el sueño le pregunta a Temis (ver «El sueño con Temis»), únicamente al servidor que pusiste.
 - ONNX Runtime trae telemetría de Microsoft: clio-memory la apaga con `ORT_DISABLE_TELEMETRY=1` (el binario se vuelve a ejecutar con la variable puesta) y no carga el runtime sin ella.
 - Un programa que use la biblioteca debe llamar a `clio_memory::private_runtime()` al empezar.
 
@@ -40,12 +40,27 @@ Cada sueño:
 4. limpia el título y la categoría que purgas anteriores dejaron en los registros;
 5. manda a cuarentena lo que tiene un secreto o parece un ataque (caracteres ocultos, o dos señales juntas: frases de inyección, órdenes de exfiltración, origen externo);
 6. de dos recuerdos casi idénticos (similitud ≥ 0,97, mismo sitio y misma confianza) deja uno: el tuyo, si no el fijado, si no el más usado, si no el más nuevo;
-7. anota «para revisar» las contradicciones;
-8. purga lo que se descartó (olvidado, marcado o mandado por el sueño) hace 30 días o más (7 si era un secreto), solo si la copia salió bien.
+7. con Temis configurado, dobla un recuerdo que otro conserva entero (ver «El sueño con Temis»);
+8. anota «para revisar» las contradicciones;
+9. purga lo que se descartó (olvidado, marcado o mandado por el sueño) hace 30 días o más (7 si era un secreto), solo si la copia salió bien.
 
 Solo mira lo que cambió desde el sueño anterior y sus vecinos: lo sólido no se repasa. Nunca toca lo tuyo ni lo fijado: si algo tuyo parece tener un secreto, solo avisa. Tiene topes por día (cuarentenas: 10 o el 10 % de lo activo; purgas: 50). Todo menos la purga se deshace con `revert`.
 
 Después, `memory_context` empieza con una línea como `Anoche (sueño): 1 a cuarentena (m12 secreto), 3 unidas en m70 · para revisar: m5 contradice a m61` (dice «Anoche» aunque el sueño ya no sea de noche), y `clio-memory doctor` dice cuándo durmió; si hay cambios sin revisar y el último sueño completo tiene más de 3 días, `doctor` falla: el timer no está corriendo. En Clio, el sueño además une recuerdos casi iguales con el modelo que tengas configurado, como mucho una vez cada 20 horas, y valida cada unión antes de escribirla.
+
+### El sueño con Temis
+
+Si configuraste [Temis](docs/motor.md#the-sleep) (`clio-memory setup temis --url URL`, el token por la entrada estándar), el sueño le pregunta por los pares de recuerdos parecidos, sin modelo de lenguaje y sin gastar tokens. Hace dos preguntas por par: si todo lo que dice uno está también en el otro (`se_conserva`, de 0 a 1, en los dos sentidos) y cómo se relacionan (`relacion`). Con la respuesta:
+
+- si uno contiene al otro (≥ 0,80, con las mismas cifras y nombres) y Temis no ve una contradicción, el contenido va a cuarentena con «sueño: contenido en mN» (se deshace con `revert`; se purga a los 30 días); el otro recuerdo queda con sus relaciones;
+- si lo contiene pero Temis dice `conflicts_with` (confianza ≥ 0,50), no se dobla: el par sale en «para revisar»;
+- en cualquier otro caso no pasa nada. El sueño nunca escribe relaciones de Temis.
+
+**Sin Temis, nada cambia.** Lo que se envía es el contenido de los pares parecidos (cortado a 4000 caracteres, y nunca un texto que parezca un secreto), solo al servidor que configuraste, con `curl` y el token por la entrada estándar (nunca en la línea de órdenes). Un `--dry-run` nunca pregunta. Topes: 40 pares por sueño, 10 s por llamada; si falla 3 veces seguidas, los parecidos quedan para el próximo sueño con una sola alarma.
+
+`setup temis` verifica el servidor antes de guardar (`<datos>/temis.json`, 0600): `--check` lo vuelve a preguntar, `--remove` lo quita, `--allow-http` admite `http` fuera de esta máquina (por defecto solo `https`). `CLIO_MEMORY_TEMIS_URL` y `CLIO_MEMORY_TEMIS_TOKEN` mandan sobre el archivo. Como guarda una credencial y manda texto de tu memoria a un servidor, **solo la persona puede correrlo**: un agente no.
+
+Medido el 2026-11-15 con el servicio real sobre los 28 pares de `bench/recall` ([bench/temis/results.md](bench/temis/results.md)): con el umbral en 0,80 se doblan 8 de 12 paráfrasis y 0 de 8 pares que solo se parecen (el mayor queda en 0,36). Su `conflicts_with` no es de fiar (3 falsos en 20 pares sin contradicción), y por eso solo sirve para no doblar. Son pocos pares, escritos por la misma mano: es una primera medida.
 
 ## Instalar
 
@@ -212,6 +227,7 @@ clio-memory purge 12          # borra su contenido para siempre (pregunta antes)
 clio-memory export copia.jsonl
 clio-memory sleep --dry-run --now   # qué haría el sueño ahora, sin cambiar nada
 clio-memory sleep --report    # el informe del último sueño
+clio-memory setup temis --url URL   # que el sueño pregunte a Temis (token por la entrada estándar)
 clio-memory doctor           # la salud de la memoria y de cada agente que encuentra
 clio-memory uninstall        # la quita de los agentes (ver «Desinstalar»)
 clio-memory --help            # todo lo demás

@@ -37,6 +37,15 @@ pub trait Merger {
     }
 }
 
+/// A judge of pairs of memories without a language model (Temis). What it gets is memory text:
+/// the sleep never sends one that looks like a secret. `None`: no answer.
+pub trait PairJudge {
+    /// How much of what `original` says is also in `merged`, from 0 to 1.
+    fn preserved(&self, original: &str, merged: &str) -> Option<f32>;
+    /// How `proposal` stands to `other`, and how sure the judge is.
+    fn relation(&self, proposal: &str, other: &str) -> Option<(Relation, f32)>;
+}
+
 pub struct Options {
     /// Skip the waits: the quiet half hour, the nothing-to-do and the model's 20 hours (trying it
     /// by hand).
@@ -70,6 +79,12 @@ pub struct Report {
     pub review: Vec<String>,
     pub alarms: Vec<String>,
     pub tokens: u64,
+    /// A memory another one keeps whole (the judge said so), and that one (which stays).
+    #[serde(default)]
+    pub contained: Vec<(i64, i64)>,
+    /// Pairs put to the judge.
+    #[serde(default)]
+    pub judged: u32,
 }
 
 impl Report {
@@ -105,6 +120,14 @@ const MIN_QUARANTINES: usize = 10;
 const EMBED_BATCH: usize = 32;
 /// Memories left for the next night, at most.
 const MAX_PENDING: usize = 1000;
+/// The judge's `preserved` from which a memory is kept whole by another (bench/temis/results.md).
+const PRESERVED_MIN: f32 = 0.80;
+/// The judge's confidence in a contradiction from which a pair is not folded but reviewed.
+const CONFLICT_VETO: f32 = 0.50;
+/// Pairs put to the judge in a sleep; the rest wait.
+const MAX_JUDGED: usize = 40;
+/// Judge failures in a row that end its step for the night.
+const MAX_JUDGE_FAILURES: usize = 3;
 
 /// `YYYY-MM-DD` of the evening a night belongs to (UTC, twelve hours back): a sleep at 00:30 is
 /// still the night that began at 23:00.
@@ -130,6 +153,17 @@ pub fn run(
     data: &Path,
     model: &Arc<EmbedModel>,
     merger: Option<&dyn Merger>,
+    opts: &Options,
+) -> Result<Slept, String> {
+    run_judged(data, model, merger, None, opts)
+}
+
+/// `run`, with a pair judge that folds a memory another one keeps whole.
+pub fn run_judged(
+    data: &Path,
+    model: &Arc<EmbedModel>,
+    merger: Option<&dyn Merger>,
+    judge: Option<&dyn PairJudge>,
     opts: &Options,
 ) -> Result<Slept, String> {
     let db = data.join(DB_FILE);
@@ -227,7 +261,7 @@ pub fn run(
         merge_due: opts.now || now - state.last_merge >= MERGE_EVERY,
         merged: false,
     };
-    let done = night_run.sleep(&state, merger);
+    let done = night_run.sleep(&state, merger, judge);
     let cursor = night_run.seen;
     let merged = night_run.merged;
     let deferred = std::mem::take(&mut night_run.deferred);
@@ -380,7 +414,12 @@ struct Night<'a> {
 }
 
 impl Night<'_> {
-    fn sleep(&mut self, state: &SleepState, merger: Option<&dyn Merger>) -> Result<(), Stop> {
+    fn sleep(
+        &mut self,
+        state: &SleepState,
+        merger: Option<&dyn Merger>,
+        judge: Option<&dyn PairJudge>,
+    ) -> Result<(), Stop> {
         let changed = self.read.operations_after(OpId(state.cursor), usize::MAX)?;
         if let Some(last) = changed.last() {
             self.seen = last.id;
@@ -429,11 +468,15 @@ impl Night<'_> {
         let mut gone: HashSet<MemoryId> = HashSet::new();
         let before = self.report.quarantined.len();
         self.quarantine(&checked, limit, &mut gone)?;
-        let left = limit.saturating_sub(self.report.quarantined.len() - before);
+        let mut left = limit.saturating_sub(self.report.quarantined.len() - before);
         // What waited for the model keeps waiting unless this sleep looks at it again.
         let mut carry = true;
         if self.embedder.is_some() {
-            self.repeats(&fresh, left, &mut gone)?;
+            self.repeats(&fresh, &mut left, &mut gone)?;
+            // Temis is never asked in a dry run: it would send memory text out for nothing.
+            if let Some(j) = judge.filter(|_| !self.dry_run) {
+                self.contained(j, &fresh, &mut left, &mut gone)?;
+            }
             match merger {
                 Some(m) if copied && !self.dry_run && self.merge_due => {
                     carry = false;
@@ -640,7 +683,7 @@ impl Night<'_> {
     fn repeats(
         &mut self,
         fresh: &[MemoryRow],
-        mut left: usize,
+        left: &mut usize,
         gone: &mut HashSet<MemoryId>,
     ) -> Result<(), Stop> {
         for r in fresh {
@@ -668,7 +711,7 @@ impl Night<'_> {
                 if self.kept(&lose)? {
                     continue;
                 }
-                if left == 0 {
+                if *left == 0 {
                     self.report
                         .alarm("demasiados para cuarentena: quedaron repetidos para mañana".into());
                     self.deferred.insert(r.id);
@@ -682,11 +725,144 @@ impl Night<'_> {
                     self.report.repeated.push((lose.id.0, keep.id.0));
                     self.saved()?;
                     gone.insert(lose.id);
-                    left -= 1;
+                    *left -= 1;
                 }
                 if lose.id == r.id {
                     break;
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// With a judge (Temis): of a new memory and a near neighbor (same place, kind and trust), the
+    /// one the other keeps whole, numbers and names too, goes to quarantine with its relations
+    /// passed on, unless it is kept or the judge sees a contradiction (then it is for review).
+    /// Design §6. What the cap, a failing judge or the quarantine cap leave waits a night.
+    fn contained(
+        &mut self,
+        judge: &dyn PairJudge,
+        fresh: &[MemoryRow],
+        left: &mut usize,
+        gone: &mut HashSet<MemoryId>,
+    ) -> Result<(), Stop> {
+        let floor = self
+            .embedder
+            .as_ref()
+            .and_then(|e| crate::agent::memory::near_duplicate_floor(e.model_id()))
+            .unwrap_or(NEAR);
+        // A pair is asked once a night, from whichever side comes first.
+        let mut asked: HashSet<(MemoryId, MemoryId)> = HashSet::new();
+        let mut failures = 0usize;
+        for (i, r) in fresh.iter().enumerate() {
+            if gone.contains(&r.id) || !self.read.has_vector(r.id)? || self.contradicted(r.id)? {
+                continue;
+            }
+            let (mut stop, mut failed) = (false, false);
+            for (n, score) in self.read.neighbors(r.id, &[r.scope], NEIGHBORS)? {
+                if !(floor..REPEAT).contains(&score)
+                    || gone.contains(&n.id)
+                    || n.kind != r.kind
+                    || trust(&n) != trust(r)
+                    || self.contradicted(n.id)?
+                {
+                    continue;
+                }
+                // What is checked is exactly what would be sent.
+                if has_secret(&r.content) || has_secret(&n.content) {
+                    continue;
+                }
+                let key = (r.id.min(n.id), r.id.max(n.id));
+                if asked.contains(&key) {
+                    continue;
+                }
+                if asked.len() == MAX_JUDGED {
+                    stop = true;
+                    break;
+                }
+                asked.insert(key);
+                self.report.judged += 1;
+                // `a`: n keeps all of r; `b`: r keeps all of n. A missing answer is a failure.
+                let Some(a) = judge.preserved(&r.content, &n.content) else {
+                    failures += 1;
+                    failed = true;
+                    break;
+                };
+                let Some(b) = judge.preserved(&n.content, &r.content) else {
+                    failures += 1;
+                    failed = true;
+                    break;
+                };
+                failures = 0;
+                let r_goes = a >= PRESERVED_MIN && marks(&r.content).is_subset(&marks(&n.content));
+                let n_goes = b >= PRESERVED_MIN && marks(&n.content).is_subset(&marks(&r.content));
+                let (keep, lose) = match (r_goes, n_goes) {
+                    (true, true) if self.rank(&n)? > self.rank(r)? => (n, r.clone()),
+                    (true, true) | (false, true) => (r.clone(), n),
+                    (true, false) => (n, r.clone()),
+                    (false, false) => continue,
+                };
+                if self.kept(&lose)? {
+                    continue;
+                }
+                let (old, new) = if lose.id < keep.id {
+                    (&lose, &keep)
+                } else {
+                    (&keep, &lose)
+                };
+                match judge.relation(&new.content, &old.content) {
+                    None => {
+                        failures += 1;
+                        failed = true;
+                        break;
+                    }
+                    Some((Relation::ConflictsWith, c)) if c >= CONFLICT_VETO => {
+                        failures = 0;
+                        self.report.review(format!(
+                            "m{} y m{}: parecidos, pero Temis ve una contradicción: revísalos",
+                            old.id.0, new.id.0
+                        ));
+                        continue;
+                    }
+                    Some(_) => failures = 0,
+                }
+                if *left == 0 {
+                    self.report
+                        .alarm("demasiados para cuarentena: quedaron parecidos para mañana".into());
+                    stop = true;
+                    break;
+                }
+                let why = format!("{SLEEP_REASON} contenido en m{}", keep.id.0);
+                if self.quarantine_one(lose.id, &why)? {
+                    // Never in a dry run: this step does not run then.
+                    let _ = self.writer()?.copy_relations(lose.id, keep.id);
+                    self.report.contained.push((lose.id.0, keep.id.0));
+                    self.saved()?;
+                    gone.insert(lose.id);
+                    *left -= 1;
+                }
+                if lose.id == r.id {
+                    break;
+                }
+            }
+            if failed {
+                // This memory's pair had no answer: it is asked again the next sleep.
+                self.deferred.insert(r.id);
+            }
+            if failures >= MAX_JUDGE_FAILURES {
+                self.report
+                    .alarm("Temis no respondió: los parecidos quedan para el próximo sueño".into());
+                stop = true;
+            }
+            if stop {
+                // Nothing falls out of pending: what is left waits for the next sleep.
+                self.deferred.extend(
+                    fresh[i..]
+                        .iter()
+                        .map(|r| r.id)
+                        .filter(|id| !gone.contains(id)),
+                );
+                break;
             }
         }
         Ok(())
@@ -927,9 +1103,14 @@ pub fn morning_line(r: &Report, now: i64) -> Option<String> {
         return None;
     }
     let mut parts = Vec::new();
-    if !r.quarantined.is_empty() {
-        let which: Vec<String> = r
-            .quarantined
+    // A memory folded into another is told as such, not again as a quarantine.
+    let quarantined: Vec<_> = r
+        .quarantined
+        .iter()
+        .filter(|(_, why)| !why.contains("contenido en"))
+        .collect();
+    if !quarantined.is_empty() {
+        let which: Vec<String> = quarantined
             .iter()
             .map(|(id, why)| {
                 let why = why.trim_start_matches(crate::SLEEP_REASON).trim();
@@ -939,9 +1120,14 @@ pub fn morning_line(r: &Report, now: i64) -> Option<String> {
             .collect();
         parts.push(format!(
             "{} a cuarentena ({})",
-            r.quarantined.len(),
+            quarantined.len(),
             which.join(", ")
         ));
+    }
+    match r.contained.len() {
+        0 => {}
+        1 => parts.push("1 contenida en otra".into()),
+        n => parts.push(format!("{n} contenidas en otras")),
     }
     for (new, sources) in &r.merged {
         parts.push(format!("{} unidas en m{new}", sources.len()));

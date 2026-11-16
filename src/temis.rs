@@ -384,3 +384,12 @@ fn refusal(code: u16, body: Option<&Value>) -> String {
         .unwrap_or("desconocido");
     format!("Temis respondió {code} ({kind})")
 }
+
+impl crate::sleep::PairJudge for Temis {
+    fn preserved(&self, original: &str, merged: &str) -> Option<f32> {
+        Temis::preserved(self, original, merged)
+    }
+    fn relation(&self, proposal: &str, other: &str) -> Option<(Relation, f32)> {
+        Temis::relation(self, proposal, other)
+    }
+}

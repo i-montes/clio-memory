@@ -17,6 +17,19 @@ La etiqueta, sin la `v`, debe ser igual a `version` en `Cargo.toml`. Si no lo es
 
 ## Notas de versiones
 
+### v0.12.0
+
+El sueño decide con Temis, si lo configuraste.
+
+- **Dos preguntas por par.** Con Temis configurado, el sueño le pregunta por los pares de recuerdos parecidos: si todo lo que dice uno está también en el otro (`se_conserva`, de 0 a 1, en los dos sentidos) y cómo se relacionan. Un recuerdo que otro conserva entero (≥ 0,80, con las mismas cifras y nombres) y sin contradicción va a cuarentena con «sueño: contenido en mN»: se deshace con `revert` durante 30 días. Si Temis dice `conflicts_with` con confianza ≥ 0,50, no se dobla: el par sale en «para revisar». El sueño nunca escribe relaciones de Temis.
+- **Topes**: 40 pares por sueño, 10 s por llamada y, si falla 3 veces seguidas, los parecidos quedan para el próximo sueño con una sola alarma («Temis no respondió: los parecidos quedan para el próximo sueño»). Nunca se envía un texto que parezca un secreto, y cada texto se corta a 4000 caracteres. Un `--dry-run` no pregunta.
+- **`clio-memory setup temis --url URL`**: el token entra por la entrada estándar (nunca como argumento) y no se guarda nada hasta que Temis responde con él. `--check` lo vuelve a preguntar, `--remove` lo quita y `--allow-http` admite `http` fuera de esta máquina. `CLIO_MEMORY_TEMIS_URL` y `CLIO_MEMORY_TEMIS_TOKEN` mandan sobre el archivo. Se guarda en `<datos>/temis.json` (0600). Se niega, con código 1, si lo corre un agente, salvo con `CLIO_MEMORY_AS_PERSON=1`.
+- **`doctor`** dice `temis: configurado (URL)` o `no configurado`, sin llamar a Temis. **`uninstall --data`** borra también `temis.json`.
+- **Sin Temis, nada cambia**: el sueño es el de v0.11.0.
+- **Programas anfitriones (Clio)**: `clio_memory::temis::from_data(&datos)` se pasa a `sleep::run_judged`; `sleep::run` sigue igual.
+
+Después de etiquetar: correr `clio-memory update` y luego `clio-memory setup temis --url https://api.imontes.dev/temis` con el token por la entrada estándar. Queda pendiente la comprobación con el servicio real (`bench/temis/run.py` y un `sleep --now --dry-run` sobre una copia de la memoria).
+
 ### v0.11.0
 
 La memoria por skill y por línea de comandos, sin un proceso por sesión.

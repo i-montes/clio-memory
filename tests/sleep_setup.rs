@@ -127,6 +127,9 @@ fn setup_claude_code_installs_the_sleep_too() {
         .env("PATH", path)
         .env("CLIO_MEMORY_CLAUDE", &claude)
         .env_remove("CLIO_MEMORY_DATA")
+        .env_remove("CLIO_MEMORY_BIN_DIR")
+        .env_remove("CODEX_HOME")
+        .env_remove("CLIO_MEMORY_AS_PERSON")
         .args(["setup", "claude-code", "--no-claude-md"])
         .stdin(std::process::Stdio::null())
         .output()
@@ -309,6 +312,7 @@ fn setup_claude_code_leaves_another_sleep_in_place() {
         data: home.join(".local/share/clio"),
         claude,
         exe: PathBuf::from(EXE),
+        path: Vec::new(),
         replace: false,
         claude_md: Some(false),
         ask: &|_| false,

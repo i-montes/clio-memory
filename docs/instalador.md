@@ -12,7 +12,7 @@ Cómo se baja e instala el binario (`install.sh`) está en [releases.md](release
 
 ## En una tabla
 
-| Agente | Se detecta por | Servidor MCP | Línea de instrucciones |
+| Agente | Se detecta por | Servidor MCP (solo en modo MCP) | Línea de instrucciones |
 |---|---|---|---|
 | Claude Code | `claude` en el `PATH`, o `CLIO_MEMORY_CLAUDE` tal como esté (no se comprueba que exista) | `claude mcp add --scope user clio-memory -- <bin> mcp` | `~/.claude/CLAUDE.md` |
 | OpenCode | `opencode` en el `PATH`, o la carpeta `~/.config/opencode/` | se edita `~/.config/opencode/opencode.json` | `~/.config/opencode/clio-memory.md`, enlazado en `instructions` de `opencode.json` |
@@ -40,7 +40,7 @@ En los dos modos, además, la skill y la línea de instrucciones (de `--instruct
 - **Dónde se anota:** `<datos>/agents.json` (`$CLIO_MEMORY_DATA`, o `~/.local/share/clio`, o la carpeta de `--db`), un objeto `{"claude-code": "skill", "codex": "mcp", …}` que se escribe entero, con permisos 0600, y solo si algo cambió. Volver a correr `setup` (también `update`) deja a cada agente como estaba. Si ese archivo no se puede leer, `setup` se niega a escribirlo encima, y las claves que no conoce se conservan.
 - **La regla de Claude Code:** `Bash(clio-memory m:*)` es la única entrada que se agrega a `permissions.allow` (o se quita); cada otra clave de `settings.json` se queda en su sitio. Si el archivo no existe, se crea con la regla (al quitar, no se crea nada). Si no es JSON, se rechaza antes de escribir y solo importa en el modo skill: por MCP, ese archivo no se mira.
 - **Un servidor ajeno** llamado `clio-memory` no se quita al pasar a skill sin la misma pregunta de siempre (o `--replace`).
-- **`update`:** corre `setup --yes`, así que renueva la línea de instrucciones de una versión anterior, y a un agente que no tenía modo anotado le da el de su defecto: en la actualización a v0.11.0, Claude Code y OpenCode pasan a skill y pierden su servidor MCP. Reinicia las sesiones de agente abiertas.
+- **`update`:** corre `setup --yes`, así que renueva la línea de instrucciones de una versión anterior, y a un agente que no tenía modo anotado le da el de su defecto: en la actualización a v0.11.0, Claude Code y OpenCode pasan a skill y pierden su servidor MCP. Salvo si `clio-memory` no está en el `PATH` o el que está primero no es este binario (la skill corre `clio-memory m` a secas): entonces el defecto se queda en MCP, y el paso dice por qué y qué hacer (agregar la carpeta al `PATH` y correr `clio-memory setup --mode skill`). Un `--mode skill` elegido, o anotado, se respeta, y `doctor` dice qué falta. Reinicia las sesiones de agente abiertas.
 - **Quién puede correr qué:** un agente solo corre `clio-memory m …`. Las órdenes de la persona (`purge`, `promote`, `archive`, `revert`, `feedback`, `import`, `import-memories --origin user`, `remember` sin `--actor`, `uninstall --data`) se niegan con código 1 cuando las corre un agente, salvo con `CLIO_MEMORY_AS_PERSON=1`. Es un seguro contra el accidente, no una barrera. Los códigos de `m` son 0 (contestó), 1 (la herramienta se negó) y 2 (orden mal escrita).
 - **Sandbox:** un agente cuya shell corre en un sandbox (Codex por defecto) puede no alcanzar el socket del demonio ni la carpeta de datos; si es así, se queda por MCP.
 
@@ -63,7 +63,7 @@ Correrlo otra vez conserva lo elegido. Sin preguntas (con `--yes` o sin terminal
 
 ### Claude Code
 
-- `claude mcp get clio-memory` para ver qué hay. Si hay algo nuestro con otra ruta, o algo ajeno que aceptaste reemplazar, corre `claude mcp remove --scope user clio-memory` y luego `claude mcp add --scope user clio-memory -- <bin> mcp`.
+- `claude mcp get clio-memory` para ver qué hay. En modo MCP, si hay algo nuestro con otra ruta, o algo ajeno que aceptaste reemplazar, corre `claude mcp remove --scope user clio-memory` y luego `claude mcp add --scope user clio-memory -- <bin> mcp`. En modo skill no se agrega ningún servidor: si había uno nuestro (o uno ajeno que aceptaste reemplazar), sale con `claude mcp remove --scope user clio-memory`.
 - La línea va al final de `~/.claude/CLAUDE.md`.
 - En modo skill (el de por defecto), en vez del servidor se agrega la regla `Bash(clio-memory m:*)` a `permissions.allow` de `~/.claude/settings.json`, para que Claude Code corra `clio-memory m …` sin pedir permiso; ver [los dos modos](#los-dos-modos).
 - Antes de nada, `setup claude-code` corre `claude --version`: sin `claude` no escribe nada, ni siquiera la skill. Con `CLIO_MEMORY_CLAUDE=/ruta/a/claude` usa ese programa en vez del del `PATH`.

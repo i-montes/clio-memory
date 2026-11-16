@@ -753,9 +753,9 @@ fn the_default_actor_is_created_once_and_reused() {
     };
     assert_eq!(named("cli:tester"), 1);
     // without $USER the name falls back to "unknown"
-    let o = Command::new(env!("CARGO_BIN_EXE_clio-memory"))
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_clio-memory"));
+    let o = isolated(&mut cmd)
         .env_remove("USER")
-        .env("CLIO_MEMORY_AGENT", "cli")
         .arg("--db")
         .arg(&db)
         .args(["feedback", "1", "useful"])
@@ -992,12 +992,20 @@ fn an_agent_cannot_purge() {
 #[test]
 fn an_agent_cannot_uninstall_the_data() {
     let m = machine();
+    // Isolated like `Machine::run`: should the guard fail, nothing real is uninstalled.
     let o = Command::new(env!("CARGO_BIN_EXE_clio-memory"))
         .env("HOME", &m.home)
         .env("PATH", &m.bin)
         .env("CLIO_MEMORY_DATA", &m.data)
+        .env_remove("CLIO_MEMORY_CLAUDE")
+        .env_remove("CLIO_MEMORY_BIN_DIR")
+        .env_remove("CODEX_HOME")
+        .env_remove("CLAUDECODE")
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .env_remove("CLIO_MEMORY_AS_PERSON")
         .env("CLIO_MEMORY_AGENT", "codex")
         .args(["uninstall", "--data", "--yes"])
+        .stdin(std::process::Stdio::null())
         .output()
         .unwrap();
     assert_eq!(code(&o), 1);
@@ -1882,9 +1890,9 @@ fn doctor_warns_of_an_older_clio_memory_that_runs_first_without_failing() {
 fn claude_by_skill_and_codex_by_mcp(m: &Machine, on_path: bool) -> std::path::PathBuf {
     let claude = fakes::fake_claude_mcp(&m.home.parent().unwrap().join("claude-bin"));
     fakes::fake_codex(&m.bin, false);
-    if on_path {
-        std::os::unix::fs::symlink(&m.exe, m.bin.join("clio-memory")).unwrap();
-    }
+    // On the PATH while setting up (the default by skill needs it), then gone if `!on_path`.
+    let link = m.bin.join("clio-memory");
+    std::os::unix::fs::symlink(&m.exe, &link).unwrap();
     let o = setup_on(
         m,
         Some(&claude),
@@ -1898,6 +1906,9 @@ fn claude_by_skill_and_codex_by_mcp(m: &Machine, on_path: bool) -> std::path::Pa
         ],
     );
     assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
+    if !on_path {
+        std::fs::remove_file(&link).unwrap();
+    }
     claude
 }
 

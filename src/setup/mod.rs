@@ -159,6 +159,9 @@ pub struct ClaudeCode<'a> {
     pub claude: PathBuf,
     /// This binary, by its absolute path: what the MCP entry runs.
     pub exe: PathBuf,
+    /// The directories of `PATH`, only to tell whether the skill way finds this binary as a bare
+    /// `clio-memory` (no other program is looked for there).
+    pub path: Vec<PathBuf>,
     /// Replace an MCP server or a skill of the same name that is not this one.
     pub replace: bool,
     /// The `CLAUDE.md` line: yes, no, or ask (`None`).
@@ -181,30 +184,38 @@ impl ClaudeCode<'_> {
         })?;
         // Only Claude Code is driven here: no other agent's program is run. The others' state is
         // read from their files where it can be; where it cannot, their skill is left as it is.
-        let env = Env {
+        let probe = Env {
             home: self.home.clone(),
             data: self.data.clone(),
             exe: self.exe.clone(),
-            path: Vec::new(),
+            path: self.path.clone(),
             codex_home: None,
             claude: Some(self.claude.clone()),
             bin_dir: None,
             service: self.service,
         };
         let md = self.home.join(".claude/CLAUDE.md");
-        let instructions = has_instructions(&env, AgentId::ClaudeCode)
+        let instructions = has_instructions(&probe, AgentId::ClaudeCode)
             || self.claude_md.unwrap_or_else(|| {
                 (self.ask)(&format!(
                     "¿Añado a {} la línea «{CLAUDE_MD_LINE}»?",
                     md.display()
                 ))
             });
+        // The way is decided on the real PATH; the rest runs with none, so no other agent's
+        // program is found or run.
+        let (mode, why) =
+            modes::resolve(&probe, None, &modes::load(&self.data), AgentId::ClaudeCode);
+        let env = Env {
+            path: Vec::new(),
+            ..probe
+        };
         let selection = plan::Selection {
             agents: vec![AgentId::ClaudeCode],
             instructions,
             replace: self.replace,
             exclusive: false,
-            mode: None,
+            mode: Some(mode),
         };
         let mut said = Vec::new();
         for step in plan::apply(&env, &selection, self.ask) {
@@ -215,6 +226,7 @@ impl ClaudeCode<'_> {
                 Err(e) => return Err(e),
             }
         }
+        said.extend(why);
         Ok(said)
     }
 

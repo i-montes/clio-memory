@@ -554,6 +554,9 @@ fn setup_claude_code(
         data: data.to_path_buf(),
         claude: claude.into(),
         exe,
+        path: std::env::var_os("PATH")
+            .map(|p| std::env::split_paths(&p).collect())
+            .unwrap_or_default(),
         replace,
         claude_md,
         ask: &ask,

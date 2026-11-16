@@ -169,12 +169,16 @@ pub fn join_labels(agents: &[AgentId]) -> String {
 
 /// How `agents` are going to be connected: `Claude Code y OpenCode por skill, sin proceso por
 /// sesión; Codex por MCP`.
-pub fn split(agents: &[AgentId], noted: &std::collections::BTreeMap<AgentId, Mode>) -> String {
+pub fn split(
+    env: &Env,
+    agents: &[AgentId],
+    noted: &std::collections::BTreeMap<AgentId, Mode>,
+) -> String {
     let by = |mode: Mode| -> Vec<AgentId> {
         agents
             .iter()
             .copied()
-            .filter(|a| modes::resolve(None, noted, *a) == mode)
+            .filter(|a| modes::resolve(env, None, noted, *a).0 == mode)
             .collect()
     };
     let (skill, mcp) = (by(Mode::Skill), by(Mode::Mcp));
@@ -340,7 +344,7 @@ pub fn run(screen: &mut dyn Screen, env: &Env, args: SetupArgs) -> ExitCode {
     // The way: the flag's, else (asked, or) each one's as noted or by default.
     let mode = match args.mode {
         None if asks && !agents.is_empty() => {
-            match screen.choose_mode(&split(&agents, &modes::load(&env.data))) {
+            match screen.choose_mode(&split(env, &agents, &modes::load(&env.data))) {
                 Some(mode) => mode,
                 None => return cancelled(screen),
             }
@@ -767,11 +771,17 @@ mod tests {
         for d in [".config/opencode", ".gemini/config"] {
             std::fs::create_dir_all(home.join(d)).expect("folder");
         }
+        // This binary is the `clio-memory` on the PATH, as the skill way needs.
+        let exe = t.path().join("bin/clio-memory");
+        std::fs::create_dir_all(t.path().join("bin")).expect("folder");
+        std::fs::write(&exe, "#!/bin/sh\n").expect("exe");
+        std::fs::set_permissions(&exe, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .expect("mode");
         let env = Env {
             home,
             data: t.path().join("data"),
-            exe: t.path().join("bin/clio-memory"),
-            path: Vec::new(),
+            path: vec![t.path().join("bin")],
+            exe,
             codex_home: None,
             claude: None,
             bin_dir: None,
@@ -871,14 +881,24 @@ mod tests {
     #[test]
     fn the_split_names_each_way() {
         use AgentId::{ClaudeCode, Codex, OpenCode};
+        let (_t, env) = home();
         let mut noted = std::collections::BTreeMap::new();
         assert_eq!(
-            split(&[ClaudeCode, OpenCode, Codex], &noted),
+            split(&env, &[ClaudeCode, OpenCode, Codex], &noted),
             "Claude Code y OpenCode por skill, sin proceso por sesión; Codex por MCP"
+        );
+        // Without `clio-memory` on the PATH the default by skill is MCP, as `apply` does it.
+        let off = Env {
+            path: Vec::new(),
+            ..home().1
+        };
+        assert_eq!(
+            split(&off, &[ClaudeCode, OpenCode], &noted),
+            "Claude Code y OpenCode por MCP"
         );
         noted.insert(ClaudeCode, Mode::Mcp);
         assert_eq!(
-            split(&[ClaudeCode, Codex], &noted),
+            split(&env, &[ClaudeCode, Codex], &noted),
             "Claude Code y Codex por MCP"
         );
     }

@@ -204,10 +204,15 @@ pub fn apply(env: &Env, sel: &Selection, ask: &dyn Fn(&str) -> bool) -> Vec<Step
             approved.extend(foreign_skills);
         }
         let was = noted.get(&agent) == Some(&Mode::Skill);
-        let (what, done) = match modes::resolve(sel.mode, &noted, agent) {
+        let (mode, why) = modes::resolve(env, sel.mode, &noted, agent);
+        let (what, done) = match mode {
             Mode::Mcp => ("MCP", by_mcp(env, agent, &state, was)),
             Mode::Skill => ("por skill", by_skill(env, agent, &state, was)),
         };
+        let done = done.map(|said| match why {
+            Some(why) => format!("{said}; {why}"),
+            None => said,
+        });
         let ok = done.is_ok();
         // A failed connect may have removed what was there before adding: read it again.
         conn.insert(agent, if ok { Some(true) } else { reread(env, agent) });
@@ -555,7 +560,8 @@ pub fn agent_report(env: &Env) -> Vec<(AgentId, Health, String)> {
         .collect()
 }
 
-/// An agent connected by skill: `clio-memory` on the `PATH` is this binary, and it sees the skill.
+/// An agent connected by skill: `clio-memory` on the `PATH` is this binary, Claude Code may run
+/// it (the permission rule), and it sees the skill.
 fn skill_way_report(env: &Env, agent: AgentId) -> (Health, String) {
     if env.program("clio-memory").is_none() {
         let dir = env.exe.parent().unwrap_or(&env.exe).display();
@@ -568,6 +574,15 @@ fn skill_way_report(env: &Env, agent: AgentId) -> (Health, String) {
         return (
             Health::Fail,
             format!("por skill, pero {}", shadowing_note(env, &other)),
+        );
+    }
+    if agent == AgentId::ClaudeCode && !permission::has(&env.home) {
+        return (
+            Health::Fail,
+            format!(
+                "por skill, pero falta la regla «{}» en ~/.claude/settings.json (clio-memory setup la repone)",
+                permission::RULE
+            ),
         );
     }
     skill_report(&env.home, agent, Mode::Skill)

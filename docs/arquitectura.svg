@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 660" font-family="system-ui, -apple-system, Segoe UI, sans-serif" role="img" aria-labelledby="t d">
   <title id="t">Arquitectura de clio-memory</title>
-  <desc id="d">Los clientes (Claude Code por MCP, Clio con Jev) llegan a las herramientas y a la capa del agente; el demonio, un proceso por carpeta de datos, atiende a los agentes con un solo modelo y usa el motor sobre un solo archivo SQLite compartido.</desc>
+  <desc id="d">Los clientes (Claude Code u otro agente, por skill con clio-memory m o por MCP; Clio con Jev) llegan a las herramientas y a la capa del agente; el demonio, un proceso por carpeta de datos, atiende a los agentes con un solo modelo y usa el motor sobre un solo archivo SQLite compartido.</desc>
   <style>
     .bg { fill: #ffffff; }
     .box { fill: #f4f6fb; stroke: #4a5a7a; stroke-width: 1.5; }
@@ -32,7 +32,7 @@
 
   <rect class="ext" x="30" y="24" width="300" height="80" rx="10"/>
   <text class="h" x="46" y="50">Claude Code (u otro agente)</text>
-  <text class="s" x="46" y="70">cliente MCP; firma como mcp:claude-code</text>
+  <text class="s" x="46" y="70">skill (clio-memory m) o MCP; firma mcp:&lt;agente&gt;</text>
   <text class="s" x="46" y="88">recibe instrucciones de uso y seguridad</text>
 
   <rect class="ext" x="430" y="24" width="300" height="80" rx="10"/>
@@ -41,7 +41,7 @@
   <text class="s" x="446" y="88">antes de guardar; baúl filtra secretos</text>
 
   <rect class="box" x="30" y="140" width="300" height="104" rx="10"/>
-  <text class="h" x="46" y="166">clio-memory mcp · reenvía al demonio</text>
+  <text class="h" x="46" y="166">clio-memory m / mcp · al demonio</text>
   <text class="s" x="46" y="186">leer, guardar, corregir, olvidar, fijar,</text>
   <text class="s" x="46" y="204">unir, deshacer lo propio; datos envueltos;</text>
   <text class="s" x="46" y="222">sin modelo ni base de datos propios</text>
@@ -74,7 +74,7 @@
   <text class="s" x="246" y="626">un solo archivo SQLite, 0600, compartido</text>
 
   <path class="ln" d="M180 104 V138" marker-end="url(#a)"/>
-  <text class="lab" x="188" y="126">MCP (stdio)</text>
+  <text class="lab" x="188" y="126">orden o MCP (stdio)</text>
   <path class="ln" d="M580 104 V138" marker-end="url(#a)"/>
   <text class="lab" x="588" y="126">biblioteca</text>
   <path class="ln" d="M180 244 V280" marker-end="url(#a)"/>

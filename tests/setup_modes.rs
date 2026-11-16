@@ -13,7 +13,7 @@ use clio_memory::setup::agents::{AgentId, Env};
 use clio_memory::setup::mcp::{McpState, mcp_state};
 use clio_memory::setup::modes::{self, Mode, default_mode};
 use clio_memory::setup::permission::{self, RULE};
-use clio_memory::setup::plan::{Selection, Step, apply, connected};
+use clio_memory::setup::plan::{Health, Selection, Step, agent_report, apply, connected};
 use clio_memory::setup::skill::SkillDir;
 use clio_memory::setup::{INSTRUCTIONS_LINE, OLD_INSTRUCTIONS_LINES};
 use common::fakes::{
@@ -43,9 +43,13 @@ fn rig() -> Rig {
     std::fs::create_dir_all(&codex_home).unwrap();
     fake_claude_mcp(&bin);
     fake_codex(&bin, false);
+    // This binary is the `clio-memory` on the PATH, as the skill way needs.
+    let exe = bin.join("clio-memory");
+    std::fs::write(&exe, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
     Rig {
         data: t.path().join("data"),
-        exe: t.path().join("opt/clio-memory"),
+        exe,
         home,
         bin,
         codex_home,
@@ -170,6 +174,77 @@ fn claude_code_by_skill_has_no_mcp_server() {
     assert!(r.home.join(".claude/skills/clio-memory/SKILL.md").is_file());
     assert_eq!(read(&r.settings())["permissions"]["allow"], json!([RULE]));
     assert_eq!(connected(&r.env()), vec![ClaudeCode]);
+}
+
+// The skill way runs a bare `clio-memory`: by default, with none on the PATH (or another one
+// first), Claude Code and OpenCode are connected by MCP and the step says why; a skill chosen is
+// kept.
+#[test]
+fn the_default_is_mcp_without_this_binary_on_the_path() {
+    let r = rig();
+    std::fs::remove_file(&r.exe).unwrap();
+    let steps = r.apply(&[ClaudeCode], None);
+    all_ok(&steps);
+    let text = said(&steps, ClaudeCode);
+    assert!(
+        text.contains("servidor MCP clio-memory registrado"),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "por MCP y no por skill: «clio-memory» no está en el PATH; agrega {} al PATH y corre `clio-memory setup --mode skill`",
+            r.bin.display()
+        )),
+        "{text}"
+    );
+    assert_eq!(mcp_state(&r.env(), ClaudeCode).unwrap(), McpState::Ours);
+    assert_eq!(r.mode(ClaudeCode), Some(Mode::Mcp));
+    // Chosen, the skill way is kept (doctor says what is missing).
+    let steps = r.apply(&[ClaudeCode], Some(Mode::Skill));
+    all_ok(&steps);
+    assert_eq!(said(&steps, ClaudeCode), BY_SKILL);
+    assert_eq!(r.mode(ClaudeCode), Some(Mode::Skill));
+}
+
+#[test]
+fn the_default_is_mcp_when_another_clio_memory_comes_first() {
+    let r = rig();
+    let away = Env {
+        exe: r.home.join("opt/clio-memory"),
+        ..r.env()
+    };
+    let steps = apply(&away, &Rig::sel(&[ClaudeCode], None), &never);
+    all_ok(&steps);
+    let text = said(&steps, ClaudeCode);
+    assert!(
+        text.contains("por MCP y no por skill: al escribir `clio-memory` corre"),
+        "{text}"
+    );
+    assert_eq!(r.mode(ClaudeCode), Some(Mode::Mcp));
+}
+
+// Claude Code by skill without its permission rule asks before each `clio-memory m`: doctor
+// fails it.
+#[test]
+fn doctor_fails_claude_code_by_skill_without_its_rule() {
+    let r = rig();
+    all_ok(&r.apply(&[ClaudeCode], None));
+    let claude = |r: &Rig| {
+        agent_report(&r.env())
+            .into_iter()
+            .find(|(a, _, _)| *a == ClaudeCode)
+            .map(|(_, h, t)| (h, t))
+            .unwrap()
+    };
+    assert_eq!(claude(&r), (Health::Ok, "conectado (skill)".to_owned()));
+    assert!(permission::revoke(&r.home).unwrap());
+    assert_eq!(
+        claude(&r),
+        (
+            Health::Fail,
+            "por skill, pero falta la regla «Bash(clio-memory m:*)» en ~/.claude/settings.json (clio-memory setup la repone)".to_owned()
+        )
+    );
 }
 
 #[test]

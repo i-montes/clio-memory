@@ -607,6 +607,7 @@ fn a_declined_setup_claude_code_keeps_our_skill() {
         data: r.data.clone(),
         claude: r.bin.join("claude"),
         exe: r.exe.clone(),
+        path: Vec::new(),
         replace: false,
         claude_md: Some(false),
         ask: &|_| false,

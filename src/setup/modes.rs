@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
-use super::agents::AgentId;
+use super::agents::{AgentId, Env, shadowing, shadowing_note};
 use super::config_file::{read_json, write_json};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -38,11 +38,37 @@ pub fn default_mode(agent: AgentId) -> Mode {
     }
 }
 
-/// The mode `agent` gets: the one chosen, else the one noted, else its default.
-pub fn resolve(chosen: Option<Mode>, noted: &BTreeMap<AgentId, Mode>, agent: AgentId) -> Mode {
-    chosen
-        .or_else(|| noted.get(&agent).copied())
-        .unwrap_or_else(|| default_mode(agent))
+/// The mode `agent` gets: the one chosen, else the one noted, else its default; with, when the
+/// default by skill fell back to MCP, why. The skill way runs a bare `clio-memory`, so with none
+/// on the `PATH` (or another one first) an upgrade would cut the agent off: it gets MCP instead.
+/// A skill chosen or noted is kept (doctor names the problem).
+pub fn resolve(
+    env: &Env,
+    chosen: Option<Mode>,
+    noted: &BTreeMap<AgentId, Mode>,
+    agent: AgentId,
+) -> (Mode, Option<String>) {
+    if let Some(mode) = chosen.or_else(|| noted.get(&agent).copied()) {
+        return (mode, None);
+    }
+    let then = "corre `clio-memory setup --mode skill`";
+    let why = match default_mode(agent) {
+        Mode::Mcp => None,
+        Mode::Skill if env.program("clio-memory").is_none() => Some(format!(
+            "por MCP y no por skill: «clio-memory» no está en el PATH; agrega {} al PATH y {then}",
+            env.exe.parent().unwrap_or(&env.exe).display()
+        )),
+        Mode::Skill => shadowing(env).map(|o| {
+            format!(
+                "por MCP y no por skill: {}; luego {then}",
+                shadowing_note(env, &o)
+            )
+        }),
+    };
+    match why {
+        Some(why) => (Mode::Mcp, Some(why)),
+        None => (default_mode(agent), None),
+    }
 }
 
 pub fn file(data: &Path) -> PathBuf {

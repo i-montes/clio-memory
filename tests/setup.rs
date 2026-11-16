@@ -46,6 +46,7 @@ impl Rig {
             data: self.data.clone(),
             claude: self.claude.clone(),
             exe: PathBuf::from("/opt/bin/clio-memory"),
+            path: Vec::new(),
             replace,
             claude_md,
             ask: &|_| false,
@@ -143,6 +144,7 @@ fn without_claude_nothing_is_written() {
         data: r.data.clone(),
         claude: r.dir.join("no-such-claude"),
         exe: PathBuf::from("/opt/bin/clio-memory"),
+        path: Vec::new(),
         replace: false,
         claude_md: Some(true),
         ask: &|_| true,
@@ -226,12 +228,18 @@ fn the_command_runs_setup_with_the_flags() {
     let systemctl = r.dir.join("systemctl");
     std::fs::write(&systemctl, "#!/bin/sh\nexit 0\n").unwrap();
     std::fs::set_permissions(&systemctl, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // This binary first on the PATH, as the skill way needs (the real PATH may hold another).
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_clio-memory"), r.dir.join("clio-memory"))
+        .unwrap();
     let path = format!("{}:{}", r.dir.display(), std::env::var("PATH").unwrap());
     let o = std::process::Command::new(env!("CARGO_BIN_EXE_clio-memory"))
         .env("HOME", &r.home)
         .env("PATH", path)
         .env("CLIO_MEMORY_CLAUDE", &r.claude)
         .env_remove("CLIO_MEMORY_DATA")
+        .env_remove("CLIO_MEMORY_BIN_DIR")
+        .env_remove("CODEX_HOME")
+        .env_remove("CLIO_MEMORY_AS_PERSON")
         .args(["setup", "claude-code", "--no-claude-md"])
         .stdin(std::process::Stdio::null())
         .output()

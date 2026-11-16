@@ -20,11 +20,33 @@ Cómo se baja e instala el binario (`install.sh`) está en [releases.md](release
 | Gemini CLI | `gemini` en el `PATH` | `gemini mcp add -s user clio-memory <bin> mcp` | `~/.gemini/GEMINI.md` |
 | Antigravity | `agy` o `antigravity` en el `PATH`, o la carpeta `~/.gemini/config/` | se edita `~/.gemini/config/mcp_config.json` | `~/.gemini/GEMINI.md` (la misma de Gemini CLI) |
 
-`<bin>` es la ruta absoluta de este binario, y el servidor es siempre `<bin> mcp`. La skill va donde dice [la sección de la skill](#dónde-va-la-skill). Detectar un agente nunca lo ejecuta: solo mira el `PATH` y esas carpetas. Si el programa existe pero falla, ese paso queda en ✖ con el motivo y los demás agentes siguen.
+`<bin>` es la ruta absoluta de este binario, y el servidor es siempre `<bin> mcp`. La skill va donde dice [la sección de la skill](#dónde-va-la-skill). El servidor solo se registra si el agente se conecta por MCP (ver [los dos modos](#los-dos-modos)). Detectar un agente nunca lo ejecuta: solo mira el `PATH` y esas carpetas. Si el programa existe pero falla, ese paso queda en ✖ con el motivo y los demás agentes siguen.
+
+## Los dos modos
+
+Cada agente se conecta por **skill** (sin servidor: el agente corre `clio-memory m …`, y cada orden pasa por el demonio) o por **MCP** (el servidor de la tabla). La skill se instala en los dos casos, y es la misma: usa las herramientas `memory_*` si existen y, si no, las órdenes.
+
+| Agente | Modo por defecto | Lo que `setup` toca en modo skill | Lo que `setup` toca en modo MCP |
+|---|---|---|---|
+| Claude Code | skill | quita nuestro servidor (si lo había), anota el modo y agrega la regla `Bash(clio-memory m:*)` a `permissions.allow` de `~/.claude/settings.json` | el servidor; quita la regla y anota el modo |
+| OpenCode | skill | quita nuestra entrada `mcp.clio-memory` de `opencode.json` y anota el modo | la entrada; anota el modo |
+| Codex | MCP | quita nuestro servidor y anota el modo | el servidor; anota el modo |
+| Gemini CLI | MCP | ídem | ídem |
+| Antigravity | MCP | quita nuestra entrada de `mcp_config.json` y anota el modo | la entrada; anota el modo |
+
+En los dos modos, además, la skill y la línea de instrucciones (de `--instructions`) van como siempre.
+
+- **Elegirlo:** `clio-memory setup --mode skill|mcp|auto` (`auto` es lo que se usa sin la bandera: el modo anotado de cada agente y, si no hay, el de la tabla). Por ejemplo, `clio-memory setup --agents codex --mode skill`. En una terminal, después de elegir los agentes, `setup` muestra cómo quedará cada uno y ofrece «Así», «Todos por skill» o «Todos por MCP»; sin terminal no pregunta. Una bandera `--mode` distinta de esas tres es un error de uso (código 2).
+- **Dónde se anota:** `<datos>/agents.json` (`$CLIO_MEMORY_DATA`, o `~/.local/share/clio`, o la carpeta de `--db`), un objeto `{"claude-code": "skill", "codex": "mcp", …}` que se escribe entero, con permisos 0600, y solo si algo cambió. Volver a correr `setup` (también `update`) deja a cada agente como estaba. Si ese archivo no se puede leer, `setup` se niega a escribirlo encima, y las claves que no conoce se conservan.
+- **La regla de Claude Code:** `Bash(clio-memory m:*)` es la única entrada que se agrega a `permissions.allow` (o se quita); cada otra clave de `settings.json` se queda en su sitio. Si el archivo no existe, se crea con la regla (al quitar, no se crea nada). Si no es JSON, se rechaza antes de escribir y solo importa en el modo skill: por MCP, ese archivo no se mira.
+- **Un servidor ajeno** llamado `clio-memory` no se quita al pasar a skill sin la misma pregunta de siempre (o `--replace`).
+- **`update`:** corre `setup --yes`, así que renueva la línea de instrucciones de una versión anterior, y a un agente que no tenía modo anotado le da el de su defecto: en la actualización a v0.11.0, Claude Code y OpenCode pasan a skill y pierden su servidor MCP. Reinicia las sesiones de agente abiertas.
+- **Quién puede correr qué:** un agente solo corre `clio-memory m …`. Las órdenes de la persona (`purge`, `promote`, `archive`, `revert`, `feedback`, `import`, `import-memories --origin user`, `remember` sin `--actor`, `uninstall --data`) se niegan con código 1 cuando las corre un agente, salvo con `CLIO_MEMORY_AS_PERSON=1`. Es un seguro contra el accidente, no una barrera. Los códigos de `m` son 0 (contestó), 1 (la herramienta se negó) y 2 (orden mal escrita).
+- **Sandbox:** un agente cuya shell corre en un sandbox (Codex por defecto) puede no alcanzar el socket del demonio ni la carpeta de datos; si es así, se queda por MCP.
 
 ## Lo que no toca
 
-- Otros servidores MCP, otras skills y otras líneas de tus archivos de instrucciones.
+- Otros servidores MCP, otras skills, otras reglas de `permissions.allow` y otras líneas de tus archivos de instrucciones.
 - Un servidor o una skill llamados `clio-memory` que **no** son los nuestros: antes de cambiarlos pregunta («Codex ya tiene un servidor MCP llamado clio-memory. ¿Reemplazarlo?»), y con un no (o sin terminal para contestar) no escribe nada para ese agente. `--replace` los reemplaza sin preguntar.
 - Lo que no se pueda leer: si el estado de un agente no se puede comprobar (su programa falla), su skill se deja como está.
 - La memoria (`memory.db`) y los modelos, salvo que se lo pidas a `uninstall`.
@@ -35,7 +57,7 @@ Qué es «nuestro»:
 - **Skill.** Es nuestra la que coincide, por sha256, con la de esta versión o con una publicada antes (la de v0.2.0, la de v0.4.0, la de v0.5.0, la de v0.6.0 y la de v0.7.0 a v0.10.1): se actualiza o se mueve. Cualquier otra, incluida una que hayas editado, es ajena.
 - **Claude Code.** Solo cuenta el alcance de usuario (`--scope user`). Una entrada `clio-memory` en el alcance local o de proyecto se lee como «no hay».
 
-Correrlo otra vez conserva lo elegido. Sin preguntas (con `--yes` o sin terminal) y sin banderas, se quedan los agentes que ya estaban conectados y siguen instalados (uno que no lo estaba se conecta con `--agents`, y `setup` lo dice; uno que desinstalaste se salta aunque quede su configuración), el modelo que hay (si no había ninguno, no se baja nada) y las líneas de instrucciones como estaban. Cada paso dice «ya está» y no reescribe lo que ya está bien.
+Correrlo otra vez conserva lo elegido. Sin preguntas (con `--yes` o sin terminal) y sin banderas, se quedan los agentes que ya estaban conectados y siguen instalados (uno que no lo estaba se conecta con `--agents`, y `setup` lo dice; uno que desinstalaste se salta aunque quede su configuración), el modelo que hay (si no había ninguno, no se baja nada) y las líneas de instrucciones como estaban (salvo la de una versión anterior, que se renueva). Cada paso dice «ya está» y no reescribe lo que ya está bien.
 
 ## Por agente
 
@@ -43,6 +65,7 @@ Correrlo otra vez conserva lo elegido. Sin preguntas (con `--yes` o sin terminal
 
 - `claude mcp get clio-memory` para ver qué hay. Si hay algo nuestro con otra ruta, o algo ajeno que aceptaste reemplazar, corre `claude mcp remove --scope user clio-memory` y luego `claude mcp add --scope user clio-memory -- <bin> mcp`.
 - La línea va al final de `~/.claude/CLAUDE.md`.
+- En modo skill (el de por defecto), en vez del servidor se agrega la regla `Bash(clio-memory m:*)` a `permissions.allow` de `~/.claude/settings.json`, para que Claude Code corra `clio-memory m …` sin pedir permiso; ver [los dos modos](#los-dos-modos).
 - Antes de nada, `setup claude-code` corre `claude --version`: sin `claude` no escribe nada, ni siquiera la skill. Con `CLIO_MEMORY_CLAUDE=/ruta/a/claude` usa ese programa en vez del del `PATH`.
 - `setup claude-code` pregunta si añade la línea, salvo que ya esté o que le des `--claude-md` (sí) o `--no-claude-md` (no).
 - Sin verificar contra el programa real: el formato de `claude mcp get` se leyó del binario de Claude Code 2.1.311 (2026-11-05), y no se registró nada en el Claude Code de la máquina.
@@ -137,17 +160,20 @@ Al conectar al menos un agente, también se instala el timer del [sueño](../REA
 Después de sus comprobaciones de siempre, `doctor` agrega una línea por cada agente que encuentra en la máquina, con las mismas reglas de detección de la tabla:
 
 ```
-ok   agente claude-code: conectado
---   agente codex: no conectado
+ok   agente claude-code: conectado (skill)
+ok   agente codex: conectado (MCP)
+--   agente gemini: no conectado
 FAIL agente opencode: el MCP apunta a /home/tú/.cargo/bin/clio-memory
 ```
 
-- `ok`: el servidor MCP es de este binario y la skill de esta versión está en una carpeta que ese agente lee.
+- `ok`, con `conectado (MCP)`: el servidor MCP es de este binario y la skill de esta versión está en una carpeta que ese agente lee.
+- `ok`, con `conectado (skill)`: el agente está anotado por skill en `agents.json`; se comprueba su modo, no un servidor: que `clio-memory` esté en el `PATH`, que sea este binario y que el agente vea la skill.
 - `--`: el agente está, pero la memoria no está conectada. No cuenta como fallo. También sale `--`, con el motivo (`no se pudo leer su estado: …`), cuando el estado del agente no se puede leer y el agente no ve nuestra skill: lo más probable es que nunca se haya conectado.
 - `FAIL`, con el motivo:
   - `el MCP apunta a <ruta>` (otra instalación);
   - `el MCP está desactivado`;
   - `otro servidor MCP se llama clio-memory: …`;
+  - por skill: `por skill, pero «clio-memory» no está en el PATH (agrega <carpeta del binario> al PATH)`, `por skill, pero` otro `clio-memory` va antes en el `PATH`, o `por skill, pero no ve la skill (clio-memory setup la repone)`;
   - `skill ajena en <ruta>`, `skill desactualizada en <ruta>` o `falta la skill`;
   - el error al leer el estado, si el agente ve nuestra skill (estaba conectado y ya no se puede comprobar).
 
@@ -170,7 +196,7 @@ Los nombres de `--agents`: `claude-code`, `opencode`, `codex`, `gemini`, `antigr
 
 **Qué quita, de cada agente:**
 
-- el servidor MCP `clio-memory`, **solo si es el nuestro** (con otra ruta también: es una instalación vieja). Si otro servidor se llama así, no se toca y el paso lo dice;
+- el servidor MCP `clio-memory`, **solo si es el nuestro** (con otra ruta también: es una instalación vieja). Si otro servidor se llama así, no se toca y el paso lo dice. Si el agente estaba por skill, se olvida su modo anotado y, en Claude Code, se quita la regla `Bash(clio-memory m:*)`;
 - la línea de instrucciones. Sale aunque el servidor ya no estuviera, y con ella, en OpenCode, `clio-memory.md` y su entrada en `instructions`;
 - la skill, de las carpetas donde esté, **solo si es la nuestra** (la de esta versión o una publicada). Si quitas solo algunos agentes con `--agents`, la skill se vuelve a poner donde la necesiten los que se quedan.
 
@@ -178,6 +204,8 @@ Los nombres de `--agents`: `claude-code`, `opencode`, `codex`, `gemini`, `antigr
 
 - el timer del sueño, si es el de un `clio-memory` (el de Clio u otro programa se deja y se dice);
 - al final, el binario, si está en la carpeta donde lo deja `install.sh`: `~/.local/bin` o `$CLIO_MEMORY_BIN_DIR`, si la definiste. Un binario en otro sitio (por ejemplo de `cargo install`) no se borra. `--models` y `--data` se hacen antes. **Si algo no se pudo quitar (también los modelos o la memoria), el binario se queda**, el paso lo dice, y puedes correr `uninstall` otra vez.
+
+**`agents.json`** (el modo de cada agente) se borra al final de un `uninstall` de todos los agentes; si algún paso quedó sin hacer, se queda, para que al correrlo otra vez se sepa cuáles eran por skill.
 
 **Qué no hace:**
 
@@ -222,7 +250,7 @@ El instalador no guarda ninguna preferencia de modelo. El binario usa el mejor q
 
 ## La firma de cada agente
 
-Un cliente MCP escribe como `mcp:<su nombre>`, con el `clientInfo.name` que manda al iniciar. El nombre se pasa a minúsculas y conserva solo `a-z`, `0-9` y `-` (lo demás pasa a `-`), sin guiones repetidos ni en los bordes; se corta en 40 caracteres, y si no queda nada, firma `mcp:cliente`. Cada firma tiene su cuota de 500 escrituras por hora.
+Un cliente MCP escribe como `mcp:<su nombre>`, con el `clientInfo.name` que manda al iniciar; `clio-memory m` firma igual, con el nombre del agente que lo corre (`--agent`, `CLIO_MEMORY_AGENT` o lo que se deduce del entorno). El nombre se pasa a minúsculas y conserva solo `a-z`, `0-9` y `-` (lo demás pasa a `-`), sin guiones repetidos ni en los bordes; se corta en 40 caracteres, y si no queda nada, firma `mcp:cliente`. Cada firma tiene su cuota de 500 escrituras por hora.
 
 Qué manda de verdad cada agente se ve en la firma de un recuerdo guardado desde él (`clio-memory history <id>`). Con lo que hay hoy en la memoria compartida de esta máquina (2026-11-05):
 
@@ -236,6 +264,20 @@ Qué manda de verdad cada agente se ve en la firma de un recuerdo guardado desde
 
 Los otros cuatro quedan «sin verificar»: no hay ningún recuerdo guardado desde ellos en esa memoria, y no se corrieron los agentes para generarlo. Para comprobarlo, guarda un recuerdo desde el agente y mira `clio-memory history <id>`.
 
+## La comprobación en cada agente
+
+Lo que no se puede probar sin cada agente real. Después de instalar, abre una sesión nueva en cada uno y llena esta tabla a mano, una fila por agente:
+
+| Agente | En una sesión nueva: «¿qué recuerdas de este proyecto?» corre `clio-memory m context` sin pedir permiso | «guarda que …» corre `clio-memory m save` y responde `saved` | Pasa a skill por defecto |
+|---|---|---|---|
+| Claude Code | | | ya lo es |
+| OpenCode | | | ya lo es |
+| Codex | | | |
+| Gemini CLI | | | |
+| Antigravity | | | |
+
+Un agente cuya shell corre en un sandbox (Codex por defecto) puede no alcanzar el socket ni la carpeta de datos; si es así, se queda por MCP. El modo por defecto de un agente se cambia en `modes::default_mode` (`src/setup/modes.rs`), con su prueba, y solo cuando la fila de ese agente salió bien en las dos columnas.
+
 ## Modo sin terminal
 
 `clio-memory setup` pregunta solo en una terminal (stderr es una terminal) y sin `--yes`. Sin terminal, o con `--yes`, no pregunta nada: cada pregunta se contesta con la bandera que la responde y, si falta, con el valor por defecto. En una terminal, una bandera también contesta su pregunta. Sin terminal, o con `--yes`, cada paso sale como una línea (`✓` o `✖`) y no se dibuja nada.
@@ -246,6 +288,7 @@ Los otros cuatro quedan «sin verificar»: no hay ningún recuerdo guardado desd
 | `--agents LISTA` | Conecta solo esos agentes. `LISTA` son claves separadas por comas (`claude-code`, `opencode`, `codex`, `gemini`, `antigravity`), o `all` | todos los agentes que encuentra; si ya hay alguno conectado (otra corrida), los conectados |
 | `--model granite\|potion\|none` | El modelo de vectores a instalar; `none` es la búsqueda por texto | el que ya está instalado; si no hay ninguno, Granite donde hay ONNX Runtime publicado (Linux x86_64, Linux aarch64, macOS arm64), si no potion; en otra corrida sin modelo, ninguno (no se baja nada) |
 | `--instructions` / `--no-instructions` | Agrega (o no) la línea de instrucciones a cada agente conectado | sí en la primera instalación; en otra corrida, como estaba (no se agrega a quien no la tiene) |
+| `--mode skill\|mcp\|auto` | Cómo se conecta cada agente: por skill o por servidor MCP ([los dos modos](#los-dos-modos)) | `auto`: el modo anotado de cada agente, si no el de su defecto |
 | `--replace` | Reemplaza sin preguntar un servidor o una skill ajenos llamados `clio-memory` | no reemplaza: ese agente queda en ✖ |
 
 `--from-installer` es interna: la pasa `install.sh`. Hace que `setup` diga dónde quedó el binario y, si su carpeta no está en el `PATH`, la línea que la agrega ([El `PATH`](#el-path)); no cambia qué se instala.
@@ -281,6 +324,8 @@ curl -fsSL https://raw.githubusercontent.com/i-montes/clio-memory/main/install.s
 | `CLIO_MEMORY_SKIP_ATTESTATION` | `install.sh`: con cualquier valor no vacío, no intenta `gh attestation verify` |
 | `CLIO_MEMORY_HAND_OVER` | `install.sh`, gancho de prueba: con `0` instala el binario sin correr `setup` (la prueba de humo del release) |
 | `CLIO_MEMORY_TTY` | `install.sh`, gancho de prueba: el archivo que se lee como terminal, por defecto `/dev/tty` |
+| `CLIO_MEMORY_AGENT` | quién llama a `clio-memory m` (y a las órdenes de la persona): el nombre del agente, o `cli` para la persona; si no está, se deduce del entorno (`CLAUDECODE`) o del programa antecesor |
+| `CLIO_MEMORY_AS_PERSON` | con `1`, las órdenes de la persona (`purge`, `promote`, …) corren aunque las lance un agente |
 | `CLIO_MEMORY_NO_DAEMON` | con `1`, no se usa el demonio |
 | `CLIO_MEMORY_DAEMON_TIMEOUT` | gancho de prueba: los segundos que se espera la respuesta del demonio (por defecto 120); pasados, esa llamada se atiende en el proceso del agente |
 | `NO_COLOR` | sin colores, en `install.sh` y en la TUI |

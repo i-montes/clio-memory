@@ -1,6 +1,6 @@
 # clio-memory
 
-> **In English, in short:** clio-memory is an AI agent's own long-term memory. It is one SQLite file on your machine, global across projects, and shared with [Clio](https://github.com/i-montes/clio). Any agent can use it over MCP; it works without Clio. Everything the agent saves is active at once and every change can be undone. A secret detector and caps protect it, and what it returns is always marked as data. License: MIT or Apache-2.0.
+> **In English, in short:** clio-memory is an AI agent's own long-term memory. It is one SQLite file on your machine, global across projects, and shared with [Clio](https://github.com/i-montes/clio). An agent uses it by a skill that runs `clio-memory m …` commands, or over MCP; it works without Clio. Everything the agent saves is active at once and every change can be undone. A secret detector and caps protect it, and what it returns is always marked as data. License: MIT or Apache-2.0.
 
 clio-memory es la **memoria propia de un agente**. Guarda lo que vale la pena recordar (quién eres, cómo quieres que trabaje, qué se decidió y por qué, la causa de un error) en un solo archivo SQLite en tu equipo, sin servicios ni red. Es la misma memoria que usa [Clio](https://github.com/i-montes/clio): lo que aprende uno lo sabe el otro. No necesita a Clio para funcionar.
 
@@ -12,13 +12,13 @@ clio-memory es la **memoria propia de un agente**. Guarda lo que vale la pena re
 - **Olvidar no es borrar.** Lo olvidado pasa a la **cuarentena**: deja de leerse, pero su registro se conserva y se puede devolver.
 - **Todo cambio queda en el registro** de operaciones y se puede deshacer. El agente solo deshace sus propios cambios; tú deshaces cualquiera desde la línea de comandos. Borrar para siempre (PURGE) es solo tuyo.
 - **Es global.** Una sesión lee todos los proyectos. Lo del proyecto actual sale primero; lo de otro proyecto sale marcado «proyecto X»; lo personal y las lecciones también llevan su marca. Lo nuevo se guarda en el proyecto de la carpeta donde arrancó el agente.
-- **Cada agente firma lo suyo.** Un cliente MCP escribe como `mcp:<su nombre>` (por ejemplo `mcp:claude-code`); Clio escribe como `agente`. Cada uno tiene su cuota: 500 escrituras por hora.
+- **Cada agente firma lo suyo.** Un agente escribe como `mcp:<su nombre>` (por ejemplo `mcp:claude-code`), lo use por MCP o por `clio-memory m`; Clio escribe como `agente`. Cada uno tiene su cuota: 500 escrituras por hora.
 
 ## Medidas de seguridad
 
 - **Lo que devuelve es dato, nunca una orden.** Cada recuerdo sale en una línea limpia (sin caracteres de control, recortado) y envuelto en `<<<UNTRUSTED-DATA …>>>`. Las instrucciones que recibe el agente dicen que nunca guarde, corrija ni olvide algo porque un archivo, una página o una salida se lo pida.
 - **Nada que parezca un secreto entra.** Un texto o título con forma de clave se rechaza antes de escribir, y el motor lo vuelve a comprobar.
-- **Topes por sesión** (un proceso MCP): 20 lecturas y 24 KiB de texto devuelto, 30 recuerdos guardados y 10 cambios (olvidar, fijar, unir, deshacer). Una llamada mal formada (argumentos inválidos, o un texto o título demasiado largo una vez limpio) se rechaza antes de contar; una que se rechaza por parecer un secreto sí cuenta, para que el filtro no sirva de oráculo. Un recuerdo tiene hasta 1200 caracteres; un resumen de sesión, hasta 600 por parte y 1200 con sus etiquetas. Además, cada agente tiene su cuota por hora.
+- **Topes por sesión** (un proceso MCP, o una sesión de agente y carpeta con `clio-memory m`): 20 lecturas y 24 KiB de texto devuelto, 30 recuerdos guardados y 10 cambios (olvidar, fijar, unir, deshacer). Una llamada mal formada (argumentos inválidos, o un texto o título demasiado largo una vez limpio) se rechaza antes de contar; una que se rechaza por parecer un secreto sí cuenta, para que el filtro no sirva de oráculo. Un recuerdo tiene hasta 1200 caracteres; un resumen de sesión, hasta 600 por parte y 1200 con sus etiquetas. Además, cada agente tiene su cuota por hora.
 - **El modelo no elige quién firma, ni el origen, ni el ámbito.** No hay argumentos para eso: un argumento de más se rechaza.
 - **Aceptar, archivar y purgar no son herramientas del agente:** son tuyos, desde la línea de comandos.
 - **El archivo es privado** (0600, en una carpeta 0700). El escritor solo se toma durante cada llamada, así que Clio y otros clientes pueden escribir entre una y otra.
@@ -55,15 +55,15 @@ curl -fsSL https://raw.githubusercontent.com/i-montes/clio-memory/main/install.s
 
 Hay binario para Linux (x86_64 y aarch64) y macOS (arm64 e Intel). El instalador hace cuatro cosas:
 - baja el binario de tu plataforma del último release, comprueba su sha256 contra `SHA256SUMS` (y su atestación de GitHub, si tienes `gh` 2.49 o más nuevo con sesión) y solo entonces lo deja en `~/.local/bin` (o `$CLIO_MEMORY_BIN_DIR`). No edita ningún archivo de tu shell: si esa carpeta no está en tu `PATH`, te dice la línea que la agrega;
-- busca los agentes que tienes (Claude Code, OpenCode, Codex, Gemini CLI y Antigravity), te deja elegir y conecta la memoria en cada uno: el servidor MCP, la skill y, si quieres, una línea en su archivo de instrucciones;
+- busca los agentes que tienes (Claude Code, OpenCode, Codex, Gemini CLI y Antigravity), te deja elegir y conecta la memoria en cada uno, por skill (el agente corre `clio-memory m …`, sin proceso por sesión) o por servidor MCP, con la skill y, si quieres, una línea en su archivo de instrucciones;
 - instala el modelo de vectores: Granite (347 MB el modelo solo; encima, ONNX Runtime para el procesador) donde corre, potion (531 MB) donde no, o ninguno si lo prefieres (ver [el modelo](#el-modelo-de-vectores));
 - instala el timer del [sueño](#el-sueño), en cuanto hay al menos un agente conectado.
 
 No toca otros servidores MCP ni otras skills. Si un agente ya tiene algo llamado `clio-memory` que no es esto, te pregunta antes de reemplazarlo. Correrlo otra vez actualiza el binario y conserva lo elegido.
 
-**Actualizar.** `clio-memory update` (o `clio memory update`, desde Clio) corre este mismo instalador y luego `setup --yes`: baja la última versión con las mismas comprobaciones, se queda lo conectado y pone al día la skill.
+**Actualizar.** `clio-memory update` (o `clio memory update`, desde Clio) corre este mismo instalador y luego `setup --yes`: baja la última versión con las mismas comprobaciones, se queda lo conectado y pone al día la skill y la línea de instrucciones. Desde v0.11.0, Claude Code y OpenCode pasan a modo skill en esa actualización (se les quita el servidor MCP) si `setup` no había anotado otro modo para ellos; reinicia las sesiones de agente abiertas.
 
-**Sin terminal, o con `--yes`.** En los dos casos no pregunta nada y cada paso sale como una línea: usa las banderas y, donde faltan, todos los agentes que encuentra, el modelo recomendado y la línea de instrucciones. Si ya había algo conectado (otra corrida), donde faltan las banderas se queda lo que había: los mismos agentes, el mismo modelo (no se baja ninguno) y las líneas como estaban. Las banderas pasan a `setup` tal cual:
+**Sin terminal, o con `--yes`.** En los dos casos no pregunta nada y cada paso sale como una línea: usa las banderas y, donde faltan, todos los agentes que encuentra, el modelo recomendado y la línea de instrucciones. Si ya había algo conectado (otra corrida), donde faltan las banderas se queda lo que había: los mismos agentes, el mismo modelo (no se baja ninguno) y las líneas como estaban (salvo la de una versión anterior, que se renueva). Las banderas pasan a `setup` tal cual:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/i-montes/clio-memory/main/install.sh | sh -s -- --yes --agents codex,gemini --model potion
@@ -77,15 +77,22 @@ curl -fsSL https://raw.githubusercontent.com/i-montes/clio-memory/main/install.s
 
 ### Los agentes
 
-En todos, el servidor MCP es `<ruta absoluta del binario> mcp`, la skill es la misma, y la línea de instrucciones es una sola: `- Mi memoria principal es clio-memory (MCP): úsala según la skill clio-memory.`
+Cada agente se conecta de una de dos maneras, y la skill es la misma en las dos (usa las herramientas `memory_*` si las tiene y, si no, las órdenes de [`clio-memory m`](#las-herramientas)):
 
-| Agente | Se detecta por | Servidor MCP | Línea de instrucciones |
-|---|---|---|---|
-| Claude Code | `claude` | `claude mcp add --scope user …` | `~/.claude/CLAUDE.md` |
-| OpenCode | `opencode` o `~/.config/opencode/` | `mcp.clio-memory` en `~/.config/opencode/opencode.json` | `~/.config/opencode/clio-memory.md`, enlazado en `instructions` de `opencode.json` |
-| Codex | `codex` | `codex mcp add clio-memory -- …` | `~/.codex/AGENTS.md` (`CODEX_HOME` si está definida) |
-| Gemini CLI | `gemini` | `gemini mcp add -s user …` | `~/.gemini/GEMINI.md` |
-| Antigravity | `agy`, `antigravity` o `~/.gemini/config/` | `mcpServers.clio-memory` en `~/.gemini/config/mcp_config.json` | `~/.gemini/GEMINI.md` (la de Gemini CLI) |
+- **Por skill.** No hay servidor: el agente corre `clio-memory m …` y cada orden pasa por el demonio. Es lo que `setup` hace por defecto en Claude Code y OpenCode. En Claude Code, `setup` agrega además la regla `Bash(clio-memory m:*)` a `permissions.allow` de `~/.claude/settings.json`, para que corra esas órdenes sin pedir permiso cada vez (no toca ninguna otra clave).
+- **Por MCP.** El servidor es `<ruta absoluta del binario> mcp`, un proceso delgado que pasa las llamadas al demonio. Es lo que `setup` hace por defecto en Codex, Gemini CLI y Antigravity.
+
+`clio-memory setup --mode skill|mcp|auto` elige el modo de los agentes que conecta (`auto`, el de siempre, conserva el que cada uno tenía y, si no tenía, el de su defecto); por ejemplo `clio-memory setup --agents codex --mode skill`. En una terminal, `setup` muestra cómo quedará cada agente y deja cambiarlo. El modo de cada agente se anota en `agents.json`, en la carpeta de datos (`$CLIO_MEMORY_DATA`, o `~/.local/share/clio`), y volver a correr `setup` lo respeta. Cambiar de modo quita lo del otro (el servidor MCP o la regla de permiso). Un agente cuya shell corre en un sandbox (Codex por defecto) puede no alcanzar el socket ni la carpeta de datos: si es así, se queda por MCP.
+
+La línea de instrucciones es una sola: `- Mi memoria principal es clio-memory: úsala según la skill clio-memory.` Reemplaza a la de versiones anteriores (`… clio-memory (MCP): …`): `clio-memory update` (que corre `setup --yes`) la renueva sin que lo pidas, en el mismo lugar y sin dejar las dos.
+
+| Agente | Modo por defecto | Se detecta por | Servidor MCP (si es por MCP) | Línea de instrucciones |
+|---|---|---|---|---|
+| Claude Code | skill | `claude` | `claude mcp add --scope user …` | `~/.claude/CLAUDE.md` |
+| OpenCode | skill | `opencode` o `~/.config/opencode/` | `mcp.clio-memory` en `~/.config/opencode/opencode.json` | `~/.config/opencode/clio-memory.md`, enlazado en `instructions` de `opencode.json` |
+| Codex | MCP | `codex` | `codex mcp add clio-memory -- …` | `~/.codex/AGENTS.md` (`CODEX_HOME` si está definida) |
+| Gemini CLI | MCP | `gemini` | `gemini mcp add -s user …` | `~/.gemini/GEMINI.md` |
+| Antigravity | MCP | `agy`, `antigravity` o `~/.gemini/config/` | `mcpServers.clio-memory` en `~/.gemini/config/mcp_config.json` | `~/.gemini/GEMINI.md` (la de Gemini CLI) |
 
 La skill va en la menor cantidad de carpetas que cubra a los agentes conectados, para que ninguno la vea dos veces si se puede evitar. Para conectar solo Claude Code, `clio-memory setup claude-code` (con `--replace`, y `--claude-md` o `--no-claude-md` para contestar por la línea de instrucciones). Los archivos exactos, los comandos, dónde va la skill en cada combinación y lo que está sin verificar: [docs/instalador.md](docs/instalador.md).
 
@@ -98,7 +105,7 @@ clio-memory uninstall --models                # además borra ~/.cache/clio-mode
 clio-memory uninstall --data                  # además borra la memoria (pregunta antes)
 ```
 
-Quita de cada agente el servidor MCP `clio-memory`, la skill y la línea de instrucciones, pero **solo lo que es nuestro**: un servidor o una skill ajenos con ese nombre no se tocan. Sin `--agents` quita también el timer del sueño y, al final, el binario si está en `~/.local/bin` (o en `$CLIO_MEMORY_BIN_DIR`); si algo no se pudo quitar, el binario se queda y puedes correrlo otra vez. **No borra la memoria ni los modelos si no lo pides.** `--models` borra `~/.cache/clio-models` entera, que también usa Clio: si los necesita, se vuelven a bajar. `--data` borra para siempre `memory.db` (con sus `-wal`, `-shm` y candados) y la carpeta `sleep/` de al lado, y nada más de la carpeta de datos, porque ahí guarda sus archivos Clio. Sin terminal exige `--yes`.
+Quita de cada agente el servidor MCP `clio-memory` (o, si estaba por skill, su modo anotado y la regla de permiso de Claude Code), la skill y la línea de instrucciones, pero **solo lo que es nuestro**: un servidor o una skill ajenos con ese nombre no se tocan. Sin `--agents` quita también el timer del sueño y, al final, el binario si está en `~/.local/bin` (o en `$CLIO_MEMORY_BIN_DIR`); si algo no se pudo quitar, el binario se queda y puedes correrlo otra vez. **No borra la memoria ni los modelos si no lo pides.** `--models` borra `~/.cache/clio-models` entera, que también usa Clio: si los necesita, se vuelven a bajar. `--data` borra para siempre `memory.db` (con sus `-wal`, `-shm` y candados) y la carpeta `sleep/` de al lado, y nada más de la carpeta de datos, porque ahí guarda sus archivos Clio. Sin terminal exige `--yes`.
 
 ### Compilar tú mismo
 
@@ -129,17 +136,35 @@ Un programa anfitrión que use la biblioteca puede tomar los vectores del demoni
 
 ### Las herramientas
 
-| Herramienta | Qué hace |
-|---|---|
-| `memory_search`, `memory_get`, `memory_timeline`, `memory_context` | Leen (datos marcados, con presupuesto) |
-| `memory_save` | Guarda un recuerdo, activo en el acto (`memory_propose`, su nombre viejo, se acepta una versión más) |
-| `memory_update` | Corrige un recuerdo: lo reemplaza y el viejo queda en el registro |
-| `memory_forget` | Lo manda a la cuarentena |
-| `memory_pin` | Lo fija para que salga primero en el contexto |
-| `memory_consolidate` | Une de 2 a 5 recuerdos en uno y olvida los originales |
-| `memory_revert` | Deshace un cambio propio |
-| `memory_session_summary` | Guarda el resumen de la sesión para la próxima |
-| `memory_current_project` | Dice en qué proyecto se guarda |
+Un agente usa la memoria por las herramientas MCP `memory_*` o, si no las tiene, por `clio-memory m <verbo>`: cada verbo es una llamada a la misma herramienta, con lo mismo que ella recibe.
+
+| Herramienta | Orden | Qué hace |
+|---|---|---|
+| `memory_search`, `memory_get`, `memory_timeline`, `memory_context` | `m search TEXT [--limit N]`, `m get ID`, `m timeline ID [--before N] [--after N]`, `m context` | Leen (datos marcados, con presupuesto) |
+| `memory_save` | `m save [--kind semantic\|procedural] [--title T] [--category C] TEXT` | Guarda un recuerdo, activo en el acto (`memory_propose`, su nombre viejo, se acepta una versión más) |
+| `memory_update` | `m update ID [--title T] [--category C] TEXT` | Corrige un recuerdo: lo reemplaza y el viejo queda en el registro |
+| `memory_forget` | `m forget ID` | Lo manda a la cuarentena |
+| `memory_pin` | `m pin ID` | Lo fija para que salga primero en el contexto |
+| `memory_consolidate` | `m consolidate IDS [--title T] [--category C] TEXT` | Une de 2 a 5 recuerdos en uno y olvida los originales |
+| `memory_revert` | `m revert CHANGE` | Deshace un cambio propio |
+| `memory_session_summary` | `m summary --goal G --accomplished A [--instructions I] [--discoveries D] [--next-steps N] [--files F]` | Guarda el resumen de la sesión para la próxima |
+| `memory_current_project` | `m project` | Dice en qué proyecto se guarda |
+
+**Cómo se usan las órdenes.**
+
+- `ID` es `12` o `m12`; `IDS` va como `12,15`; `TEXT` son las palabras que quedan en la línea, o `-` para leerlo de la entrada estándar (sin su último salto de línea). Un texto largo, o con comillas, `$`, comillas invertidas, `--` o saltos de línea, entra por `-` con un heredoc de comillas simples, para que la shell no lo toque:
+
+  ```sh
+  clio-memory m save --title "Elegí Postgres 16 para pedidos" --category decision - <<'EOF'
+  Qué: … · Por qué: … · Dónde: … · Aprendido: …
+  EOF
+  ```
+
+- La respuesta de la herramienta sale por la salida estándar; el aviso del demonio y el de «atendí en este proceso» salen por la de error, como `clio-memory m: …`.
+- **Códigos de salida:** 0 si la memoria contestó, 1 si la herramienta se negó (dice por qué), 2 si la orden está mal escrita (no toca nada).
+- Pasa por el demonio, o por una sesión dentro del proceso si no hay (`CLIO_MEMORY_NO_DAEMON=1`). Quién llama sale de `--agent NAME` (después de `m`), de `CLIO_MEMORY_AGENT`, del entorno (`CLAUDECODE`) o del programa de agente que lo lanzó, y firma `mcp:<agente>` como siempre. `--actor`, `--model` y `--json` antes de `m` son un error de uso.
+
+**Órdenes de la persona.** Las que no empiezan por `m` y actúan con tu autoridad (`purge`, `promote`, `archive`, `revert`, `feedback`, `import`, `import-memories --origin user`, `remember` sin `--actor` y `uninstall --data`) se niegan, con código 1, cuando las corre un agente, a menos que pongas `CLIO_MEMORY_AS_PERSON=1`. Es para evitar el accidente, no una barrera: un agente con shell podría poner la variable. Las de leer (`list`, `history`, `stats`…) no se tocan.
 
 ### Recorrer la memoria
 
@@ -151,7 +176,7 @@ Un programa anfitrión que use la biblioteca puede tomar los vectores del demoni
 
 ## Un solo proceso: el demonio
 
-Con varias sesiones de agente abiertas, cada una con su `clio-memory mcp`, cada proceso cargaba su propia copia del modelo (unos 500 MB). Ahora hay **un demonio por carpeta de datos** y el proceso `mcp` de cada agente solo le pasa las llamadas: no guarda ni modelo ni base de datos (unos 7 MB). Los agentes que atiende comparten el modelo cargado y un solo escritor de la memoria (la línea de comandos y Clio escriben por su cuenta, y el candado de escritor los ordena).
+Con varias sesiones de agente abiertas, cada una con su `clio-memory mcp`, cada proceso cargaba su propia copia del modelo (unos 500 MB). Ahora hay **un demonio por carpeta de datos** y el proceso `mcp` de cada agente (o cada `clio-memory m`) solo le pasa las llamadas: no guarda ni modelo ni base de datos (unos 7 MB). Los agentes que atiende comparten el modelo cargado y un solo escritor de la memoria (la línea de comandos y Clio escriben por su cuenta, y el candado de escritor los ordena).
 
 - **Lo lanza el primer cliente** que lo necesita y no hay que arrancarlo a mano. **Se va solo a los 10 minutos sin uso**; `CLIO_MEMORY_DAEMON_IDLE=<segundos>` cambia ese plazo.
 - **Un demonio que no contesta en 2 minutos** no deja esperando: esa llamada la atiende el proceso `mcp`, que vuelve a probar el demonio un minuto después (`CLIO_MEMORY_DAEMON_TIMEOUT=<segundos>` cambia el plazo; es para las pruebas).

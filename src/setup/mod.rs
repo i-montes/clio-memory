@@ -257,16 +257,21 @@ pub(crate) fn run_command(cmd: &mut Command) -> Result<String, String> {
 /// Runs `cmd` to the end, whatever its exit code; only a program that cannot be started is an
 /// error.
 pub(crate) fn command_output(cmd: &mut Command) -> Result<std::process::Output, String> {
-    // «Text file busy» (ETXTBSY): the program was just written and another thread's child
-    // still holds it for a moment; it is there, so try again.
+    retry_busy(|| cmd.output()).map_err(|e| format!("{}: {e}", cmd.get_program().display()))
+}
+
+/// Runs a launch (`output()`, `spawn()`), trying again while it fails with «Text file busy»
+/// (ETXTBSY): the program was just written and another thread's child still holds it for a
+/// moment; it is there, so wait for it.
+pub(crate) fn retry_busy<T>(mut launch: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
     let mut tries = 0;
     loop {
-        match cmd.output() {
+        match launch() {
             Err(e) if e.raw_os_error() == Some(26) && tries < 50 => {
                 tries += 1;
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            other => break other.map_err(|e| format!("{}: {e}", cmd.get_program().display())),
+            other => break other,
         }
     }
 }
@@ -742,17 +747,7 @@ pub fn curl_get_watching(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
-    // «Text file busy», as in `command_output`: a program just written, held for a moment.
-    let mut tries = 0;
-    let spawned = loop {
-        match cmd.spawn() {
-            Err(e) if e.raw_os_error() == Some(26) && tries < 50 => {
-                tries += 1;
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            other => break other.map_err(|e| format!("curl: {e}"))?,
-        }
-    };
+    let spawned = retry_busy(|| cmd.spawn()).map_err(|e| format!("curl: {e}"))?;
     let mut guard = KillOnDrop(Some(spawned));
     let size = || std::fs::metadata(to).map(|m| m.len()).unwrap_or(0);
     let status = loop {
@@ -803,5 +798,32 @@ pub fn curl_fetch<'a>(
             .url(name)
             .ok_or_else(|| format!("{name} no es un archivo del modelo"))?;
         curl_get(curl, &url, to).map_err(|_| format!("no se pudo descargar {name}"))
+    }
+}
+
+#[cfg(test)]
+mod busy_tests {
+    use super::retry_busy;
+
+    #[test]
+    fn a_busy_program_is_tried_again_and_other_errors_are_not() {
+        let mut calls = 0;
+        let r = retry_busy(|| {
+            calls += 1;
+            if calls < 3 {
+                Err(std::io::Error::from_raw_os_error(26))
+            } else {
+                Ok(calls)
+            }
+        });
+        assert_eq!(r.unwrap(), 3);
+
+        let mut calls = 0;
+        let r: std::io::Result<()> = retry_busy(|| {
+            calls += 1;
+            Err(std::io::Error::from_raw_os_error(2))
+        });
+        assert!(r.is_err());
+        assert_eq!(calls, 1);
     }
 }

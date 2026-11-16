@@ -43,6 +43,7 @@ pub mod daemon;
 pub mod mcp;
 pub mod setup;
 pub mod sleep;
+pub mod temis;
 pub mod tools;
 
 pub use clock::{Clock, FixedClock, SystemClock};

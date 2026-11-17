@@ -423,12 +423,18 @@ fn a_curl_that_fails_says_so_without_the_token() {
 fn from_data_reads_the_file_and_makes_no_call() {
     // `from_data` reads the real environment: with the variables set in this shell, the test runs
     // again in a child without them.
-    let vars = ["CLIO_MEMORY_TEMIS_URL", "CLIO_MEMORY_TEMIS_TOKEN"];
+    // `XDG_RUNTIME_DIR` too: Clio's real vault may be running and hold the key.
+    let vars = [
+        "CLIO_MEMORY_TEMIS_URL",
+        "CLIO_MEMORY_TEMIS_TOKEN",
+        "XDG_RUNTIME_DIR",
+    ];
     if vars.iter().any(|v| std::env::var_os(v).is_some()) {
         let o = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "from_data_reads_the_file_and_makes_no_call"])
             .env_remove(vars[0])
             .env_remove(vars[1])
+            .env_remove(vars[2])
             .output()
             .unwrap();
         let said = String::from_utf8_lossy(&o.stdout);
@@ -441,4 +447,106 @@ fn from_data_reads_the_file_and_makes_no_call() {
     save(dir.path(), &cfg()).unwrap();
     // Building it calls nothing: the `curl` here would be the real one.
     assert!(from_data(dir.path()).is_some());
+}
+
+/// A vault on `<run>/clio/vault-gateway.sock` that reads one request and answers `reply` (or, with
+/// `None`, holds the connection without answering). The request it read comes back on join.
+fn fake_vault(run: &Path, reply: Option<String>) -> std::thread::JoinHandle<String> {
+    use std::io::{BufRead, BufReader, Write};
+    std::fs::create_dir_all(run.join("clio")).unwrap();
+    let listener =
+        std::os::unix::net::UnixListener::bind(run.join("clio/vault-gateway.sock")).unwrap();
+    std::thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        let mut line = String::new();
+        BufReader::new(s.try_clone().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        match reply {
+            Some(r) => writeln!(s, "{r}").unwrap(),
+            None => std::thread::sleep(std::time::Duration::from_secs(4)),
+        }
+        line
+    })
+}
+
+#[test]
+fn the_vault_key_wins_over_the_file_and_the_variables_over_both() {
+    let dir = tempfile::tempdir().unwrap();
+    let (run, data) = (dir.path().join("run"), dir.path().join("data"));
+    let run_s = run.to_str().unwrap().to_owned();
+    let answer = json!({"ok": true, "data": {"value": "from-vault"}}).to_string();
+
+    // No file: the vault's key, for the default URL.
+    let vault = fake_vault(&run, Some(answer.clone()));
+    let got = load(&data, &env(&[("XDG_RUNTIME_DIR", run_s.as_str())])).unwrap();
+    assert_eq!(
+        (got.url.as_str(), got.token.as_str(), got.model.as_str()),
+        (DEFAULT_URL, "from-vault", "temis-latest")
+    );
+    let asked: serde_json::Value = serde_json::from_str(&vault.join().unwrap()).unwrap();
+    assert_eq!(
+        asked,
+        json!({"op": "resolve", "name": "temis", "tool": "jev",
+               "domain": "api.imontes.dev", "trace_id": ""})
+    );
+
+    // With a file: the vault's key for the file's URL (its server, without the port).
+    std::fs::remove_file(run.join("clio/vault-gateway.sock")).unwrap();
+    let file = Config {
+        url: "https://h:8443/temis".into(),
+        ..cfg()
+    };
+    save(&data, &file).unwrap();
+    let vault = fake_vault(&run, Some(answer.clone()));
+    let got = load(&data, &env(&[("XDG_RUNTIME_DIR", run_s.as_str())])).unwrap();
+    assert_eq!(
+        (got.url.as_str(), got.token.as_str()),
+        ("https://h:8443/temis", "from-vault")
+    );
+    assert!(vault.join().unwrap().contains(r#""domain":"h""#));
+
+    // Both variables win over the vault.
+    let both = [
+        ("CLIO_MEMORY_TEMIS_URL", "https://v/t"),
+        ("CLIO_MEMORY_TEMIS_TOKEN", "from-env"),
+        ("XDG_RUNTIME_DIR", run_s.as_str()),
+    ];
+    assert_eq!(load(&data, &env(&both)).unwrap().token, "from-env");
+}
+
+#[test]
+fn a_vault_that_refuses_is_silent_or_absent_leaves_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let (run, data) = (dir.path().join("run"), dir.path().join("data"));
+    let run_s = run.to_str().unwrap().to_owned();
+    save(&data, &cfg()).unwrap();
+    let from_file = |e: &[(&str, &str)]| load(&data, &env(e)).unwrap().token;
+
+    // No vault at all, and no runtime folder.
+    assert_eq!(from_file(&[("XDG_RUNTIME_DIR", run_s.as_str())]), token());
+    assert_eq!(from_file(&[]), token());
+
+    for reply in [
+        json!({"ok": false, "error": "Locked"}).to_string(),
+        json!({"ok": false, "error": "denied: wrong destination"}).to_string(),
+        json!({"ok": true, "data": {"value": "  "}}).to_string(),
+        "not json".to_owned(),
+    ] {
+        let vault = fake_vault(&run, Some(reply));
+        assert_eq!(from_file(&[("XDG_RUNTIME_DIR", run_s.as_str())]), token());
+        vault.join().unwrap();
+        std::fs::remove_file(run.join("clio/vault-gateway.sock")).unwrap();
+    }
+
+    // One that never answers is given up on after a short wait.
+    let vault = fake_vault(&run, None);
+    let t = std::time::Instant::now();
+    assert_eq!(from_file(&[("XDG_RUNTIME_DIR", run_s.as_str())]), token());
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(4),
+        "{:?}",
+        t.elapsed()
+    );
+    vault.join().unwrap();
 }

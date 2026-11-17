@@ -17,6 +17,15 @@ La etiqueta, sin la `v`, debe ser igual a `version` en `Cargo.toml`. Si no lo es
 
 ## Notas de versiones
 
+### v0.12.1
+
+El sueño toma la llave de Temis del baúl de Clio.
+
+- **Primero el baúl, después el archivo.** Si las dos variables `CLIO_MEMORY_TEMIS_URL` y `CLIO_MEMORY_TEMIS_TOKEN` están puestas, mandan como antes. Si no, `clio-memory sleep` (y `doctor`, y `setup temis --check`) le piden la llave al baúl de Clio (`$XDG_RUNTIME_DIR/clio/vault-gateway.sock`): el secreto `temis`, pedido como la herramienta `jev` hacia el servidor de la URL. La URL es la de `temis.json` o, sin archivo, `https://api.imontes.dev/temis`. El baúl solo la entrega si coincide con su destino (`jev:api.imontes.dev`). Si no hay baúl, está cerrado, se niega o no responde en 2 s, se usa `temis.json` como antes. Ningún error de ese paso dice por qué, así que ninguno puede llevar la llave.
+- **Para qué**: con la llave en el baúl ya no hace falta `temis.json`, y `clio doctor` deja de fallar por la regla S-18 (un valor del baúl copiado en un archivo de la carpeta de datos compartida).
+
+Después de etiquetar: `clio-memory update`, comprobar que el sueño encuentra a Temis sin el archivo y, entonces, borrar `~/.local/share/clio/temis.json` (o `clio-memory setup temis --remove`).
+
 ### v0.12.0
 
 El sueño decide con Temis, si lo configuraste.

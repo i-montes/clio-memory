@@ -21,6 +21,8 @@ fn isolated(cmd: &mut Command) -> &mut Command {
         .env_remove("CLIO_MEMORY_AS_PERSON")
         .env_remove("CLIO_MEMORY_TEMIS_URL")
         .env_remove("CLIO_MEMORY_TEMIS_TOKEN")
+        // Clio's vault, which may hold the real key, lives under it.
+        .env_remove("XDG_RUNTIME_DIR")
 }
 
 fn run(db: Option<&Path>, args: &[&str]) -> Output {
@@ -1169,6 +1171,8 @@ impl Machine {
             .env_remove("CLIO_MEMORY_AS_PERSON")
             .env_remove("CLIO_MEMORY_TEMIS_URL")
             .env_remove("CLIO_MEMORY_TEMIS_TOKEN")
+            // Clio's vault, which may hold the real key, lives under it.
+            .env_remove("XDG_RUNTIME_DIR")
             .args(args)
             .stdin(std::process::Stdio::null())
             .output()
@@ -2351,6 +2355,8 @@ impl Machine {
             .env_remove("CLIO_MEMORY_AS_PERSON")
             .env_remove("CLIO_MEMORY_TEMIS_URL")
             .env_remove("CLIO_MEMORY_TEMIS_TOKEN")
+            // Clio's vault, which may hold the real key, lives under it.
+            .env_remove("XDG_RUNTIME_DIR")
             .env("CLIO_MEMORY_AGENT", agent)
             .envs(envs.iter().copied())
             .args(args)

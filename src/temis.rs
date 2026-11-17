@@ -38,7 +38,19 @@ pub fn config_path(data: &Path) -> PathBuf {
     data.join("temis.json")
 }
 
-/// The configuration: both variables win over the file; with one of them only, or none, the file.
+/// Where Temis is when no file says: the server whose key Clio's vault keeps.
+pub const DEFAULT_URL: &str = "https://api.imontes.dev/temis";
+/// Clio's vault keeps the key as this secret, for this tool towards the URL's server
+/// (`clio vault put temis --dest jev:api.imontes.dev`).
+const VAULT_SECRET: &str = "temis";
+const VAULT_TOOL: &str = "jev";
+/// Clio's gateway socket, under `XDG_RUNTIME_DIR`.
+const VAULT_SOCKET: &str = "clio/vault-gateway.sock";
+/// A vault that does not answer in this long is no vault: the sleep goes on with the file.
+const VAULT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The configuration, first that is there: both variables; the key from Clio's vault (for the
+/// file's URL, or `DEFAULT_URL` with no file); the file.
 pub fn load(data: &Path, env: &dyn Fn(&str) -> Option<String>) -> Option<Config> {
     let var = |k: &str| {
         env(k)
@@ -61,19 +73,66 @@ pub fn load(data: &Path, env: &dyn Fn(&str) -> Option<String>) -> Option<Config>
                 model: s("model").unwrap_or_else(|| DEFAULT_MODEL.into()),
             })
         });
+    let model = file
+        .as_ref()
+        .map_or_else(|| DEFAULT_MODEL.into(), |c| c.model.clone());
     // The environment's URL is checked like `setup temis` checks one (the file's was, when it was
     // saved, and may carry `--allow-http`): a bad one is as if the variables were not set.
-    match (var("CLIO_MEMORY_TEMIS_URL"), var("CLIO_MEMORY_TEMIS_TOKEN")) {
-        (Some(url), Some(token)) => match check_url(&url, false) {
-            Ok(url) => Some(Config {
-                url,
-                token,
-                model: file.map_or_else(|| DEFAULT_MODEL.into(), |c| c.model),
-            }),
-            Err(_) => file,
-        },
-        _ => file,
+    if let (Some(url), Some(token)) = (var("CLIO_MEMORY_TEMIS_URL"), var("CLIO_MEMORY_TEMIS_TOKEN"))
+        && let Ok(url) = check_url(&url, false)
+    {
+        return Some(Config { url, token, model });
     }
+    let url = file.as_ref().map_or(DEFAULT_URL, |c| c.url.as_str());
+    let vault = var("XDG_RUNTIME_DIR")
+        .and_then(|run| from_vault(&Path::new(&run).join(VAULT_SOCKET), host_of(url)?));
+    match vault {
+        Some(token) => Some(Config {
+            url: url.to_owned(),
+            token,
+            model,
+        }),
+        None => file,
+    }
+}
+
+/// The server of a checked URL, without its port.
+fn host_of(url: &str) -> Option<&str> {
+    let authority = url.split_once("://")?.1.split('/').next()?;
+    let host = match authority.rsplit_once(':') {
+        Some((h, port))
+            if !authority.ends_with(']') && port.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            h
+        }
+        _ => authority,
+    };
+    (!host.is_empty()).then_some(host)
+}
+
+/// The key Clio's vault gives Jev's tool towards `domain` (one JSON line each way, as
+/// `clio-vault`'s client speaks), or `None`: no vault, locked, refused, slow or unreadable. No
+/// error leaves here, so none can carry the key.
+fn from_vault(socket: &Path, domain: &str) -> Option<String> {
+    use std::io::{BufRead, BufReader, Read};
+    let mut stream = std::os::unix::net::UnixStream::connect(socket).ok()?;
+    stream.set_read_timeout(Some(VAULT_WAIT)).ok()?;
+    stream.set_write_timeout(Some(VAULT_WAIT)).ok()?;
+    let ask = json!({"op": "resolve", "name": VAULT_SECRET, "tool": VAULT_TOOL,
+                     "domain": domain, "trace_id": ""});
+    writeln!(stream, "{ask}")
+        .and_then(|()| stream.flush())
+        .ok()?;
+    let mut line = String::new();
+    BufReader::new(stream.take(64 * 1024))
+        .read_line(&mut line)
+        .ok()?;
+    let v: Value = serde_json::from_str(&line).ok()?;
+    if v["ok"] != true {
+        return None;
+    }
+    let token = v["data"]["value"].as_str()?.trim();
+    (!token.is_empty()).then(|| token.to_owned())
 }
 
 /// What the hosts use: the configuration as `load` reads it with the real environment, and the

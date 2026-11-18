@@ -17,6 +17,14 @@ La etiqueta, sin la `v`, debe ser igual a `version` en `Cargo.toml`. Si no lo es
 
 ## Notas de versiones
 
+### v0.13.0
+
+Los bloques fijos de la persona van primero en `memory_context`, y un agente ya no puede corregir, olvidar ni unir un recuerdo que un bloque muestra.
+
+- **Primero los bloques.** `memory_context` empieza por los bloques `identidad`, `reglas` y `preferencias` del lugar personal, en ese orden, cada uno bajo su línea `## identidad`, `## reglas` o `## preferencias`; un bloque vacío no imprime nada y otro bloque (por ejemplo `vigilancia`) no lleva línea propia. Van antes que el resumen de la sesión, lo fijado y lo reciente, así que el tope de 4096 bytes nunca los corta.
+- **Lo que un bloque muestra es de la persona.** Un agente que corrige (`memory_update`, o un recuerdo nuevo con el mismo tema), olvida (`memory_forget`) o une (`memory_consolidate`) un recuerdo que cualquier bloque lista o muestra hoy (la versión vigente, si la persona lo corrigió) recibe «ese recuerdo está en un bloque fijo de la persona: solo ella lo cambia» y no cambia nada; en una unión, ninguna de las otras fuentes se olvida. La persona conserva todos sus poderes.
+- **La skill y las instrucciones del servidor MCP** le dicen al agente qué son esas líneas: `## identidad` y `## reglas`, quién es y cómo trabaja (las adopta); `## preferencias`, quién es la persona. La skill cambia: `clio-memory update` la pone al día.
+
 ### v0.12.1
 
 El sueño toma la llave de Temis del baúl de Clio.

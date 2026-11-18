@@ -569,3 +569,121 @@ fn what_is_written_while_the_vectors_are_stored_is_embedded_without_the_writer()
     );
     assert_eq!(stats(&t), (1, 0), "it was embedded and its job closed");
 }
+
+// The person's fixed blocks come first in the context, each under its header.
+
+/// The memory with `identidad` and `reglas` set by the person to `a` and `b` (empty: left
+/// empty), and `recent` memories of the agent saved after.
+fn with_blocks(t: &tempfile::TempDir, a: &str, b: &str, recent: &[String]) {
+    let m = Memory::open_write(t.path(), &EmbedModel::none(), None, "mcp:prueba").unwrap();
+    let persona = m.actors().persona;
+    for (name, text) in [("identidad", a), ("reglas", b)] {
+        if text.is_empty() {
+            continue;
+        }
+        let id = m
+            .engine()
+            .propose(common::prop(m.scope(), persona, text))
+            .unwrap()
+            .memory;
+        let block = m
+            .engine()
+            .blocks(m.scope())
+            .unwrap()
+            .into_iter()
+            .find(|b| b.name == name)
+            .unwrap();
+        m.engine().block_set(block.id, &[id], persona).unwrap();
+    }
+    for text in recent {
+        m.save(
+            &Draft::plain(text, MemoryType::Semantic),
+            "s",
+            Place::Personal,
+            false,
+        )
+        .unwrap();
+    }
+}
+
+fn ten_recent() -> Vec<String> {
+    (0..10)
+        .map(|i| format!("dato reciente número {i}"))
+        .collect()
+}
+
+#[test]
+fn the_context_starts_with_the_fixed_blocks() {
+    let t = tempfile::tempdir().unwrap();
+    with_blocks(
+        &t,
+        "Eres Clio, la asistente",
+        "Responde en español",
+        &ten_recent(),
+    );
+    let out = session(&t).call("memory_context", &json!({})).unwrap();
+    let at = |s: &str| out.find(s).unwrap_or_else(|| panic!("{s} missing: {out}"));
+    // The most recent eight are shown, newest first.
+    let first_recent = (0..10)
+        .filter_map(|i| out.find(&format!("dato reciente número {i}")))
+        .min()
+        .unwrap();
+    let order = [
+        at("\n## identidad\n"),
+        at("Eres Clio, la asistente"),
+        at("\n## reglas\n"),
+        at("Responde en español"),
+        first_recent,
+    ];
+    assert!(order.is_sorted(), "{order:?}: {out}");
+    assert!(!out.contains("## preferencias"), "{out}");
+}
+
+#[test]
+fn an_empty_block_prints_nothing() {
+    let t = tempfile::tempdir().unwrap();
+    with_blocks(&t, "", "", &ten_recent());
+    let out = session(&t).call("memory_context", &json!({})).unwrap();
+    assert!(out.contains("dato reciente"), "{out}");
+    assert!(!out.contains("## "), "{out}");
+}
+
+#[test]
+fn only_the_three_blocks_are_headers() {
+    let t = tempfile::tempdir().unwrap();
+    {
+        let m = Memory::open_write(t.path(), &EmbedModel::none(), None, "mcp:prueba").unwrap();
+        let persona = m.actors().persona;
+        let id = m
+            .engine()
+            .propose(common::prop(m.scope(), persona, "vigila el disco"))
+            .unwrap()
+            .memory;
+        let b = m
+            .engine()
+            .create_block(m.scope(), "vigilancia", 50, persona)
+            .unwrap();
+        m.engine().block_set(b, &[id], persona).unwrap();
+    }
+    let out = session(&t).call("memory_context", &json!({})).unwrap();
+    assert!(out.contains("vigila el disco"), "{out}");
+    assert!(!out.contains("## "), "{out}");
+}
+
+#[test]
+fn the_blocks_survive_the_answer_cap() {
+    let t = tempfile::tempdir().unwrap();
+    let a = format!("Eres Clio, la asistente {}", "de la persona ".repeat(20));
+    let b = format!("Responde en español {}", "y con calma ".repeat(20));
+    let long: Vec<String> = (0..10)
+        .map(|i| format!("recuerdo largo {i} {}", "con mucho texto ".repeat(70)))
+        .collect();
+    with_blocks(&t, a.trim(), b.trim(), &long);
+    let out = session(&t).call("memory_context", &json!({})).unwrap();
+    assert!(out.len() <= 4096, "{}", out.len());
+    assert!(
+        out.contains("more memories left out"),
+        "the cap was reached: {out}"
+    );
+    assert!(out.contains(a.trim()) && out.contains(b.trim()), "{out}");
+}

@@ -21,7 +21,8 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::agent::memory::{
-    HELD_BY_BLOCK, clean_text, embed_newest, embed_pending, explain, kind_label, origin_label,
+    BLOCKS, HELD_BY_BLOCK, clean_text, embed_newest, embed_pending, explain, kind_label,
+    origin_label,
 };
 use crate::agent::{Draft, EmbedModel, Memory, Place, preview};
 use crate::clock::{Clock, SystemClock};
@@ -410,6 +411,18 @@ impl Session {
                 _ => Err(NOT_READABLE.into()),
             };
         };
+        // In the context, the first memory each fixed block shows goes under its name.
+        let mut heads: Vec<(MemoryId, &str)> = Vec::new();
+        if name == "memory_context" {
+            let mut seen = Vec::new();
+            for (block, _) in BLOCKS {
+                let rows = m.block(block)?;
+                if let Some(r) = rows.iter().find(|r| !seen.contains(&r.id)) {
+                    heads.push((r.id, block));
+                }
+                seen.extend(rows.iter().map(|r| r.id));
+            }
+        }
         let (rows, abstained, note) = match name {
             "memory_search" => {
                 let typed = args
@@ -435,7 +448,7 @@ impl Session {
                 m.context()?,
                 false,
                 Some(
-                    "the last session's summary, then what is pinned, then the most recent".into(),
+                    "the person's fixed blocks, then the last session's summary, then what is pinned, then the most recent".into(),
                 ),
             ),
             _ => {
@@ -471,6 +484,7 @@ impl Session {
             left.min(MAX_ANSWER_BYTES),
             full,
             near,
+            &heads,
         );
         // Last night's sleep goes first, outside the frame: it is the sleep's own words (ids and
         // reasons), never memory text.
@@ -801,7 +815,9 @@ fn merge_ids(s: &str) -> Option<Vec<i64>> {
     (2..=MAX_MERGE).contains(&ids.len()).then_some(ids)
 }
 
-/// The answer to a read: one clean line per memory while it fits in `cap`, wrapped as data.
+/// The answer to a read: one clean line per memory while it fits in `cap`, wrapped as data. A
+/// memory named in `heads` goes under a `## <block>` line, which is kept only with it.
+#[allow(clippy::too_many_arguments)]
 fn render(
     m: &Memory,
     rows: &[MemoryRow],
@@ -810,6 +826,7 @@ fn render(
     cap: usize,
     full: bool,
     near: usize,
+    heads: &[(MemoryId, &str)],
 ) -> String {
     if rows.is_empty() {
         return match note.map(clean_text).filter(|n| !n.is_empty()) {
@@ -871,7 +888,10 @@ fn render(
             &clean_text(&body),
             max_line.saturating_sub(head.chars().count()),
         );
-        let line = format!("{head}{text}");
+        let mut line = format!("{head}{text}");
+        if let Some((_, block)) = heads.iter().find(|(id, _)| *id == r.id) {
+            line = format!("## {block}\n{line}");
+        }
         if used + line.len() + 1 > room {
             break;
         }
@@ -1006,7 +1026,7 @@ mod tests {
                 })
                 .collect();
             let shown = |near: usize| {
-                let a = render(&m, &rows, false, None, MAX_ANSWER_BYTES, false, near);
+                let a = render(&m, &rows, false, None, MAX_ANSWER_BYTES, false, near, &[]);
                 assert!(a.len() <= MAX_ANSWER_BYTES);
                 a.lines().filter(|l| l.starts_with("[m")).count()
             };

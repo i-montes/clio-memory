@@ -12,6 +12,7 @@ clio-memory es la **memoria propia de un agente**. Guarda lo que vale la pena re
 - **Olvidar no es borrar.** Lo olvidado pasa a la **cuarentena**: deja de leerse, pero su registro se conserva y se puede devolver.
 - **Todo cambio queda en el registro** de operaciones y se puede deshacer. El agente solo deshace sus propios cambios; tú deshaces cualquiera desde la línea de comandos. Borrar para siempre (PURGE) es solo tuyo.
 - **Es global.** Una sesión lee todos los proyectos. Lo del proyecto actual sale primero; lo de otro proyecto sale marcado «proyecto X»; lo personal y las lecciones también llevan su marca. Lo nuevo se guarda en el proyecto de la carpeta donde arrancó el agente.
+- **Los bloques fijos son tuyos.** `memory_context` empieza por lo que pusiste en tus bloques fijos, cada uno bajo su línea: `## identidad` (quién es el agente para ti), `## reglas` (cómo trabaja) y `## preferencias` (quién eres tú); un bloque vacío no sale. Ningún agente puede corregir, olvidar ni unir un recuerdo que un bloque muestra: la memoria le contesta «ese recuerdo está en un bloque fijo de la persona: solo ella lo cambia».
 - **Cada agente firma lo suyo.** Un agente escribe como `mcp:<su nombre>` (por ejemplo `mcp:claude-code`), lo use por MCP o por `clio-memory m`; Clio escribe como `agente`. Cada uno tiene su cuota: 500 escrituras por hora.
 
 ## Medidas de seguridad

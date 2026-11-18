@@ -1119,14 +1119,31 @@ impl Engine {
         Ok(false)
     }
 
-    /// Is `id` in a fixed block of the scope (who the person is, rules, preferences)?
+    /// Is `id` in a fixed block of the scope (who the person is, rules, preferences): listed
+    /// there, or the version a listed entry shows today (`current`)?
     fn in_block(&self, scope: ScopeId, id: MemoryId) -> Result<bool> {
         for b in self.store.blocks(scope)? {
-            if self.store.block_memories(b.id)?.contains(&id) {
-                return Ok(true);
+            for entry in self.store.block_memories(b.id)? {
+                if entry == id || self.current(entry)?.is_some_and(|r| r.id == id) {
+                    return Ok(true);
+                }
             }
         }
         Ok(false)
+    }
+
+    /// What a fixed block lists or shows is the person's to change: replacing, forgetting or
+    /// merging it signed by anyone else fails with `HeldByBlock`. Reads only, so a merge can ask
+    /// before it writes anything.
+    pub fn require_unblocked(&self, id: MemoryId, actor: ActorId) -> Result<()> {
+        if self.store.actor_kind(actor)? == ActorKind::Person {
+            return Ok(());
+        }
+        let row = self.store.get(id)?;
+        if self.in_block(row.scope, id)? {
+            return Err(Error::HeldByBlock);
+        }
+        Ok(())
     }
 
     /// Promote and archive are the person's; revert too, except an agent's revert of its own
@@ -1504,6 +1521,10 @@ impl Engine {
             }
             Verdict::Update { .. } => {
                 let old = by_topic.ok_or(Error::InvalidState)?;
+                self.require_unblocked(
+                    old.id,
+                    judged.as_ref().map_or(p.actor, |(j, _, _)| j.actor),
+                )?;
                 // Several facts about one topic can arrive within the same clock second (a batch
                 // written when an episode closes). With no explicit start the new one starts now,
                 // and if the old one also started this second it was valid for zero seconds
@@ -1754,6 +1775,7 @@ impl Engine {
         if row.state != State::Active {
             return Err(Error::InvalidState);
         }
+        self.require_unblocked(id, actor)?;
         let mut after = row.clone();
         after.state = State::Quarantine;
         let changes = vec![Change {

@@ -61,6 +61,10 @@ const BLOCKS: [(&str, usize); 3] = [("identidad", 150), ("reglas", 200), ("prefe
 
 pub type Res<T> = Result<T, String>;
 
+/// The refusal of a change to what a fixed block of the person shows (`Error::HeldByBlock`).
+pub const HELD_BY_BLOCK: &str =
+    "ese recuerdo está en un bloque fijo de la persona: solo ella lo cambia";
+
 /// A refusal in the words of a person.
 pub fn explain(e: &Error) -> String {
     match e {
@@ -74,6 +78,7 @@ pub fn explain(e: &Error) -> String {
         Error::EmptyContent => "rechazado: vacío".into(),
         Error::WriterLocked => "otro proceso está escribiendo la memoria; reintenta".into(),
         Error::NotAllowed => "no permitido para este actor".into(),
+        Error::HeldByBlock => HELD_BY_BLOCK.into(),
         Error::InvalidState => "el recuerdo no está en un estado que lo permita".into(),
         Error::NotFound => "no existe ese recuerdo".into(),
         other => other.to_string(),

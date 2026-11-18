@@ -20,7 +20,9 @@ use std::sync::Arc;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::agent::memory::{clean_text, embed_newest, embed_pending, kind_label, origin_label};
+use crate::agent::memory::{
+    HELD_BY_BLOCK, clean_text, embed_newest, embed_pending, explain, kind_label, origin_label,
+};
 use crate::agent::{Draft, EmbedModel, Memory, Place, preview};
 use crate::clock::{Clock, SystemClock};
 use crate::secrets::find_secret;
@@ -546,6 +548,10 @@ impl Session {
                 .ok()
                 .filter(|r| r.kind == MemoryType::Semantic)
                 .ok_or_else(|| NOT_READABLE.to_owned())?;
+            // Before anything is saved: a source a fixed block shows stops the whole merge.
+            m.engine()
+                .require_unblocked(r.id, m.actors().own)
+                .map_err(|e| explain(&e))?;
             if first.as_ref().is_some_and(|f| f.scope != r.scope) {
                 return Err("solo se unen memorias del mismo sitio".into());
             }
@@ -617,10 +623,10 @@ impl Session {
                 .revert_own(OpId(positive(args, "change")?))
                 .map(|_| "undone: the change was reverted"),
         };
-        // Which of «missing, forgotten, someone else's» it was does not leak; a spent quota or a
-        // writer that is busy is said as it is.
+        // Which of «missing, forgotten, someone else's» it was does not leak; a spent quota, a
+        // writer that is busy or a memory a fixed block holds is said as it is.
         done.map(str::to_owned).map_err(|e| {
-            if e.contains("cuota") || e.contains("otro proceso") {
+            if e.contains("cuota") || e.contains("otro proceso") || e == HELD_BY_BLOCK {
                 e
             } else {
                 NOT_READABLE.to_owned()

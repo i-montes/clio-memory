@@ -106,6 +106,8 @@ pub const KNOWN_SKILLS: &[&str] = &[
     "f82d55db3b943c3d0e1898431010cf27cb4fd8914b27f7c89226352c2e43f452",
     // v0.7.0 to v0.10.1
     "2e3637e12fd31d53632ed8574e94241bae03ca95d84ca6c016f836da0317df01",
+    // v0.11.0 to v0.12.1
+    "132930fc760080167f07e8d254d0b976f5eb0e774d82e5cf68aa3b7ae25e6fb1",
 ];
 
 /// What is at a skill's path.
@@ -196,7 +198,7 @@ mod tests {
 
     /// The sha256 of `skill/SKILL.md` as this version ships it.
     const CURRENT_SKILL_SHA: &str =
-        "132930fc760080167f07e8d254d0b976f5eb0e774d82e5cf68aa3b7ae25e6fb1";
+        "a19a54c1722e67a6109b50baa1c33efa8bf74f595966fccb87d9615d6dec16bd";
 
     // An edited skill without its predecessor in `KNOWN_SKILLS` would make every installed copy
     // of the previous one «foreign»: never updated, and a ✖ on every agent.

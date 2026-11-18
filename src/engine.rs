@@ -920,7 +920,8 @@ impl Engine {
                     | Error::TooLong
                     | Error::QuotaExceeded
                     | Error::SecretDetected
-                    | Error::InvalidValidity),
+                    | Error::InvalidValidity
+                    | Error::HeldByBlock),
                 ) => {
                     summary.rejected_total += 1;
                     if summary.rejected.len() < KEPT_REJECTIONS {
@@ -1119,14 +1120,31 @@ impl Engine {
         Ok(false)
     }
 
-    /// Is `id` in a fixed block of the scope (who the person is, rules, preferences)?
+    /// Is `id` in a fixed block of the scope (who the person is, rules, preferences): listed
+    /// there, or the version a listed entry shows today (`current`)?
     fn in_block(&self, scope: ScopeId, id: MemoryId) -> Result<bool> {
         for b in self.store.blocks(scope)? {
-            if self.store.block_memories(b.id)?.contains(&id) {
-                return Ok(true);
+            for entry in self.store.block_memories(b.id)? {
+                if entry == id || self.current(entry)?.is_some_and(|r| r.id == id) {
+                    return Ok(true);
+                }
             }
         }
         Ok(false)
+    }
+
+    /// What a fixed block lists or shows is the person's to change: replacing, forgetting or
+    /// merging it signed by anyone else fails with `HeldByBlock`. Reads only, so a merge can ask
+    /// before it writes anything.
+    pub fn require_unblocked(&self, id: MemoryId, actor: ActorId) -> Result<()> {
+        if self.store.actor_kind(actor)? == ActorKind::Person {
+            return Ok(());
+        }
+        let row = self.store.get(id)?;
+        if self.in_block(row.scope, id)? {
+            return Err(Error::HeldByBlock);
+        }
+        Ok(())
     }
 
     /// Promote and archive are the person's; revert too, except an agent's revert of its own
@@ -1504,6 +1522,10 @@ impl Engine {
             }
             Verdict::Update { .. } => {
                 let old = by_topic.ok_or(Error::InvalidState)?;
+                self.require_unblocked(
+                    old.id,
+                    judged.as_ref().map_or(p.actor, |(j, _, _)| j.actor),
+                )?;
                 // Several facts about one topic can arrive within the same clock second (a batch
                 // written when an episode closes). With no explicit start the new one starts now,
                 // and if the old one also started this second it was valid for zero seconds
@@ -1754,6 +1776,7 @@ impl Engine {
         if row.state != State::Active {
             return Err(Error::InvalidState);
         }
+        self.require_unblocked(id, actor)?;
         let mut after = row.clone();
         after.state = State::Quarantine;
         let changes = vec![Change {
@@ -2155,6 +2178,13 @@ impl Engine {
             && (self.store.actor_kind(actor)? != ActorKind::Agent || done.actor != actor)
         {
             return Err(Error::NotAllowed);
+        }
+        // An agent's own operation on what a fixed block now shows is the person's to undo.
+        for c in &done.changes {
+            match self.require_unblocked(c.memory, actor) {
+                Ok(()) | Err(Error::NotFound) => {} // purged since: `revert_locked` says so
+                Err(e) => return Err(e),
+            }
         }
         self.revert_locked(&done, actor)
     }
@@ -2797,10 +2827,11 @@ impl Engine {
             .collect()
     }
 
-    /// Follows `replaced_by` from a block entry to the memory that is active now. A block bypasses
-    /// relevance filters, so an entry follows an update by the person or the agent's own
-    /// (`Origin::User` or `Agent`), never one from outside content (`External`): that one is left
-    /// out until a person edits the block.
+    /// Follows `replaced_by` from a block entry to the memory that is active now. A block skips
+    /// relevance filters, so it never follows an update to text from outside content
+    /// (`External`): that entry is left out until a person edits the block. Since v0.13.0 only a
+    /// person updates what a block shows (`require_unblocked`); an `External` update can still come
+    /// from her own, or from before then.
     fn current(&self, mut id: MemoryId) -> Result<Option<MemoryRow>> {
         let mut via_update = false;
         for _ in 0..32 {

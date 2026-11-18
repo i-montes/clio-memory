@@ -57,9 +57,14 @@ pub const SCOPE: &str = "clio";
 pub const DB_FILE: &str = "memory.db";
 /// Where the local embedding model lives, relative to HOME.
 pub const MODEL_REL: &str = ".cache/clio-models/potion-multilingual-128M";
-const BLOCKS: [(&str, usize); 3] = [("identidad", 150), ("reglas", 200), ("preferencias", 150)];
+/// The person's fixed blocks Clio makes, in the order the context shows them.
+pub const BLOCKS: [(&str, usize); 3] = [("identidad", 150), ("reglas", 200), ("preferencias", 150)];
 
 pub type Res<T> = Result<T, String>;
+
+/// The refusal of a change to what a fixed block of the person shows (`Error::HeldByBlock`).
+pub const HELD_BY_BLOCK: &str =
+    "ese recuerdo está en un bloque fijo de la persona: solo ella lo cambia";
 
 /// A refusal in the words of a person.
 pub fn explain(e: &Error) -> String {
@@ -74,6 +79,7 @@ pub fn explain(e: &Error) -> String {
         Error::EmptyContent => "rechazado: vacío".into(),
         Error::WriterLocked => "otro proceso está escribiendo la memoria; reintenta".into(),
         Error::NotAllowed => "no permitido para este actor".into(),
+        Error::HeldByBlock => HELD_BY_BLOCK.into(),
         Error::InvalidState => "el recuerdo no está en un estado que lo permita".into(),
         Error::NotFound => "no existe ese recuerdo".into(),
         other => other.to_string(),
@@ -939,9 +945,26 @@ impl Memory {
         row.source.as_deref()?.strip_prefix(PROJECT_PREFIX)
     }
 
-    /// What a model needs on starting or after a compaction: the last session's summary of the
-    /// project (or the person's place), what is pinned in any place, the most recent of the project,
-    /// and a few past their review cycle.
+    /// What the fixed block `name` of the person's place shows today, in its order; empty when
+    /// there is no such block. Only reads.
+    pub fn block(&self, name: &str) -> Res<Vec<MemoryRow>> {
+        let fail = |_| "la memoria no se pudo leer".to_owned();
+        match self
+            .engine
+            .blocks(self.scope)
+            .map_err(fail)?
+            .into_iter()
+            .find(|b| b.name == name)
+        {
+            Some(b) => self.engine.block_current(b.id).map_err(fail),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// What a model needs on starting or after a compaction: the person's fixed blocks
+    /// (`BLOCKS`, in order), the last session's summary of the project (or the person's place),
+    /// what is pinned in any place, the most recent of the project, and a few past their review
+    /// cycle. Each memory once.
     pub fn context(&self) -> Res<Vec<MemoryRow>> {
         let fail = |_| "la memoria no se pudo leer".to_owned();
         let home = self.scope_of(Place::Project).unwrap_or(self.scope);
@@ -952,6 +975,11 @@ impl Memory {
                 out.push(r);
             }
         };
+        for (name, _) in BLOCKS {
+            for r in self.block(name)? {
+                push(r, &mut out);
+            }
+        }
         if let Some(summary) = recent.iter().find(|r| r.kind == MemoryType::Episodic) {
             push(summary.clone(), &mut out);
         }

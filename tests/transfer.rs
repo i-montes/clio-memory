@@ -794,6 +794,28 @@ fn import_memories_goes_through_propose_and_is_active_marked_external() {
     assert_eq!(f.engine.history(m.id).unwrap()[0].actor, imp);
 }
 
+// What a fixed block shows is the person's: an importer's line with its topic is rejected, and
+// the import goes on.
+#[test]
+fn a_line_that_would_replace_a_block_member_is_rejected_and_the_rest_imported() {
+    let f = fixture();
+    let mut p = prop(f.scope, f.person, "se llama Iván");
+    p.topic_key = Some("nombre".into());
+    let held = f.engine.propose(p).unwrap().memory;
+    let b = f
+        .engine
+        .create_block(f.scope, "identidad", 100, f.person)
+        .unwrap();
+    f.engine.block_set(b, &[held], f.person).unwrap();
+    let imp = importer(&f, Quota::default());
+    let text = "{\"content\":\"se llama Juan\",\"topic_key\":\"nombre\"}\n{\"content\":\"tiene un perro\"}\n";
+    let s = load(&f, imp, text, &ImportOpts::default());
+    assert_eq!(s.aborted, None, "{s:?}");
+    assert_eq!((s.read, s.added, s.rejected_total), (2, 1, 1), "{s:?}");
+    assert_eq!(s.rejected[0].0, 1);
+    assert_eq!(f.engine.get(held).unwrap().state, State::Active);
+}
+
 #[test]
 fn import_memories_honors_every_field() {
     let f = fixture();

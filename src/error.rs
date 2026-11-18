@@ -30,6 +30,9 @@ pub enum Error {
     InvalidState,
     #[error("actor is not allowed to do this")]
     NotAllowed,
+    /// What a fixed block of the person lists or shows: only a person replaces, forgets or merges it.
+    #[error("this memory is in one of the person's fixed blocks: only the person changes it")]
+    HeldByBlock,
     #[error("operation {0:?} cannot be reverted: the memory changed since")]
     NotRevertible(OpId),
     #[error("another process owns the write lock on this file")]

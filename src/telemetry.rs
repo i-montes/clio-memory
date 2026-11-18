@@ -134,7 +134,7 @@ pub(crate) fn outcome_name<T>(result: &crate::error::Result<T>) -> &'static str 
             Error::InvalidValidity => "invalid_validity",
             Error::UnknownScope | Error::UnknownActor | Error::NotFound => "not_found",
             Error::InvalidState => "invalid_state",
-            Error::NotAllowed => "not_allowed",
+            Error::NotAllowed | Error::HeldByBlock => "not_allowed",
             Error::NotRevertible(_) => "not_revertible",
             Error::WriterLocked => "writer_locked",
             Error::ReadOnly => "read_only",

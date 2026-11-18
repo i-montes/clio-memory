@@ -426,7 +426,7 @@ fn historical_query_shows_known_since() {
 }
 
 // S-25/S-26 spirit: blocks bypass relevance filters, so text from outside content cannot rewrite
-// them (the agent's own corrections can: `a_block_follows_the_agents_own_correction…`)
+// them; no agent changes them at all, only the person (`a_block_follows_the_persons_correction…`)
 #[test]
 fn outside_text_cannot_rewrite_a_block_through_a_topic_update() {
     let f = fixture();

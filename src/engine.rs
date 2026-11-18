@@ -920,7 +920,8 @@ impl Engine {
                     | Error::TooLong
                     | Error::QuotaExceeded
                     | Error::SecretDetected
-                    | Error::InvalidValidity),
+                    | Error::InvalidValidity
+                    | Error::HeldByBlock),
                 ) => {
                     summary.rejected_total += 1;
                     if summary.rejected.len() < KEPT_REJECTIONS {
@@ -2178,6 +2179,13 @@ impl Engine {
         {
             return Err(Error::NotAllowed);
         }
+        // An agent's own operation on what a fixed block now shows is the person's to undo.
+        for c in &done.changes {
+            match self.require_unblocked(c.memory, actor) {
+                Ok(()) | Err(Error::NotFound) => {} // purged since: `revert_locked` says so
+                Err(e) => return Err(e),
+            }
+        }
         self.revert_locked(&done, actor)
     }
 
@@ -2819,10 +2827,11 @@ impl Engine {
             .collect()
     }
 
-    /// Follows `replaced_by` from a block entry to the memory that is active now. A block bypasses
-    /// relevance filters, so an entry follows an update by the person or the agent's own
-    /// (`Origin::User` or `Agent`), never one from outside content (`External`): that one is left
-    /// out until a person edits the block.
+    /// Follows `replaced_by` from a block entry to the memory that is active now. Only a person
+    /// changes what a block shows (`require_unblocked`), and a block bypasses relevance filters, so
+    /// an entry follows an update that is not from outside content (`External`, which a person may
+    /// still mark it as, or one written before v0.13.0): that one is left out until a person edits
+    /// the block.
     fn current(&self, mut id: MemoryId) -> Result<Option<MemoryRow>> {
         let mut via_update = false;
         for _ in 0..32 {

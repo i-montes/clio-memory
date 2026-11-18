@@ -260,12 +260,13 @@ fn an_agent_cannot_consolidate_a_block_member() {
     let e = s
         .call(
             "memory_consolidate",
-            &serde_json::json!({"ids": format!("{}, {}", id.0, other.0), "text": "Iván vive en Lima"}),
+            // The block member comes after another source: that one is not forgotten either.
+            &serde_json::json!({"ids": format!("{}, {}", other.0, id.0), "text": "Iván vive en Lima"}),
         )
         .unwrap_err();
     assert_eq!(e, HELD);
     let m = agent_memory(&t);
-    for kept in [id, other] {
+    for kept in [other, id] {
         assert_eq!(m.engine().get(kept).unwrap().state, State::Active);
     }
     let active = m
@@ -339,4 +340,69 @@ fn any_block_of_the_scope_holds_its_memories() {
         .unwrap();
     m.engine().block_set(b, &[id], persona).unwrap();
     assert_eq!(m.forget(id).unwrap_err(), HELD);
+}
+
+#[test]
+fn an_agent_cannot_undo_its_way_into_a_block() {
+    let t = tempfile::tempdir().unwrap();
+    let m = agent_memory(&t);
+    let persona = m.actors().persona;
+    // An agent's own add, then listed by the person in `reglas`.
+    let added = m
+        .save(&plain("responde breve"), "s", agent::Place::Personal, false)
+        .unwrap();
+    let reglas = block_of(&m, "reglas");
+    m.engine()
+        .block_set(reglas, &[added.memory], persona)
+        .unwrap();
+    assert_eq!(m.revert_own(added.op).unwrap_err(), HELD);
+    // An agent's own correction of the person's memory, then listed in `identidad`.
+    let mine = m
+        .engine()
+        .propose(prop(m.scope(), persona, "me llamo Iván"))
+        .unwrap()
+        .memory;
+    let fixed = m
+        .update(mine, &plain("me llamo Iván Montes"), "s", false)
+        .unwrap();
+    m.engine()
+        .block_set(block_of(&m, "identidad"), &[fixed.memory], persona)
+        .unwrap();
+    assert_eq!(m.revert_own(fixed.op).unwrap_err(), HELD);
+    assert_eq!(shown(&m), ["me llamo Iván Montes"]);
+    let rules: Vec<_> = m.engine().block_current(reglas).unwrap();
+    assert_eq!(rules.len(), 1);
+    // The person's revert still works.
+    m.engine().revert(added.op, persona).unwrap();
+    assert!(m.engine().block_current(reglas).unwrap().is_empty());
+    m.engine().revert(fixed.op, persona).unwrap();
+    assert_eq!(m.engine().get(mine).unwrap().state, State::Active);
+}
+
+#[test]
+fn a_judged_update_of_a_block_member_is_refused() {
+    let f = fixture();
+    let mine = f
+        .engine
+        .propose(prop(f.scope, f.person, "me llamo Iván"))
+        .unwrap()
+        .memory;
+    let b = f
+        .engine
+        .create_block(f.scope, "identidad", 100, f.person)
+        .unwrap();
+    f.engine.block_set(b, &[mine], f.person).unwrap();
+    let j = f.engine.judge().unwrap();
+    let mut p = prop(f.scope, f.agent, "se llama Juan");
+    p.origin = Origin::External;
+    assert!(matches!(
+        f.engine.propose_judged(
+            &j,
+            p,
+            Judged::Update { old: mine },
+            Sureness { confidence: 0.9 }
+        ),
+        Err(Error::HeldByBlock)
+    ));
+    assert_eq!(f.engine.get(mine).unwrap().state, State::Active);
 }

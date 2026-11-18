@@ -2827,11 +2827,11 @@ impl Engine {
             .collect()
     }
 
-    /// Follows `replaced_by` from a block entry to the memory that is active now. Only a person
-    /// changes what a block shows (`require_unblocked`), and a block bypasses relevance filters, so
-    /// an entry follows an update that is not from outside content (`External`, which a person may
-    /// still mark it as, or one written before v0.13.0): that one is left out until a person edits
-    /// the block.
+    /// Follows `replaced_by` from a block entry to the memory that is active now. A block skips
+    /// relevance filters, so it never follows an update to text from outside content
+    /// (`External`): that entry is left out until a person edits the block. Since v0.13.0 only a
+    /// person updates what a block shows (`require_unblocked`); an `External` update can still come
+    /// from her own, or from before then.
     fn current(&self, mut id: MemoryId) -> Result<Option<MemoryRow>> {
         let mut via_update = false;
         for _ in 0..32 {

@@ -198,7 +198,7 @@ mod tests {
 
     /// The sha256 of `skill/SKILL.md` as this version ships it.
     const CURRENT_SKILL_SHA: &str =
-        "3883cfa4ce64a4747eb5466fe36ce7457ac36c2ac3cc2e285eb62868265a4795";
+        "a19a54c1722e67a6109b50baa1c33efa8bf74f595966fccb87d9615d6dec16bd";
 
     // An edited skill without its predecessor in `KNOWN_SKILLS` would make every installed copy
     // of the previous one «foreign»: never updated, and a ✖ on every agent.

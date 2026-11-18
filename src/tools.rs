@@ -818,34 +818,54 @@ fn merge_ids(s: &str) -> Option<Vec<i64>> {
     (2..=MAX_MERGE).contains(&ids.len()).then_some(ids)
 }
 
-/// The person's fixed blocks (`BLOCKS`, in order) for the context: each memory whole under its
-/// `## <block>` line, while the section fits in `MAX_PERSON_SET_BYTES` (one that does not fit is
-/// left out whole), framed as set by the person; empty when no block has one. A memory from
-/// outside content (`externo`) is not the person's word: it is left with the rest. Also every id
-/// the section took, shown or left out.
+/// The person's fixed blocks (`BLOCKS`, in order) for the context: each memory she wrote
+/// (`Origin::User`) whole under its `## <block>` line, while the section fits in
+/// `MAX_PERSON_SET_BYTES`, framed as set by the person; empty when no block has one. One that does
+/// not fit is left out whole, and a last line says which, by id. Any other memory of a block (an
+/// agent's, or from outside content) is not her word: it is left with the rest. Also every id the
+/// section took, shown or left out.
 fn person_set(m: &Memory) -> Result<(String, Vec<MemoryId>), String> {
-    let (mut lines, mut taken) = (Vec::new(), Vec::new());
-    let mut room = MAX_PERSON_SET_BYTES.saturating_sub(frame_person_set("").len());
+    let mut rows: Vec<(&str, MemoryRow)> = Vec::new();
     for (block, _) in BLOCKS {
-        let mut header = Some(format!("## {block}"));
         for r in m.block(block)? {
-            if r.origin == Origin::External || taken.contains(&r.id) {
-                continue;
+            if r.origin == Origin::User && !rows.iter().any(|(_, o)| o.id == r.id) {
+                rows.push((block, r));
             }
-            taken.push(r.id);
-            let body = match r.title.as_deref() {
-                Some(t) => format!("{t} — {}", r.content),
-                None => r.content.clone(),
-            };
-            let line = format!("[m{}] {}", r.id.0, clean_text(&body));
-            let need = line.len() + 1 + header.as_ref().map_or(0, |h| h.len() + 1);
-            if need > room {
-                continue;
-            }
-            room -= need;
-            lines.extend(header.take());
-            lines.push(line);
         }
+    }
+    let taken: Vec<MemoryId> = rows.iter().map(|(_, r)| r.id).collect();
+    let left_line = |ids: &[MemoryId]| {
+        let ids: Vec<String> = ids.iter().map(|id| format!("m{}", id.0)).collect();
+        format!(
+            "[+{} block entries left out (section limit): {}]",
+            ids.len(),
+            ids.join(", ")
+        )
+    };
+    // Room for that line as if every one were left out: the section never passes its cap.
+    let mut room = MAX_PERSON_SET_BYTES
+        .saturating_sub(frame_person_set("").len())
+        .saturating_sub(left_line(&taken).len() + 1);
+    let (mut lines, mut left, mut shown_block) = (Vec::new(), Vec::new(), "");
+    for (block, r) in rows {
+        let body = match r.title.as_deref() {
+            Some(t) => format!("{t} — {}", r.content),
+            None => r.content.clone(),
+        };
+        let line = format!("[m{}] {}", r.id.0, clean_text(&body));
+        let header = (block != shown_block).then(|| format!("## {block}"));
+        let need = line.len() + 1 + header.as_ref().map_or(0, |h| h.len() + 1);
+        if need > room {
+            left.push(r.id);
+            continue;
+        }
+        room -= need;
+        shown_block = block;
+        lines.extend(header);
+        lines.push(line);
+    }
+    if !left.is_empty() {
+        lines.push(left_line(&left));
     }
     let set = if lines.is_empty() {
         String::new()

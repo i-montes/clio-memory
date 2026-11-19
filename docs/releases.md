@@ -17,6 +17,13 @@ La etiqueta, sin la `v`, debe ser igual a `version` en `Cargo.toml`. Si no lo es
 
 ## Notas de versiones
 
+### v0.14.0
+
+ONNX Runtime vuelve a bajarse, y una sesión ya no tiene topes.
+
+- **ONNX Runtime, desde este repositorio.** El repositorio de Microsoft dejó de estar en GitHub y `setup model` ya no podía bajar el runtime que Granite necesita. Ahora lo baja del release [`onnxruntime-1.31.1`](https://github.com/i-montes/clio-memory/releases/tag/onnxruntime-1.31.1) de este repositorio: la biblioteca de las ruedas oficiales de PyPI (la misma versión, 1.31.1), empaquetada como los `.tgz` de antes y fijada por sha256. Cada archivo trae un `SOURCE` con la rueda de la que salió. Quien ya tenía el runtime sigue funcionando; el próximo `setup model` lo cambia por este (unos 10 MB).
+- **Sin topes por sesión.** El agente lee, guarda y cambia recuerdos cuantas veces necesite: se fueron los topes por ventana de 30 minutos (20 lecturas y 24 KiB, 30 guardados, 10 cambios), que le impedían hasta corregir un recuerdo. Lo que parece un secreto se sigue rechazando, y la cuota por hora de cada agente en el motor sigue.
+
 ### v0.13.0
 
 Los bloques fijos de la persona van primero en `memory_context`, en su propia sección, y un agente ya no puede corregir, olvidar, unir ni deshacer su camino hasta cambiar lo que un bloque muestra.

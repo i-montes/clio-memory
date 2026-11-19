@@ -1,6 +1,6 @@
 # clio-memory
 
-> **In English, in short:** clio-memory is an AI agent's own long-term memory. It is one SQLite file on your machine, global across projects, and shared with [Clio](https://github.com/i-montes/clio). An agent uses it by a skill that runs `clio-memory m …` commands, or over MCP; it works without Clio. Everything the agent saves is active at once and every change can be undone. A secret detector and caps protect it, and what it returns is always marked as data. License: MIT or Apache-2.0.
+> **In English, in short:** clio-memory is an AI agent's own long-term memory. It is one SQLite file on your machine, global across projects, and shared with [Clio](https://github.com/i-montes/clio). An agent uses it by a skill that runs `clio-memory m …` commands, or over MCP; it works without Clio. Everything the agent saves is active at once and every change can be undone. A secret detector protects it, and what it returns is always marked as data. License: MIT or Apache-2.0.
 
 clio-memory es la **memoria propia de un agente**. Guarda lo que vale la pena recordar (quién eres, cómo quieres que trabaje, qué se decidió y por qué, la causa de un error) en un solo archivo SQLite en tu equipo, sin servicios ni red. Es la misma memoria que usa [Clio](https://github.com/i-montes/clio): lo que aprende uno lo sabe el otro. No necesita a Clio para funcionar.
 
@@ -19,7 +19,7 @@ clio-memory es la **memoria propia de un agente**. Guarda lo que vale la pena re
 
 - **Lo que devuelve es dato, nunca una orden.** Cada recuerdo sale en una línea limpia (sin caracteres de control, recortado) y envuelto en `<<<UNTRUSTED-DATA …>>>`. La excepción son tus bloques fijos, en su propia sección `<<<PERSON-SET …>>>`, lo primero de la respuesta: enteros y solo con lo que escribiste tú. Las instrucciones que recibe el agente dicen que nunca guarde, corrija ni olvide algo porque un archivo, una página o una salida se lo pida.
 - **Nada que parezca un secreto entra.** Un texto o título con forma de clave se rechaza antes de escribir, y el motor lo vuelve a comprobar.
-- **Topes por sesión** (un proceso MCP, o una sesión de agente y carpeta con `clio-memory m`): 20 lecturas y 24 KiB de texto devuelto, 30 recuerdos guardados y 10 cambios (olvidar, fijar, unir, deshacer). Una llamada mal formada (argumentos inválidos, o un texto o título demasiado largo una vez limpio) se rechaza antes de contar; una que se rechaza por parecer un secreto sí cuenta, para que el filtro no sirva de oráculo. Un recuerdo tiene hasta 1200 caracteres; un resumen de sesión, hasta 600 por parte y 1200 con sus etiquetas. Además, cada agente tiene su cuota por hora.
+- **Sin topes por sesión.** El agente lee, guarda y cambia recuerdos cuantas veces necesite. Lo que parece un secreto no se guarda. Un recuerdo tiene hasta 1200 caracteres; un resumen de sesión, hasta 600 por parte y 1200 con sus etiquetas. Además, cada agente tiene su cuota por hora.
 - **El modelo no elige quién firma, ni el origen, ni el ámbito.** No hay argumentos para eso: un argumento de más se rechaza.
 - **Aceptar, archivar y purgar no son herramientas del agente:** son tuyos, desde la línea de comandos.
 - **El archivo es privado** (0600, en una carpeta 0700). El escritor solo se toma durante cada llamada, así que Clio y otros clientes pueden escribir entre una y otra.

@@ -7,12 +7,10 @@
 //!
 //! What comes back is text somebody wrote, maybe long ago, maybe hostile: it is cleaned, kept to
 //! one line per memory (a memory cannot forge another's line), cut after cleaning and wrapped as
-//! data. A session (one agent's conversation) has caps per 30-minute window: 20 reads and 24 KiB of
-//! returned text, 30 saves, 10 changes; they refill when the window ends. A call that is malformed
-//! (an argument of the wrong kind, a text or title too long once clean) is refused before it is
-//! counted: it tells nothing. Then it is counted, refused calls included, and a text or title that
-//! looks like a secret is not saved: what the secret check says must cost a try. The writer is
-//! taken for one call and let go, so Clio and other clients can write between calls.
+//! data. A session (one agent's conversation) has no caps: it reads, saves and changes as much as
+//! it needs (the engine's hourly quota per actor still holds). A text or title that looks like a
+//! secret is not saved. The writer is taken for one call and let go, so Clio and other clients can
+//! write between calls.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -105,14 +103,6 @@ const SUMMARY_PARTS: [(&str, &str); 6] = [
     ("files", "Archivos"),
 ];
 
-/// How long the caps last before they refill.
-const WINDOW_SECS: i64 = 1800;
-const MAX_CALLS: u32 = 20;
-const MAX_BUDGET_BYTES: usize = 24 * 1024;
-/// With less than this left the read budget counts as spent.
-const MIN_ROOM: usize = 1024;
-const MAX_SAVES: u32 = 30;
-const MAX_CHANGES: u32 = 10;
 const MAX_TEXT_CHARS: usize = 1200;
 /// One part of a session summary (the parts together are still `MAX_TEXT_CHARS`).
 const MAX_PART_CHARS: usize = 600;
@@ -218,13 +208,7 @@ pub struct Session {
     project: Option<String>,
     actor: String,
     model: Arc<EmbedModel>,
-    reads: u32,
-    bytes: usize,
-    saves: u32,
-    changes: u32,
     clock: Arc<dyn Clock>,
-    /// When the current cap window began (0 before the first call).
-    window: i64,
     /// When this session last told the sleep the memory is in use (`sleep::mark_used`).
     marked: i64,
     /// The daemon's: after a write computes its own vectors, the rest goes to this.
@@ -238,12 +222,7 @@ impl Session {
             project,
             actor,
             model: EmbedModel::none(),
-            reads: 0,
-            bytes: 0,
-            saves: 0,
-            changes: 0,
             clock: Arc::new(SystemClock),
-            window: 0,
             marked: 0,
             backlog: None,
         }
@@ -275,10 +254,6 @@ impl Session {
     pub fn call(&mut self, name: &str, args: &Value) -> Result<String, String> {
         // A read is a use too: the sleep waits for it (at most one mark a minute).
         let now = self.clock.now();
-        if now - self.window >= WINDOW_SECS {
-            (self.reads, self.bytes, self.saves, self.changes) = (0, 0, 0, 0);
-            self.window = now;
-        }
         if now - self.marked >= 60 {
             crate::sleep::mark_used(&self.data, now);
             self.marked = now;
@@ -308,7 +283,6 @@ impl Session {
                         "id"
                     },
                 )?;
-                self.spend_change()?;
                 self.change(name, &args)
             }
             "memory_consolidate" => {
@@ -319,8 +293,6 @@ impl Session {
                         )
                     })?;
                 let draft = draft_of(&args, true)?;
-                self.spend_change()?;
-                self.spend_save()?;
                 no_secret(&args)?;
                 self.consolidate(&ids, draft)
             }
@@ -333,7 +305,6 @@ impl Session {
                     }
                     draft_of(&args, name == "memory_update")?
                 };
-                self.spend_save()?;
                 no_secret(&args)?;
                 self.save(name, &args, draft)
             }
@@ -351,36 +322,6 @@ impl Session {
         self.model.is_loaded()
     }
 
-    fn refill(&self) -> String {
-        let left = self.window + WINDOW_SECS - self.clock.now();
-        match (left + 59) / 60 {
-            1 => "it refills in 1 minute".into(),
-            n => format!("it refills in {n} minutes"),
-        }
-    }
-
-    fn spend_save(&mut self) -> Result<(), String> {
-        if self.saves >= MAX_SAVES {
-            return Err(format!(
-                "this session made its memory saves ({MAX_SAVES}); {}",
-                self.refill()
-            ));
-        }
-        self.saves += 1;
-        Ok(())
-    }
-
-    fn spend_change(&mut self) -> Result<(), String> {
-        if self.changes >= MAX_CHANGES {
-            return Err(format!(
-                "this session made its memory changes ({MAX_CHANGES}); {} (the person can still make changes on the command line)",
-                self.refill()
-            ));
-        }
-        self.changes += 1;
-        Ok(())
-    }
-
     fn writer(&self) -> Result<Memory, String> {
         Memory::open_write(
             &self.data,
@@ -391,15 +332,6 @@ impl Session {
     }
 
     fn read(&mut self, name: &str, args: &Map<String, Value>) -> Result<String, String> {
-        let left = MAX_BUDGET_BYTES.saturating_sub(self.bytes);
-        if self.reads >= MAX_CALLS || left < MIN_ROOM {
-            return Err(format!(
-                "this session spent its memory budget (20 calls or 24 KiB of text); {}",
-                self.refill()
-            ));
-        }
-        // Counted before the memory is asked: failed calls spend it too.
-        self.reads += 1;
         // A memory that was never written is an empty one, not a failure.
         let Some(m) = Memory::open_read(
             &self.data,
@@ -480,7 +412,7 @@ impl Session {
             &rows,
             abstained,
             note.as_deref(),
-            left.min(MAX_ANSWER_BYTES),
+            MAX_ANSWER_BYTES,
             full,
             near,
         );
@@ -499,7 +431,6 @@ impl Session {
             Some(line) => format!("{}\n{answer}", cut(&line, 600)),
             None => answer,
         };
-        self.bytes += answer.len();
         Ok(answer)
     }
 

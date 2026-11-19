@@ -575,26 +575,28 @@ const fn ort(url: &'static str, sha256: &'static str) -> Archive {
     }
 }
 
+// Microsoft's repository left GitHub (2026-11): these are our own archives, the library of the
+// official PyPI wheels of 1.31.1 packed as the old `.tgz` (each carries a `SOURCE` file).
 const ORT_LINUX_X64: Archive = ort(
     concat!(
-        "https://github.com/microsoft/onnxruntime/releases/download/v1.31.1/",
+        "https://github.com/i-montes/clio-memory/releases/download/onnxruntime-1.31.1/",
         "onnxruntime-linux-x64-1.31.1.tgz"
     ),
-    "c849e36a1ef3e22d4ff217b9d1ce4a3cf5b9467b975610913ae959ad5b16bdc9",
+    "bb20c641987323783e3b624a22ff3b8bb00674cde63a785c86814737a3b8c3cb",
 );
 const ORT_LINUX_AARCH64: Archive = ort(
     concat!(
-        "https://github.com/microsoft/onnxruntime/releases/download/v1.31.1/",
+        "https://github.com/i-montes/clio-memory/releases/download/onnxruntime-1.31.1/",
         "onnxruntime-linux-aarch64-1.31.1.tgz"
     ),
-    "5317505e2da99be65f8e2775ba3c2afd6d2961fd78aba1bd8f56159f48820c78",
+    "10bb1df5776bb89940f122761b7c270d3de43606ef87a2d4c0a3d5623a969bc0",
 );
 const ORT_MACOS_ARM64: Archive = ort(
     concat!(
-        "https://github.com/microsoft/onnxruntime/releases/download/v1.31.1/",
+        "https://github.com/i-montes/clio-memory/releases/download/onnxruntime-1.31.1/",
         "onnxruntime-osx-arm64-1.31.1.tgz"
     ),
-    "2e1344a1926ee50eb25b38153cb6992c3567515aef0e677a1a520a1798896d6f",
+    "c89c6b07d6c8c426957890fc4aead8a32b007d29e6ee481714a27b798a10f238",
 );
 
 /// What this system needs to run Granite: the CPU runtime. A system without a published runtime

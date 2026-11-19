@@ -184,20 +184,6 @@ fn five_sessions_saving_at_once_are_all_saved() {
 }
 
 #[test]
-fn the_budget_lives_in_the_daemon() {
-    let f = folder();
-    let mut m = mcp(&f, &[]);
-    for i in 0..20 {
-        let (text, is_error) = m.call("memory_context", json!({}));
-        assert!(!is_error, "{i}: {text}");
-    }
-    let (text, is_error) = m.call("memory_context", json!({}));
-    assert!(is_error && text.contains("refills in"), "{text}");
-    m.end();
-    assert!(f.data.join("daemon.sock").exists());
-}
-
-#[test]
 fn without_a_daemon_it_serves_in_its_own_process() {
     let f = folder();
     let mut m = mcp(&f, &[("CLIO_MEMORY_NO_DAEMON", "1")]);

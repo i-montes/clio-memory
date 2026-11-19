@@ -99,32 +99,6 @@ fn a_tool_refusal_is_ok_false_with_its_words() {
 }
 
 #[test]
-fn each_session_has_its_own_budget() {
-    let t = tempfile::tempdir().unwrap();
-    let d = daemon(t.path());
-    for _ in 0..20 {
-        let (a, _) = ask(
-            &d,
-            t.path(),
-            &call("a", t.path(), "memory_context", json!({})),
-        );
-        assert_eq!(a["ok"], true, "{a}");
-    }
-    let (a, _) = ask(
-        &d,
-        t.path(),
-        &call("a", t.path(), "memory_context", json!({})),
-    );
-    assert_eq!(a["ok"], false, "{a}");
-    let (b, _) = ask(
-        &d,
-        t.path(),
-        &call("b", t.path(), "memory_context", json!({})),
-    );
-    assert_eq!(b["ok"], true, "{b}");
-}
-
-#[test]
 fn the_project_comes_from_the_folder_sent() {
     let t = tempfile::tempdir().unwrap();
     let d = daemon(t.path());

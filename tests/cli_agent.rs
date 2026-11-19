@@ -211,16 +211,3 @@ fn it_goes_through_the_daemon_when_there_is_one() {
     assert_eq!(got.code, 0, "{got:?}");
     assert!(got.stdout.contains("el demonio guarda esto"), "{got:?}");
 }
-
-#[test]
-fn two_invocations_of_one_session_share_a_budget() {
-    let t = Dirs::with_daemon();
-    let codex = [("CLIO_MEMORY_AGENT", "codex")];
-    for i in 0..20 {
-        let out = t.run(&t.home, &["context"], &codex, "");
-        assert_eq!(out.code, 0, "call {i}: {out:?}");
-    }
-    let out = t.run(&t.home, &["context"], &codex, "");
-    assert_eq!(out.code, 1, "{out:?}");
-    assert!(out.stdout.contains("refills in"), "{out:?}");
-}

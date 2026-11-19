@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use clio_memory::agent::memory::embed_pending;
 use clio_memory::agent::{Draft, EmbedModel, Memory, Place};
 use clio_memory::tools::{Session, TOOLS};
-use clio_memory::{Embedder, Engine, FixedClock, JobKind, MemoryType, OpenMode, SystemClock};
+use clio_memory::{Embedder, Engine, JobKind, MemoryType, OpenMode, SystemClock};
 use common::HashEmbedder;
 use serde_json::json;
 
@@ -81,100 +81,6 @@ fn promote_purge_archive_and_extra_arguments_are_refused() {
             .unwrap_err();
         assert!(e.contains(extra), "{extra}: {e}");
     }
-}
-
-#[test]
-fn the_read_budget_is_20_calls() {
-    let t = tempfile::tempdir().unwrap();
-    let mut s = session(&t);
-    save(&mut s, "uno").unwrap();
-    for i in 0..20 {
-        s.call("memory_search", &json!({"query": "uno"}))
-            .unwrap_or_else(|e| panic!("{i}: {e}"));
-    }
-    let e = s.call("memory_get", &json!({"id": 1})).unwrap_err();
-    assert!(e.contains("budget"), "{e}");
-}
-
-#[test]
-fn the_read_budget_refills_after_half_an_hour() {
-    let t = tempfile::tempdir().unwrap();
-    let clock = Arc::new(FixedClock::new(10_000));
-    let mut s = session(&t).with_clock(clock.clone());
-    for _ in 0..20 {
-        s.call("memory_context", &json!({})).unwrap();
-    }
-    let why = s.call("memory_context", &json!({})).unwrap_err();
-    assert!(why.contains("refills in 30 minutes"), "{why}");
-    clock.set(10_000 + 1799);
-    let why = s.call("memory_context", &json!({})).unwrap_err();
-    assert!(why.ends_with("; it refills in 1 minute"), "{why}");
-    clock.set(10_000 + 1800);
-    assert!(s.call("memory_context", &json!({})).is_ok());
-}
-
-#[test]
-fn the_save_budget_refills_too() {
-    let t = tempfile::tempdir().unwrap();
-    let clock = Arc::new(FixedClock::new(10_000));
-    let mut s = session(&t).with_clock(clock.clone());
-    for i in 0..30 {
-        save(&mut s, &format!("dato número {i}")).unwrap_or_else(|e| panic!("{i}: {e}"));
-    }
-    let why = save(&mut s, "uno de más").unwrap_err();
-    assert!(why.contains("refills in"), "{why}");
-    clock.set(10_000 + 1800);
-    save(&mut s, "uno de más").unwrap();
-}
-
-#[test]
-fn the_change_budget_refills_too() {
-    let t = tempfile::tempdir().unwrap();
-    let clock = Arc::new(FixedClock::new(10_000));
-    let mut s = session(&t).with_clock(clock.clone());
-    save(&mut s, "uno").unwrap();
-    for _ in 0..10 {
-        s.call("memory_pin", &json!({"id": 1})).unwrap();
-    }
-    let why = s.call("memory_pin", &json!({"id": 1})).unwrap_err();
-    assert_eq!(
-        why,
-        "this session made its memory changes (10); it refills in 30 minutes (the person can \
-         still make changes on the command line)"
-    );
-    clock.set(10_000 + 1800);
-    s.call("memory_pin", &json!({"id": 1})).unwrap();
-}
-
-#[test]
-fn the_text_budget_refills_too() {
-    let t = tempfile::tempdir().unwrap();
-    let clock = Arc::new(FixedClock::new(10_000));
-    let mut s = session(&t).with_clock(clock.clone());
-    for i in 0..8 {
-        save(&mut s, &format!("{} {i}", "relleno largo ".repeat(80))).unwrap();
-    }
-    let ask = json!({"query": "relleno", "limit": 8});
-    let calls = (0..20)
-        .take_while(|_| s.call("memory_search", &ask).is_ok())
-        .count();
-    assert!(
-        calls < 20,
-        "the 24 KiB cap should stop it before the 20 calls"
-    );
-    clock.set(10_000 + 1800);
-    s.call("memory_search", &ask).unwrap();
-}
-
-#[test]
-fn the_thirty_first_save_is_refused() {
-    let t = tempfile::tempdir().unwrap();
-    let mut s = session(&t);
-    for i in 0..30 {
-        save(&mut s, &format!("dato número {i}")).unwrap_or_else(|e| panic!("{i}: {e}"));
-    }
-    let e = save(&mut s, "uno de más").unwrap_err();
-    assert!(e.contains("30"), "{e}");
 }
 
 #[test]
@@ -340,20 +246,7 @@ fn a_text_too_long_or_a_bad_argument_spends_no_save() {
 }
 
 #[test]
-fn a_secret_spends_a_save() {
-    let t = tempfile::tempdir().unwrap();
-    let mut s = session(&t);
-    let key = concat!("sk-", "proj-0123456789abcdefghijklmnopqrstuv");
-    for _ in 0..30 {
-        let e = save(&mut s, &format!("la clave es {key}")).unwrap_err();
-        assert!(e.contains("secret"), "{e}");
-    }
-    let e = save(&mut s, "uno de más").unwrap_err();
-    assert!(e.contains("30"), "{e}");
-}
-
-#[test]
-fn a_secret_in_a_summary_is_refused_and_spends_a_save() {
+fn a_secret_in_a_summary_is_refused_and_the_next_save_goes_in() {
     let t = tempfile::tempdir().unwrap();
     let mut s = session(&t);
     let key = concat!("sk-", "proj-0123456789abcdefghijklmnopqrstuv");
@@ -366,8 +259,7 @@ fn a_secret_in_a_summary_is_refused_and_spends_a_save() {
             .unwrap_err();
         assert!(e.contains("secret") && !e.contains(key), "{e}");
     }
-    let e = save(&mut s, "uno de más").unwrap_err();
-    assert!(e.contains("30"), "{e}");
+    save(&mut s, "uno de más").unwrap();
 }
 
 #[test]
@@ -830,5 +722,38 @@ fn outside_text_is_never_in_the_person_set_section() {
             rest.contains(outside),
             "{outside} is shown with the rest: {out}"
         );
+    }
+}
+
+#[test]
+fn a_session_has_no_caps() {
+    let t = tempfile::tempdir().unwrap();
+    let mut s = session(&t);
+    let key = concat!("sk-", "proj-0123456789abcdefghijklmnopqrstuv");
+    for i in 0..31 {
+        let r = save(&mut s, &format!("{} {i}", "relleno largo ".repeat(80)))
+            .unwrap_or_else(|e| panic!("{i}: {e}"));
+        // "saved: it is memory now (m7, change …": an update replaces it, so each turn edits its own
+        let id: u64 = r
+            .split("(m")
+            .nth(1)
+            .unwrap()
+            .split(',')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let e = save(&mut s, &format!("la clave es {key}")).unwrap_err();
+        assert!(e.contains("secret"), "{e}");
+        s.call(
+            "memory_update",
+            &json!({"id": id, "text": format!("relleno corregido {i}")}),
+        )
+        .unwrap_or_else(|e| panic!("{i}: {e}"));
+        s.call("memory_pin", &json!({"id": id + 1}))
+            .unwrap_or_else(|e| panic!("{i}: {e}"));
+        // 31 answers of up to 4 KiB: well past the old 20 calls and 24 KiB
+        s.call("memory_search", &json!({"query": "relleno", "limit": 8}))
+            .unwrap_or_else(|e| panic!("{i}: {e}"));
     }
 }

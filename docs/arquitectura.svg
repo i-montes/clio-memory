@@ -56,8 +56,7 @@
   <text class="h" x="46" y="308">Demonio · uno por carpeta de datos</text>
   <text class="s" x="46" y="328">lo lanza el primer cliente; sale a los 10 min sin uso</text>
   <text class="s" x="46" y="346">un solo modelo cargado para todos los agentes;</text>
-  <text class="s" x="46" y="364">una sesión por cliente (daemon.sock), con topes</text>
-  <text class="s" x="46" y="382">por 30 minutos: 20 lecturas, 30 guardados, 10 cambios</text>
+  <text class="s" x="46" y="364">una sesión por cliente (daemon.sock), sin topes</text>
 
   <text class="lab" x="572" y="320" text-anchor="end">Clio y la línea de comandos abren el</text>
   <text class="lab" x="572" y="336" text-anchor="end">archivo ellos mismos, sin pasar por él</text>
